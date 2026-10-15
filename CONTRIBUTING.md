@@ -76,6 +76,10 @@ The `commit-msg` hook runs commitlint on every commit; the `pre-commit` hook run
 
 A plan that touches the imported hosted zone with anything other than tags needs a clear explanation in the PR.
 
+## Updating the shared modules
+
+The `context`, `site-bucket`, and `site-ci-roles` modules come from the public Terraform Registry module [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws). Bump all three `version` pins together (one in `context.tf`, two in `projects.tf`), run `terraform init -upgrade` locally, and open a `chore(deps)` PR. Dependabot does the same automatically. Review the library's changelog entry alongside the CI plan comment before merging. A change to a module's inputs or outputs belongs in the library repo, [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering), not here.
+
 ## Releases
 
 Release Please opens and maintains a release PR as changes land on `main`. Merging that PR:
