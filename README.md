@@ -8,19 +8,45 @@ The foundation stack for every [jwall.engineering](https://jwall.engineering) si
 - for each site in the `projects` registry, an S3 bucket and three CI roles
 - its own plan and apply CI roles
 
-Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. Shared modules come from the `jwallace145/jwall-engineering/aws` registry module. Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
+Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. The shared building blocks are consumed from the public Terraform Registry, see [Shared modules](#shared-modules-from-the-terraform-registry). Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
+
+## Shared modules from the Terraform Registry
+
+This stack is a consumer of [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws), the jwall-engineering module library published to the public Terraform Registry from [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering). The library is open source under MIT, versioned with semver, and released with the same Release Please flow as this repo. Consuming it here, the same way any third party would, is deliberate: the foundation stack eats its own dog food, so the modules are exercised in production before anyone else depends on them.
+
+| Submodule | Used for | Where |
+| --- | --- | --- |
+| `//modules/context` | The tag set applied to every resource through `default_tags` | `context.tf` |
+| `//modules/site-bucket` | One S3 bucket per project, `jwall-engineering-<project>` | `projects.tf` |
+| `//modules/site-ci-roles` | Plan, preview, and apply roles per project, trusted for that project's repository | `projects.tf` |
+
+Module sources look like this, with an exact `version` on every block:
+
+```hcl
+module "site_bucket" {
+  for_each = local.projects
+  source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
+  version  = "0.2.0"
+
+  project = each.key
+}
+```
+
+Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The three pins (one in `context.tf`, two in `projects.tf`) are always bumped together.
+
+**Upgrading.** When the library publishes a release, Dependabot's Terraform ecosystem opens a `chore(deps)` PR bumping the pins. The CI plan comment on that PR shows exactly what the new version changes in AWS. Read the library's [CHANGELOG](https://github.com/jwallace145/terraform-aws-jwall-engineering/blob/main/CHANGELOG.md) entry, check the plan, merge, and the change applies with the next release of this repo. While the library is on `0.x`, a breaking change bumps the minor version and is marked `!` in its changelog.
 
 ## Layout
 
 | Path | Owns |
 | --- | --- |
-| `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the library's `context` module whose tags are applied through `default_tags` |
+| `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the registry `context` module whose tags are applied through `default_tags` |
 | `backend.tf`, `backend/prod.hcl` | S3 backend with native lockfile locking (no DynamoDB) |
 | `state.tf` | The shared state bucket |
 | `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
 | `dns.tf` | The hosted zone (imported) and its CAA record |
 | `ci-roles.tf` | This repo's own plan and apply roles |
-| `projects.tf` | The `projects` registry: one entry per site, each fed to the library's `site-bucket` and `site-ci-roles` modules |
+| `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket` and `site-ci-roles` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |
 | `docs/migration.md` | Legacy resources to retire after the move |
 | `scripts/apply-repo-settings.sh` | GitHub repository settings and the `main` ruleset |
@@ -45,7 +71,7 @@ For example this stack uses `project=infra/env=prod/infra-prod.tfstate`, and the
 | `cs-survival-guide` | `jwallace145/cs-survival-guide` | `survival-guide.jwall.engineering` |
 | `guitar-knowledge-base` | `jwallace145/guitar-knowledge-base` | `guitar.jwall.engineering` |
 
-Each entry is passed to the `site-bucket` and `site-ci-roles` submodules of the [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws) registry module, pinned to an exact version, which create:
+Each entry is passed to the `site-bucket` and `site-ci-roles` submodules of the [registry module](#shared-modules-from-the-terraform-registry), which create:
 
 - bucket `jwall-engineering-<key>` (versioned, encrypted, private, CloudFront-readable), and
 - roles `jwall-engineering-<key>-ci-plan`, `-ci-preview`, and `-ci-apply`, trusted for the project's repository and scoped to that bucket, to the state prefix `project=<key>/`, and to Route 53 changes for `<domain>`, `*.preview.<domain>`, and the ACM validation records those names need.

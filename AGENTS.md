@@ -17,6 +17,7 @@ This repository is Terraform for the jwall-engineering foundation stack (state b
 - **Do not modify or delete existing AWS resources** that this stack does not own. The legacy resources listed in `docs/migration.md` are retired by the owner, not by Terraform in this repo.
 - **Never run `terraform apply` yourself.** Applies happen only through the Release Please `apply` job. Local plans are fine with read-only credentials.
 - **Do not add `ignore_changes`, `-lock=false`, or widen an IAM policy** to make a plan pass. Explain the diff in the PR instead.
+- **Shared modules come from the Terraform Registry.** `context`, `site-bucket`, and `site-ci-roles` are submodules of `jwallace145/jwall-engineering/aws`, pinned to an exact `version` in `context.tf` and `projects.tf`. Bump all three pins together, never switch a module back to a git or local source, and fix module bugs upstream in `jwallace145/terraform-aws-jwall-engineering` rather than working around them here.
 - **Keep secrets out of the repo and out of variables.** Role ARNs are repository variables; the release bot credentials are repository secrets managed by the owner.
 
 ## Before opening a PR
