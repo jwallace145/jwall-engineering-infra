@@ -8,7 +8,7 @@ The foundation stack for every [jwall.engineering](https://jwall.engineering) si
 - for each site in the `projects` registry, an S3 bucket and three CI roles
 - its own plan and apply CI roles
 
-Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
+Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. Shared modules come from the `jwallace145/jwall-engineering/aws` registry module. Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
 
 ## Layout
 
@@ -45,7 +45,7 @@ For example this stack uses `project=infra/env=prod/infra-prod.tfstate`, and the
 | `cs-survival-guide` | `jwallace145/cs-survival-guide` | `survival-guide.jwall.engineering` |
 | `guitar-knowledge-base` | `jwallace145/guitar-knowledge-base` | `guitar.jwall.engineering` |
 
-Each entry is passed to the [`terraform-library`](https://github.com/jwallace145/terraform-library) `site-bucket` and `site-ci-roles` modules, pinned to `v0.1.0`, which create:
+Each entry is passed to the `site-bucket` and `site-ci-roles` submodules of the [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws) registry module, pinned to an exact version, which create:
 
 - bucket `jwall-engineering-<key>` (versioned, encrypted, private, CloudFront-readable), and
 - roles `jwall-engineering-<key>-ci-plan`, `-ci-preview`, and `-ci-apply`, trusted for the project's repository and scoped to that bucket, to the state prefix `project=<key>/`, and to Route 53 changes for `<domain>`, `*.preview.<domain>`, and the ACM validation records those names need.
