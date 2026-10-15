@@ -6,8 +6,8 @@ Inventory taken on 2026-10-14 from `jwallace145/site` (`infra/`) and its reposit
 
 ## Imported here (ownership moves, nothing is recreated)
 
-| Resource | Identifier | Note |
-| --- | --- | --- |
+| Resource             | Identifier                                                                    | Note                                                                   |
+| -------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | Route 53 hosted zone | `jwall.engineering` (`module.dns[0].aws_route53_zone.this` in the site state) | Import changes tags and the zone comment. See "Hosted zone hand-over". |
 
 ## Shared, not imported: the GitHub OIDC provider
@@ -18,36 +18,22 @@ Inventory taken on 2026-10-14 from `jwallace145/site` (`infra/`) and its reposit
 
 Nothing below is managed by this repo. Retire each item only after its replacement is live and verified.
 
-### State
+### Retired
 
-| Resource | Replacement | Retire when |
-| --- | --- | --- |
-| S3 bucket `jwall-engineering-site-tfstate` (key `environment=prod/terraform.tfstate`) | `jwall-engineering-tfstate`, key `project=main-site/env=prod/main-site-prod.tfstate` | The site repo's state has been migrated to the shared bucket |
+Retired on 2026-10-15 after the main site deployed from this stack's resources: the
+site repo's old stack (`jwall-engineering-site-*` buckets, CloudFront distributions, ACM
+certificates, deploy, plan and preview roles, budget and the `www` record) was
+destroyed, and the `production` and `preview` GitHub environments and the old
+`AWS_ROLE_ARN`, `S3_BUCKET` and `AWS_REGION` variables were deleted. The old state bucket
+`jwall-engineering-site-tfstate` is superseded by `jwall-engineering-tfstate`, key
+`project=main-site/env=prod/main-site-prod.tfstate`.
 
-### Main site (`jwallace145/site`)
+### CS Survival Guide and Guitar Knowledge Base
 
-| Resource | Type | Replacement | Retire when |
-| --- | --- | --- | --- |
-| `jwall-engineering-site-web-bucket` | S3 bucket (CloudFront origin) | `main-site` site bucket from this stack | CloudFront origin points at the new bucket and a release has deployed to it |
-| `jwall-engineering-site-preview-bucket` | S3 bucket (PR previews) | `main-site` site bucket, preview prefix | Preview workflow deploys to the new bucket |
-| `jwall-engineering-site-deploy-github-role` | IAM role, trusted for `environment:production` | `main-site` apply role | `release.yml` uses the new role ARN |
-| `jwall-engineering-site-deploy-github-plan-role` | IAM role, trusted for `pull_request` | `main-site` plan role | `ci.yml` uses the new role ARN (repository variable `AWS_PLAN_ROLE_ARN`) |
-| `jwall-engineering-site-preview-github-role` | IAM role, trusted for `environment:preview` | `main-site` preview role | `preview.yml` uses the new role ARN |
-| `jwall-engineering-site-deploy-github-policy`, `-plan-policy` | Inline role policies | Policies attached by the `site-ci-roles` module | Deleted with their roles |
-
-Repository variables in `jwallace145/site` that change: `AWS_PLAN_ROLE_ARN` (currently `arn:aws:iam::650503560686:role/jwall-engineering-site-deploy-github-plan-role`), `AWS_ROLE_ARN`, and `S3_BUCKET`.
-
-### CS Survival Guide (`jwallace145/cs-survival-guide`) and Guitar Knowledge Base (`jwallace145/guitar-knowledge-base`)
-
-Both are served by GitHub Pages today. They have no AWS deploy roles or buckets to retire. The records that point them at Pages live in the site repo's Terraform:
-
-| Record | Type | Value | Retire when |
-| --- | --- | --- | --- |
-| `survival-guide.jwall.engineering` | CNAME | `jwallace145.github.io.` | The project repo owns the record (an alias to its CloudFront distribution) |
-| `guitar.jwall.engineering` | CNAME | `jwallace145.github.io.` | Same |
-| `_github-pages-challenge-jwallace145.jwall.engineering` | TXT | GitHub Pages domain verification | Both sites have left GitHub Pages |
-
-While either site is on GitHub Pages, keep `letsencrypt.org` in the CAA issuer list in `dns.tf`. Remove it after both have moved to CloudFront + ACM.
+Both are served by CloudFront from their own project repos. The Pages CNAMEs are gone and
+`letsencrypt.org` is no longer in the CAA issuer list. The only leftover is the
+`_github-pages-challenge-jwallace145.jwall.engineering` TXT domain-verification record,
+which no stack manages and can be deleted.
 
 ## Hosted zone hand-over
 

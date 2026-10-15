@@ -6,15 +6,13 @@ locals {
   zone_name = "jwall.engineering"
 
   # Certificate authorities allowed to issue for the zone and its subdomains.
-  # ACM needs the four Amazon entries. letsencrypt.org stays while
-  # survival-guide and guitar are served by GitHub Pages; remove it once both
-  # move to CloudFront + ACM.
+  # ACM needs these four Amazon entries. Every site is served by CloudFront
+  # with an ACM certificate, so no other issuer is allowed.
   caa_issuers = [
     "amazon.com",
     "amazontrust.com",
     "awstrust.com",
     "amazonaws.com",
-    "letsencrypt.org",
   ]
 }
 
