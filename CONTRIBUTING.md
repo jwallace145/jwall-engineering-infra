@@ -32,6 +32,16 @@ commitlint enforces this with `@commitlint/config-conventional` plus a local rul
 
 Squash merges use the PR title as the commit message on `main`, and Release Please reads those messages to decide the next version and to write `CHANGELOG.md`. A `feat` bumps the minor version, a `fix` bumps the patch, and `!` bumps the major. CI lints the title with the same rules.
 
+### Dependabot PRs
+
+Dependabot cannot write one-line, lowercase commit messages, so its PRs skip the commit message check and the title check. Merge them with **squash** and a lowercase Conventional Commit subject, for example:
+
+```sh
+gh pr merge <n> --squash --subject "ci: bump actions/checkout from 6 to 7"
+```
+
+The CI plan comment still has to show no changes.
+
 ## Pull request templates
 
 Templates live in `.github/PULL_REQUEST_TEMPLATE/`, one per type: `feat.md`, `fix.md`, `docs.md`, `chore.md`, `refactor.md`, `ci.md`. Pick one with

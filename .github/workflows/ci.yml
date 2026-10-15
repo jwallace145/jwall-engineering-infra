@@ -20,6 +20,12 @@ jobs:
   commitlint:
     name: Commit messages
     runs-on: ubuntu-latest
+    # Dependabot's commit messages carry a capitalised subject and a release
+    # notes body, which this repo's one-line rule rejects. Its PRs are squash
+    # merged under a lowercase Conventional Commit title instead, so the
+    # commit that lands on main still conforms. A skipped job satisfies the
+    # required status check.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
       contents: read
     steps:
@@ -67,6 +73,9 @@ jobs:
             test
             revert
           requireScope: false
+          # Dependabot titles start with a capital; they are retitled at merge.
+          ignoreLabels: |
+            dependencies
           subjectPattern: ^(?![A-Z]).+$
           subjectPatternError: |
             The subject "{subject}" must start with a lowercase letter.
