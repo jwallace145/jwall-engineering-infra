@@ -10,19 +10,17 @@ The foundation stack for every [jwall.engineering](https://jwall.engineering) si
 
 Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
 
-> **Status.** The per-project buckets and CI roles come from `terraform-library` modules pinned to `v0.1.0`, which is not released yet. `projects.tf` holds the registry and the intended module calls; they are wired up once the library ships. Everything else in this stack is complete.
-
 ## Layout
 
 | Path | Owns |
 | --- | --- |
-| `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the tag set applied through `default_tags` |
+| `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the library's `context` module whose tags are applied through `default_tags` |
 | `backend.tf`, `backend/prod.hcl` | S3 backend with native lockfile locking (no DynamoDB) |
 | `state.tf` | The shared state bucket |
 | `oidc.tf` | GitHub OIDC provider (imported) |
 | `dns.tf` | The hosted zone (imported) and its CAA record |
 | `ci-roles.tf` | This repo's own plan and apply roles |
-| `projects.tf` | The `projects` registry: one entry per site |
+| `projects.tf` | The `projects` registry: one entry per site, each fed to the library's `site-bucket` and `site-ci-roles` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |
 | `docs/migration.md` | Legacy resources to retire after the move |
 | `scripts/apply-repo-settings.sh` | GitHub repository settings and the `main` ruleset |
@@ -47,7 +45,12 @@ For example this stack uses `project=infra/env=prod/infra-prod.tfstate`, and the
 | `cs-survival-guide` | `jwallace145/cs-survival-guide` | `survival-guide.jwall.engineering` |
 | `guitar-knowledge-base` | `jwallace145/guitar-knowledge-base` | `guitar.jwall.engineering` |
 
-Each entry gets a site bucket and plan, preview, and apply roles whose Route 53 permissions cover `<domain>`, `*.preview.<domain>`, and the ACM validation records those names need. The zone itself is owned here; every other record is owned by the project repos.
+Each entry is passed to the [`terraform-library`](https://github.com/jwallace145/terraform-library) `site-bucket` and `site-ci-roles` modules, pinned to `v0.1.0`, which create:
+
+- bucket `jwall-engineering-<key>` (versioned, encrypted, private, CloudFront-readable), and
+- roles `jwall-engineering-<key>-ci-plan`, `-ci-preview`, and `-ci-apply`, trusted for the project's repository and scoped to that bucket, to the state prefix `project=<key>/`, and to Route 53 changes for `<domain>`, `*.preview.<domain>`, and the ACM validation records those names need.
+
+The zone itself is owned here; every other record is owned by the project repos. `terraform output projects` lists the bucket name and role ARNs per project.
 
 ## CI roles for this repository
 
@@ -81,7 +84,7 @@ The state bucket does not exist before the first apply, so the first apply uses 
    terraform plan -out=bootstrap.tfplan
    ```
 
-   Review the plan. It should create the state bucket, the two CI roles, and the CAA record, and **import** the OIDC provider and the hosted zone. The only changes on the imported resources should be tags (both) and the zone comment. Then:
+   Review the plan. It should create the state bucket, this repo's two CI roles, the CAA record, the three project buckets and nine project CI roles, and **import** the OIDC provider and the hosted zone. The only changes on the imported resources should be tags (both) and the zone comment. Then:
 
    ```sh
    terraform apply bootstrap.tfplan
@@ -146,7 +149,7 @@ Not automated; these need the owner's credentials or the GitHub UI.
 
 - Run the bootstrap steps above.
 - Create the GitHub `prod` environment with a deployment branch restriction to `main`.
-- Set repository variables from `terraform output`: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN` here, and each project's role ARNs and bucket name in that project's repo once the library modules are wired up.
+- Set repository variables from `terraform output`: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN` here, and each project's role ARNs and bucket name (from `terraform output projects`) in that project's repo.
 - Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`.
 - Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
 

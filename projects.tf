@@ -1,8 +1,9 @@
 # The single registry of jwall-engineering sites. Adding a site means adding a
-# line here; each entry gets an S3 bucket and three CI roles (plan, preview,
-# apply) scoped to its repository and domain.
+# line here; each entry gets an S3 bucket (jwall-engineering-<key>) and three
+# CI roles (jwall-engineering-<key>-ci-{plan,preview,apply}) scoped to its
+# repository, bucket, state prefix and DNS names.
 #
-# Repository names were confirmed with the owner on 2026-10-14.
+# Modules come from terraform-library, pinned to a release tag.
 
 locals {
   projects = {
@@ -12,8 +13,8 @@ locals {
   }
 
   # Record names each project's CI roles may manage in the zone: the site
-  # itself, its wildcard preview hostnames, and the ACM validation CNAMEs for
-  # those names.
+  # itself and its wildcard preview hostnames. The module adds the ACM
+  # validation CNAMEs for these names automatically.
   project_record_names = {
     for key, project in local.projects : key => [
       project.domain,
@@ -22,27 +23,22 @@ locals {
   }
 }
 
-# TODO(terraform-library v0.1.0): the per-project resources are consumed from
-# the library and cannot be written until it is released and its module
-# interfaces are known. The intended shape is:
-#
-#   module "site_bucket" {
-#     for_each = local.projects
-#     source   = "git::https://github.com/jwallace145/terraform-library.git//modules/site-bucket?ref=v0.1.0"
-#     ...
-#   }
-#
-#   module "site_ci_roles" {
-#     for_each = local.projects
-#     source   = "git::https://github.com/jwallace145/terraform-library.git//modules/site-ci-roles?ref=v0.1.0"
-#     repository        = each.value.repository
-#     oidc_provider_arn = aws_iam_openid_connect_provider.github.arn
-#     bucket            = module.site_bucket[each.key]...
-#     hosted_zone_id    = aws_route53_zone.this.zone_id
-#     record_names      = local.project_record_names[each.key]  # plus ACM validation records
-#     ...
-#   }
-#
-# Constraints the library must satisfy for this stack's apply role (see
-# ci-roles.tf): bucket names start with "jwall-engineering-" or "<project>-",
-# and role/policy names start with "jwall-engineering-".
+module "site_bucket" {
+  for_each = local.projects
+  source   = "git::https://github.com/jwallace145/terraform-library.git//modules/site-bucket?ref=v0.1.0"
+
+  project = each.key
+}
+
+module "site_ci_roles" {
+  for_each = local.projects
+  source   = "git::https://github.com/jwallace145/terraform-library.git//modules/site-ci-roles?ref=v0.1.0"
+
+  project           = each.key
+  repository        = each.value.repository
+  bucket_arn        = module.site_bucket[each.key].arn
+  state_bucket_arn  = aws_s3_bucket.tfstate.arn
+  oidc_provider_arn = aws_iam_openid_connect_provider.github.arn
+  zone_id           = aws_route53_zone.this.zone_id
+  record_names      = local.project_record_names[each.key]
+}

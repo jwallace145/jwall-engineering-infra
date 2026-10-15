@@ -17,13 +17,10 @@ locals {
 
   github_subject_prefix = "repo:${local.context.repository}"
 
-  # Buckets the apply role may fully manage: the state bucket's configuration
-  # plus every project site bucket. Patterns rather than exact names so that
-  # adding a project to local.projects needs no IAM change.
-  managed_bucket_patterns = concat(
-    ["${local.context.organization}-*"],
-    [for key, _ in local.projects : "${key}-*"],
-  )
+  # Buckets the apply role may fully manage. The site-bucket module names
+  # buckets jwall-engineering-<project>, so one pattern covers every project
+  # and adding one to local.projects needs no IAM change.
+  managed_bucket_patterns = ["${local.context.organization}-*"]
 
   managed_bucket_arns = flatten([
     for pattern in local.managed_bucket_patterns : [

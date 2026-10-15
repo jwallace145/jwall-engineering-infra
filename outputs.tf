@@ -33,30 +33,18 @@ output "infra_ci_apply_role_arn" {
   value       = aws_iam_role.ci_apply.arn
 }
 
-# TODO(terraform-library v0.1.0): per-project outputs, once the module calls in
-# projects.tf exist. Intended shape:
-#
-#   output "projects" {
-#     value = {
-#       for key, project in local.projects : key => {
-#         repository       = project.repository
-#         domain           = project.domain
-#         bucket_name      = module.site_bucket[key].bucket_name
-#         plan_role_arn    = module.site_ci_roles[key].plan_role_arn
-#         preview_role_arn = module.site_ci_roles[key].preview_role_arn
-#         apply_role_arn   = module.site_ci_roles[key].apply_role_arn
-#         hosted_zone_id   = aws_route53_zone.this.zone_id
-#       }
-#     }
-#   }
 output "projects" {
-  description = "Registry of sites (repository and domain). Bucket and role ARNs are added once terraform-library v0.1.0 is consumed."
+  description = "Per-project bucket name, CI role ARNs and zone ID. Project repos set their AWS_*_ROLE_ARN and bucket variables from these."
   value = {
     for key, project in local.projects : key => {
-      repository     = project.repository
-      domain         = project.domain
-      record_names   = local.project_record_names[key]
-      hosted_zone_id = aws_route53_zone.this.zone_id
+      repository       = project.repository
+      domain           = project.domain
+      record_names     = local.project_record_names[key]
+      bucket_name      = module.site_bucket[key].name
+      plan_role_arn    = module.site_ci_roles[key].plan_role_arn
+      preview_role_arn = module.site_ci_roles[key].preview_role_arn
+      apply_role_arn   = module.site_ci_roles[key].apply_role_arn
+      hosted_zone_id   = aws_route53_zone.this.zone_id
     }
   }
 }

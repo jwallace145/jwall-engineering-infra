@@ -62,8 +62,7 @@ After bootstrap, the zone is in two Terraform states: this stack's and the site 
 
 ## Order of operations
 
-1. Bootstrap this stack (README). Imports the OIDC provider and zone; creates the state bucket and this repo's CI roles.
+1. Bootstrap this stack (README). Imports the OIDC provider and zone; creates the state bucket, this repo's CI roles, the three project buckets and the nine project CI roles.
 2. Hand over the hosted zone (above).
-3. Release `terraform-library` `v0.1.0`, wire up `projects.tf`, release this stack. Creates the three project buckets and nine project CI roles.
-4. Move each project repo to its new bucket and roles, verify a deploy, then retire that project's legacy rows above.
-5. Migrate the site repo's state into the shared bucket, then retire `jwall-engineering-site-tfstate`.
+3. Move each project repo to its new bucket and roles, verify a deploy, then retire that project's legacy rows above.
+4. Migrate the site repo's state into the shared bucket (key `project=main-site/env=prod/main-site-prod.tfstate`), then retire `jwall-engineering-site-tfstate`.
