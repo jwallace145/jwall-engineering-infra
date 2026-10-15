@@ -7,7 +7,7 @@ locals {
 
   context = {
     organization = "jwall-engineering"
-    project      = "infra"
+    project      = "jwall-engineering-infra" # Project tag value
     environment  = "prod"
     repository   = "jwallace145/jwall-engineering-infra"
     owner        = "jwallace145"
@@ -25,7 +25,7 @@ locals {
   # Resource name prefix for this stack's own CI roles and Name tags. The
   # role names are fixed by convention (jwall-engineering-infra-ci-*), so this
   # is intentionally not module.context.name_prefix, which adds "-prod".
-  name_prefix = "${local.context.organization}-${local.context.project}"
+  name_prefix = local.context.project
 }
 
 module "context" {
