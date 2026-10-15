@@ -29,7 +29,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Every commit in the PR range is checked, so rebase merges land
           # only one-line Conventional Commits on main.
@@ -86,7 +86,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "~1.14"
@@ -113,7 +113,7 @@ jobs:
       id-token: write # assume the plan role through GitHub OIDC
       pull-requests: write # post and update the plan comment
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "~1.14"
