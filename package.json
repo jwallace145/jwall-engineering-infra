@@ -1,0 +1,20 @@
+{
+  "name": "jwall-engineering-infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tooling for commit message linting. The infrastructure itself is Terraform; see README.md.",
+  "type": "module",
+  "scripts": {
+    "commitlint": "commitlint",
+    "test": "node --test \"tools/**/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
+    "@commitlint/lint": "^21.2.3",
+    "@commitlint/load": "^21.2.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

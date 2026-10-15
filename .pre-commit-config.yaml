@@ -1,0 +1,33 @@
+# Local git hooks. Install once with `pre-commit install --hook-type commit-msg --hook-type pre-commit`.
+# CI is the authoritative check; these hooks exist so that mistakes are caught
+# before they are pushed.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-json
+
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.109.2
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+        args:
+          - --hook-config=--retry-once-with-cleanup=true
+          - --tf-init-args=-backend=false
+      - id: terraform_tflint
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+
+  - repo: local
+    hooks:
+      - id: commitlint
+        name: commitlint (one-line Conventional Commit)
+        entry: npx --no-install commitlint --edit
+        language: system
+        stages: [commit-msg]
+        always_run: true
+        pass_filenames: true

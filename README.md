@@ -1,0 +1,155 @@
+# jwall-engineering-infra
+
+The foundation stack for every [jwall.engineering](https://jwall.engineering) site. It owns:
+
+- the shared Terraform state bucket `jwall-engineering-tfstate`
+- the GitHub Actions OIDC identity provider
+- the `jwall.engineering` Route 53 hosted zone (zone-level records only)
+- for each site in the `projects` registry, an S3 bucket and three CI roles
+- its own plan and apply CI roles
+
+Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
+
+> **Status.** The per-project buckets and CI roles come from `terraform-library` modules pinned to `v0.1.0`, which is not released yet. `projects.tf` holds the registry and the intended module calls; they are wired up once the library ships. Everything else in this stack is complete.
+
+## Layout
+
+| Path | Owns |
+| --- | --- |
+| `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the tag set applied through `default_tags` |
+| `backend.tf`, `backend/prod.hcl` | S3 backend with native lockfile locking (no DynamoDB) |
+| `state.tf` | The shared state bucket |
+| `oidc.tf` | GitHub OIDC provider (imported) |
+| `dns.tf` | The hosted zone (imported) and its CAA record |
+| `ci-roles.tf` | This repo's own plan and apply roles |
+| `projects.tf` | The `projects` registry: one entry per site |
+| `outputs.tf` | Values the project repos and this repo's CI consume |
+| `docs/migration.md` | Legacy resources to retire after the move |
+| `scripts/apply-repo-settings.sh` | GitHub repository settings and the `main` ruleset |
+
+## State bucket and key convention
+
+Every jwall-engineering stack keeps its state in `jwall-engineering-tfstate` under the key
+
+```
+project=<project>/env=<env>/<project>-<env>.tfstate
+```
+
+For example this stack uses `project=infra/env=prod/infra-prod.tfstate`, and the main site would use `project=main-site/env=prod/main-site-prod.tfstate`. Terraform writes the lock beside it as `<key>.tflock`. The bucket has versioning, SSE-S3, Block Public Access, `BucketOwnerEnforced` ownership, a TLS-only bucket policy, and `prevent_destroy`.
+
+## Projects registry
+
+`local.projects` in `projects.tf` is the single list of sites:
+
+| Key | Repository | Domain |
+| --- | --- | --- |
+| `main-site` | `jwallace145/site` | `jwall.engineering` |
+| `cs-survival-guide` | `jwallace145/cs-survival-guide` | `survival-guide.jwall.engineering` |
+| `guitar-knowledge-base` | `jwallace145/guitar-knowledge-base` | `guitar.jwall.engineering` |
+
+Each entry gets a site bucket and plan, preview, and apply roles whose Route 53 permissions cover `<domain>`, `*.preview.<domain>`, and the ACM validation records those names need. The zone itself is owned here; every other record is owned by the project repos.
+
+## CI roles for this repository
+
+| Role | Trusted for | Permissions |
+| --- | --- | --- |
+| `jwall-engineering-infra-ci-plan` | `pull_request` | `ReadOnlyAccess`, read of this stack's state key, write of its `.tflock` key only |
+| `jwall-engineering-infra-ci-apply` | `environment:prod` | Everything needed to manage this stack, see below |
+
+### Why the apply role is scoped the way it is
+
+The apply role is the highest-privilege identity in the setup because it creates IAM roles. It is constrained so that a compromised `prod` environment cannot escalate:
+
+- IAM actions are limited to roles and policies named `jwall-engineering-*` and to the GitHub OIDC provider. It cannot touch any other principal.
+- `iam:AttachRolePolicy` only accepts `ReadOnlyAccess` or a `jwall-engineering-*` customer-managed policy, so it cannot hand out `AdministratorAccess` to a role it creates.
+- S3 access is limited to the state bucket's configuration (no `DeleteBucket`) and to buckets named `jwall-engineering-*` or `<project>-*`.
+- Route 53 access is limited to the `jwall.engineering` zone. It cannot create or delete zones.
+- It carries `ReadOnlyAccess` so that refresh and drift detection work across the account.
+
+Both roles trust only the `jwallace145/jwall-engineering-infra` repository through the OIDC provider, with the audience pinned to `sts.amazonaws.com`.
+
+## Bootstrap (one time, run locally by the owner with admin credentials)
+
+The state bucket does not exist before the first apply, so the first apply uses local state and is then migrated into the bucket. An override file (gitignored) swaps the backend to `local` for step 1 only.
+
+1. **Apply with local state.**
+
+   ```sh
+   export AWS_PROFILE=<admin profile>   # us-east-1, account 650503560686
+   printf 'terraform {\n  backend "local" {}\n}\n' > backend_override.tf
+   terraform init
+   terraform plan -out=bootstrap.tfplan
+   ```
+
+   Review the plan. It should create the state bucket, the two CI roles, and the CAA record, and **import** the OIDC provider and the hosted zone. The only changes on the imported resources should be tags (both) and the zone comment. Then:
+
+   ```sh
+   terraform apply bootstrap.tfplan
+   ```
+
+2. **Migrate state into the bucket.** `backend.tf` and `backend/prod.hcl` are already in the repo.
+
+   ```sh
+   rm backend_override.tf
+   terraform init -backend-config=backend/prod.hcl -migrate-state
+   rm -f terraform.tfstate terraform.tfstate.backup bootstrap.tfplan
+   ```
+
+3. **Commit and push the initial scaffold.** This is the only direct push to `main`; every later change goes through a pull request.
+
+   ```sh
+   gh repo create jwallace145/jwall-engineering-infra --public --source=. --remote=origin --push
+   ```
+
+4. **Finish the hand-off** listed at the end of this file.
+
+Both import blocks stay in the code; Terraform ignores them once the resources are in state.
+
+## CI/CD
+
+**On pull requests** (`.github/workflows/ci.yml`):
+
+- `Commit messages`: commitlint over every commit in `base..head`
+- `PR title`: Conventional Commit check on the title
+- `Terraform fmt, validate, tflint`
+- `Terraform plan`: assumes the plan role through OIDC and posts the plan as a PR comment that is updated on every push
+
+**Releases and applies** (`.github/workflows/release-please.yml`, on push to `main`):
+
+Merges to `main` accumulate in a Release Please PR. Merging that PR creates a tag, and the `apply` job then checks out the tag, assumes the apply role in the `prod` GitHub environment, and runs `terraform apply`. Nothing is applied to AWS without that human merge.
+
+Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN`.
+
+## Local development
+
+```sh
+npm ci                                   # commitlint
+pre-commit install --hook-type commit-msg --hook-type pre-commit
+terraform init -backend=false
+terraform fmt -check -recursive && terraform validate
+tflint --init && tflint --recursive
+```
+
+A real plan needs AWS credentials and the remote backend: `terraform init -backend-config=backend/prod.hcl && terraform plan`.
+
+## Owner hand-off
+
+Not automated; these need the owner's credentials or the GitHub UI.
+
+**From the conventions:**
+
+- Add repository secrets `RELEASE_BOT_CLIENT_ID` and `RELEASE_BOT_PRIVATE_KEY` (the full `.pem` contents).
+- Install the `jwallace145-release-bot` GitHub App on this repo with Contents read/write and Pull requests read/write.
+- After the first pull request is merged, run `scripts/apply-repo-settings.sh` to set merge methods, auto-delete of head branches, and the `main` ruleset.
+
+**For this stack:**
+
+- Run the bootstrap steps above.
+- Create the GitHub `prod` environment with a deployment branch restriction to `main`.
+- Set repository variables from `terraform output`: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN` here, and each project's role ARNs and bucket name in that project's repo once the library modules are wired up.
+- Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`.
+- Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
+
+## License
+
+[MIT](LICENSE)

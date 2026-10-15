@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+# One run per PR; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+  AWS_REGION: us-east-1
+
+jobs:
+  commitlint:
+    name: Commit messages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Every commit in the PR range is checked, so rebase merges land
+          # only one-line Conventional Commits on main.
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Lint every commit in base..head
+        run: >-
+          npx commitlint
+          --from ${{ github.event.pull_request.base.sha }}
+          --to ${{ github.event.pull_request.head.sha }}
+          --verbose
+      - name: Unit test the only-coauthor-trailers rule
+        run: npm test
+
+  pr-title:
+    name: PR title
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # Squash merges use the PR title as the commit message, so it must be a
+      # valid Conventional Commit too.
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            chore
+            refactor
+            ci
+            build
+            perf
+            style
+            test
+            revert
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            The subject "{subject}" must start with a lowercase letter.
+
+  terraform-static:
+    name: Terraform fmt, validate, tflint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.14"
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+      - name: terraform init (no backend)
+        run: terraform init -backend=false
+      - name: terraform validate
+        run: terraform validate -no-color
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: latest
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --config "$GITHUB_WORKSPACE/.tflint.hcl" --recursive
+
+  terraform-plan:
+    name: Terraform plan
+    runs-on: ubuntu-latest
+    needs: [terraform-static]
+    permissions:
+      contents: read
+      id-token: write # assume the plan role through GitHub OIDC
+      pull-requests: write # post and update the plan comment
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.14"
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-plan-pr-${{ github.event.pull_request.number }}
+      - name: terraform init
+        run: terraform init -backend-config=backend/prod.hcl
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -no-color -lock-timeout=60s -out=tfplan -detailed-exitcode > plan.log 2>&1
+          code=$?
+          set -e
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          cat plan.log
+          # 0 = no changes, 2 = changes, anything else = error
+          [ "$code" -eq 0 ] || [ "$code" -eq 2 ]
+      - name: Build plan comment
+        if: always() && steps.plan.outcome != 'skipped'
+        run: |
+          {
+            if [ "${{ steps.plan.outputs.exitcode }}" = "0" ]; then
+              echo "### Terraform plan: no changes"
+            elif [ "${{ steps.plan.outputs.exitcode }}" = "2" ]; then
+              echo "### Terraform plan: changes pending"
+            else
+              echo "### Terraform plan: failed"
+            fi
+            echo
+            echo "Commit ${{ github.event.pull_request.head.sha }} · [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo
+            echo "<details><summary>Show plan</summary>"
+            echo
+            echo '```hcl'
+            # GitHub comments cap at 65536 chars; keep the tail, which holds the summary.
+            tail -c 60000 plan.log
+            echo '```'
+            echo
+            echo "</details>"
+          } > plan-comment.md
+      - name: Post plan comment (updated on each push)
+        if: always() && steps.plan.outcome != 'skipped'
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: terraform-plan
+          path: plan-comment.md
