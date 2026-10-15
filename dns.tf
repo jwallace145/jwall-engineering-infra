@@ -1,9 +1,6 @@
 # The jwall.engineering hosted zone. The zone itself is owned here; records
 # are owned by the project repos. The only records this stack manages are
 # zone-level ones (CAA). The module hard-codes prevent_destroy.
-#
-# The zone was adopted from the main site's Terraform during bootstrap and is
-# already in this stack's state.
 
 locals {
   zone_name = "jwall.engineering"

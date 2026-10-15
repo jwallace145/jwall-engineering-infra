@@ -51,7 +51,6 @@ Versions are pinned exactly, not with `~>`, because Terraform records provider v
 | `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
 | `dns.tf` | The hosted zone and its CAA record (`hosted-zone` module) |
 | `ci-roles.tf` | This repo's own plan and apply roles (`infra-ci-roles` module) |
-| `moved.tf` | State moves from the pre-0.4.0 raw resources into the modules; delete after a release has applied them |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket` and `site-ci-roles` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |
 | `docs/migration.md` | Legacy resources to retire after the move |
@@ -137,8 +136,6 @@ The state bucket does not exist before the first apply, so the first apply uses 
    ```
 
 4. **Finish the hand-off** listed at the end of this file.
-
-The zone was adopted with an import block during bootstrap; the block was removed once the zone was in state.
 
 ## CI/CD
 
