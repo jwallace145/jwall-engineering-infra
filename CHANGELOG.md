@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.1.2...v0.2.0) (2026-10-15)
+
+
+### Features
+
+* **iam:** migrate CI roles to the 0.6.0 per-role modules and managed policy catalog ([#19](https://github.com/jwallace145/jwall-engineering-infra/issues/19)) ([34d856b](https://github.com/jwallace145/jwall-engineering-infra/commit/34d856b6a25a983f9008bcca24919cadb07a7d56))
+
 ## [0.1.2](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.1.1...v0.1.2) (2026-10-15)
 
 
