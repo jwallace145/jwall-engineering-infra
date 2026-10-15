@@ -70,17 +70,3 @@ module "infra_ci_apply" {
     foundation = local.infra_ci.foundation
   }
 }
-
-# 0.6.0 replaced infra-ci-roles with one module per role. The roles keep their
-# names (and ARNs); their inline policies and the ReadOnlyAccess attachment are
-# destroyed and replaced by the managed policies above. Remove these blocks
-# once the move has been applied.
-moved {
-  from = module.infra_ci_roles.module.plan
-  to   = module.infra_ci_plan.module.role
-}
-
-moved {
-  from = module.infra_ci_roles.module.apply
-  to   = module.infra_ci_apply.module.role
-}
