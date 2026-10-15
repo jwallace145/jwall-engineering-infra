@@ -1,9 +1,9 @@
 # The jwall.engineering hosted zone. The zone itself is owned here; records
 # are owned by the project repos. The only records this stack manages are
-# zone-level ones (CAA).
+# zone-level ones (CAA). The module hard-codes prevent_destroy.
 #
-# The zone already exists (it was created by the main site's Terraform), so it
-# is adopted with an import block. Its ID is looked up by name.
+# The zone was adopted from the main site's Terraform during bootstrap and is
+# already in this stack's state.
 
 locals {
   zone_name = "jwall.engineering"
@@ -21,35 +21,12 @@ locals {
   ]
 }
 
-data "aws_route53_zone" "existing" {
-  name         = local.zone_name
-  private_zone = false
-}
+module "zone" {
+  source  = "jwallace145/jwall-engineering/aws//modules/hosted-zone"
+  version = "0.4.0"
 
-import {
-  to = aws_route53_zone.this
-  id = data.aws_route53_zone.existing.zone_id
-}
-
-resource "aws_route53_zone" "this" {
-  name    = local.zone_name
-  comment = "jwall-engineering: zone owned by ${local.context.repository}; records owned by project repos"
-
-  tags = {
-    Name      = "${local.name_prefix}-dns-zone"
-    Component = "dns"
-  }
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "aws_route53_record" "caa" {
-  zone_id = aws_route53_zone.this.zone_id
-  name    = local.zone_name
-  type    = "CAA"
-  ttl     = 300
-
-  records = [for issuer in local.caa_issuers : "0 issue \"${issuer}\""]
+  name        = local.zone_name
+  comment     = "jwall-engineering: zone owned by ${local.context.repository}; records owned by project repos"
+  caa_issuers = local.caa_issuers
+  name_tag    = "${local.name_prefix}-dns-zone"
 }

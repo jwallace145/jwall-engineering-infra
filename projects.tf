@@ -6,7 +6,7 @@
 # Modules come from the jwallace145/jwall-engineering/aws registry module,
 # pinned to an exact version in every block (module versions are not recorded
 # in .terraform.lock.hcl, so a range would not be reproducible). Dependabot
-# opens bump PRs; keep the three pins in context.tf and here identical.
+# opens bump PRs; keep every version pin in this repo identical.
 
 locals {
   # repository_id is the numeric GitHub ID (gh api repos/<owner>/<repo> --jq .id).
@@ -34,7 +34,7 @@ locals {
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.3.0"
+  version  = "0.4.0"
 
   project = each.key
 }
@@ -42,15 +42,15 @@ module "site_bucket" {
 module "site_ci_roles" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-ci-roles"
-  version  = "0.3.0"
+  version  = "0.4.0"
 
   project           = each.key
   repository        = each.value.repository
   owner_id          = local.github_owner_id
   repository_id     = each.value.repository_id
   bucket_arn        = module.site_bucket[each.key].arn
-  state_bucket_arn  = aws_s3_bucket.tfstate.arn
+  state_bucket_arn  = module.state_bucket.arn
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
-  zone_id           = aws_route53_zone.this.zone_id
+  zone_id           = module.zone.zone_id
   record_names      = local.project_record_names[each.key]
 }

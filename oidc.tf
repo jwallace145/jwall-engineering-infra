@@ -13,14 +13,9 @@
 #   2. Here, replace the data source with
 #        import { to = aws_iam_openid_connect_provider.github, id = <arn> }
 #        resource "aws_iam_openid_connect_provider" "github" { url = ..., client_id_list = ["sts.amazonaws.com"] }
-#      and restore the ManageGitHubOidcProvider statement in ci-roles.tf.
+#      and give the apply role (infra-ci-roles module) permission to manage it.
 #   3. Update README.md and docs/migration.md.
 
-locals {
-  github_oidc_host = "token.actions.githubusercontent.com"
-  github_oidc_url  = "https://${local.github_oidc_host}"
-}
-
 data "aws_iam_openid_connect_provider" "github" {
-  url = local.github_oidc_url
+  url = "https://token.actions.githubusercontent.com"
 }
