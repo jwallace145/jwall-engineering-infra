@@ -19,9 +19,10 @@ This stack is a consumer of [`jwallace145/jwall-engineering/aws`](https://regist
 | `//modules/context` | The tag set applied to every resource through `default_tags` | `context.tf` |
 | `//modules/tfstate-bucket` | The shared Terraform state bucket | `state.tf` |
 | `//modules/hosted-zone` | The `jwall.engineering` zone and its CAA record | `dns.tf` |
-| `//modules/infra-ci-roles` | This repo's plan and apply roles | `ci-roles.tf` |
+| `//modules/ci-plan-role` | Plan roles for this repo and each project, with read policies from the `ci-policies` catalog | `ci-roles.tf`, `projects.tf` |
+| `//modules/ci-preview-role` | Preview role per project, with `static-site/previews` | `projects.tf` |
+| `//modules/ci-apply-role` | Apply roles for this repo and each project, with read and write policies from the `ci-policies` catalog | `ci-roles.tf`, `projects.tf` |
 | `//modules/site-bucket` | One S3 bucket per project, `jwall-engineering-<project>` | `projects.tf` |
-| `//modules/site-ci-roles` | Plan, preview, and apply roles per project, trusted for that project's repository | `projects.tf` |
 
 The root module itself creates no resources directly. It is the composition: identity, the `projects` map, module calls, and outputs.
 
@@ -31,13 +32,13 @@ Module sources look like this, with an exact `version` on every block:
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.5.0"
+  version  = "0.6.0"
 
   project = each.key
 }
 ```
 
-Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The six pins (`context.tf`, `state.tf`, `dns.tf`, `ci-roles.tf`, and two in `projects.tf`) are always bumped together.
+Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The nine pins (`context.tf`, `state.tf`, `dns.tf`, two in `ci-roles.tf`, and four in `projects.tf`) are always bumped together.
 
 **Upgrading.** When the library publishes a release, Dependabot's Terraform ecosystem opens a `chore(deps)` PR bumping the pins. The CI plan comment on that PR shows exactly what the new version changes in AWS. Read the library's [CHANGELOG](https://github.com/jwallace145/terraform-aws-jwall-engineering/blob/main/CHANGELOG.md) entry, check the plan, merge, and the change applies with the next release of this repo. While the library is on `0.x`, a breaking change bumps the minor version and is marked `!` in its changelog.
 
@@ -50,8 +51,8 @@ Versions are pinned exactly, not with `~>`, because Terraform records provider v
 | `state.tf` | The shared state bucket (`tfstate-bucket` module) |
 | `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
 | `dns.tf` | The hosted zone and its CAA record (`hosted-zone` module) |
-| `ci-roles.tf` | This repo's own plan and apply roles (`infra-ci-roles` module) |
-| `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket` and `site-ci-roles` modules |
+| `ci-roles.tf` | This repo's own plan and apply roles (`ci-plan-role` and `ci-apply-role` modules) |
+| `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |
 | `docs/migration.md` | Legacy resources to retire after the move |
 | `scripts/apply-repo-settings.sh` | GitHub repository settings and the `main` ruleset |
@@ -76,10 +77,16 @@ For example this stack uses `project=infra/env=prod/infra-prod.tfstate`, and the
 | `cs-survival-guide` | `jwallace145/cs-survival-guide` | `survival-guide.jwall.engineering` |
 | `guitar-knowledge-base` | `jwallace145/guitar-knowledge-base` | `guitar.jwall.engineering` |
 
-Each entry is passed to the `site-bucket` and `site-ci-roles` submodules of the [registry module](#shared-modules-from-the-terraform-registry), which create:
+Each entry is passed to the `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` submodules of the [registry module](#shared-modules-from-the-terraform-registry), which create:
 
 - bucket `jwall-engineering-<key>` (versioned, encrypted, private, CloudFront-readable), and
-- roles `jwall-engineering-<key>-ci-plan`, `-ci-preview`, and `-ci-apply`, trusted for the project's repository and scoped to that bucket, to the state prefix `project=<key>/`, and to Route 53 changes for `<domain>`, `*.preview.<domain>`, and the ACM validation records those names need.
+- roles `jwall-engineering-<key>-ci-plan`, `-ci-preview`, and `-ci-apply`, trusted for the project's repository, each with managed policies from the library's `ci-policies` catalog scoped to that bucket, to the state prefix `project=<key>/`, and to Route 53 changes for `<domain>`, `*.preview.<domain>`, and the ACM validation records those names need:
+
+| Role | Trusted for | Policies |
+| --- | --- | --- |
+| `jwall-engineering-<key>-ci-plan` | `pull_request` | `tfstate/read`, `static-site/read` |
+| `jwall-engineering-<key>-ci-preview` | `pull_request` | `static-site/previews` |
+| `jwall-engineering-<key>-ci-apply` | `environment:prod` | `tfstate/write`, `static-site/read`, `static-site/deploy` |
 
 The zone itself is owned here; every other record is owned by the project repos. `terraform output projects` lists the bucket name and role ARNs per project.
 
@@ -87,18 +94,18 @@ The zone itself is owned here; every other record is owned by the project repos.
 
 | Role | Trusted for | Permissions |
 | --- | --- | --- |
-| `jwall-engineering-infra-ci-plan` | `pull_request` | `ReadOnlyAccess`, read of this stack's state key, write of its `.tflock` key only |
-| `jwall-engineering-infra-ci-apply` | `environment:prod` | Everything needed to manage this stack, see below |
+| `jwall-engineering-infra-ci-plan` | `pull_request` | `tfstate/read` (this stack's state key, write of its `.tflock` only), `foundation/read` |
+| `jwall-engineering-infra-ci-apply` | `environment:prod` | `tfstate/write`, `foundation/read`, `foundation/manage`: everything needed to manage this stack, see below |
 
 ### Why the apply role is scoped the way it is
 
-Both roles come from the `infra-ci-roles` module, which holds the full policy text and justification. In short, the apply role is the highest-privilege identity in the setup because it creates IAM roles, and it is constrained so that a compromised `prod` environment cannot escalate:
+The policies come from the library's `ci-policies` catalog, whose README holds the full policy text and justification. In short, the apply role is the highest-privilege identity in the setup because it creates IAM roles, and it is constrained so that a compromised `prod` environment cannot reach beyond the `jwall-engineering-*` namespace:
 
 - IAM actions are limited to roles and policies named `jwall-engineering-*`. It cannot touch any other principal, and it cannot modify the shared GitHub OIDC provider.
-- `iam:AttachRolePolicy` only accepts `ReadOnlyAccess` or a `jwall-engineering-*` customer-managed policy, so it cannot hand out `AdministratorAccess` to a role it creates.
-- S3 access is limited to the state bucket's configuration (no `DeleteBucket`) and to buckets named `jwall-engineering-*` or `<project>-*`.
+- `iam:AttachRolePolicy` only accepts a `jwall-engineering-*` customer-managed policy, so it cannot hand out `AdministratorAccess` to a role it creates. It can still edit the inline and customer-managed policies of `jwall-engineering-*` roles, itself included, so treat a compromise of `prod` as a compromise of the account.
+- S3 access is limited to the state bucket's configuration (no `DeleteBucket`) and to the `jwall-engineering-*` buckets themselves, never their objects. The state bucket matches that pattern, so object access would have exposed every project's state; the role reaches only this stack's own state through `tfstate/write`.
 - Route 53 access is limited to the `jwall.engineering` zone. It cannot create or delete zones.
-- It carries `ReadOnlyAccess` so that refresh and drift detection work across the account.
+- Neither role carries `ReadOnlyAccess`, which would grant `s3:GetObject` on every bucket, every project's state included. `foundation/read` grants the reads refresh and drift detection need for this stack.
 
 Both roles trust only the `jwallace145/jwall-engineering-infra` repository through the OIDC provider, with the audience pinned to `sts.amazonaws.com`.
 

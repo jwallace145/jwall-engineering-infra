@@ -34,23 +34,132 @@ locals {
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.5.0"
+  version  = "0.6.0"
 
   project = each.key
 }
 
-module "site_ci_roles" {
+# Each project's CI roles get their permissions as managed policies from the
+# library's ci-policies catalog. Plan only accepts read policies and preview
+# only static-site/previews, because both are assumable from any pull request.
+locals {
+  project_ci = {
+    for key, project in local.projects : key => {
+      tfstate = {
+        bucket_arn = module.state_bucket.arn
+        prefix     = "project=${key}/"
+      }
+      static_site = {
+        bucket_arn   = module.site_bucket[key].arn
+        zone_id      = module.zone.zone_id
+        record_names = local.project_record_names[key]
+      }
+    }
+  }
+}
+
+module "site_ci_plan" {
   for_each = local.projects
-  source   = "jwallace145/jwall-engineering/aws//modules/site-ci-roles"
-  version  = "0.5.0"
+  source   = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
+  version  = "0.6.0"
 
   project           = each.key
   repository        = each.value.repository
   owner_id          = local.github_owner_id
   repository_id     = each.value.repository_id
-  bucket_arn        = module.site_bucket[each.key].arn
-  state_bucket_arn  = module.state_bucket.arn
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
-  zone_id           = module.zone.zone_id
-  record_names      = local.project_record_names[each.key]
+
+  policies = ["tfstate/read", "static-site/read"]
+
+  policy_inputs = {
+    tfstate     = local.project_ci[each.key].tfstate
+    static_site = local.project_ci[each.key].static_site
+  }
+}
+
+module "site_ci_preview" {
+  for_each = local.projects
+  source   = "jwallace145/jwall-engineering/aws//modules/ci-preview-role"
+  version  = "0.6.0"
+
+  project           = each.key
+  repository        = each.value.repository
+  owner_id          = local.github_owner_id
+  repository_id     = each.value.repository_id
+  oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
+
+  policies = ["static-site/previews"]
+
+  policy_inputs = {
+    static_site = local.project_ci[each.key].static_site
+  }
+}
+
+module "site_ci_apply" {
+  for_each = local.projects
+  source   = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
+  version  = "0.6.0"
+
+  project           = each.key
+  repository        = each.value.repository
+  owner_id          = local.github_owner_id
+  repository_id     = each.value.repository_id
+  oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
+  environment       = "prod"
+
+  policies = ["tfstate/write", "static-site/read", "static-site/deploy"]
+
+  policy_inputs = {
+    tfstate     = local.project_ci[each.key].tfstate
+    static_site = local.project_ci[each.key].static_site
+  }
+}
+
+# 0.6.0 replaced site-ci-roles with one module per role. The roles keep their
+# names (and ARNs); their inline policies are destroyed and replaced by the
+# managed policies above. moved blocks cannot use for_each, so there is one
+# per project and role. Remove these blocks once the move has been applied.
+moved {
+  from = module.site_ci_roles["main-site"].module.role["plan"]
+  to   = module.site_ci_plan["main-site"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["main-site"].module.role["preview"]
+  to   = module.site_ci_preview["main-site"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["main-site"].module.role["apply"]
+  to   = module.site_ci_apply["main-site"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["cs-survival-guide"].module.role["plan"]
+  to   = module.site_ci_plan["cs-survival-guide"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["cs-survival-guide"].module.role["preview"]
+  to   = module.site_ci_preview["cs-survival-guide"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["cs-survival-guide"].module.role["apply"]
+  to   = module.site_ci_apply["cs-survival-guide"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["guitar-knowledge-base"].module.role["plan"]
+  to   = module.site_ci_plan["guitar-knowledge-base"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["guitar-knowledge-base"].module.role["preview"]
+  to   = module.site_ci_preview["guitar-knowledge-base"].module.role
+}
+
+moved {
+  from = module.site_ci_roles["guitar-knowledge-base"].module.role["apply"]
+  to   = module.site_ci_apply["guitar-knowledge-base"].module.role
 }
