@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.1.0...v0.1.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **tags:** set the Project tag to jwall-engineering-infra ([#14](https://github.com/jwallace145/jwall-engineering-infra/issues/14)) ([08655c2](https://github.com/jwallace145/jwall-engineering-infra/commit/08655c20481a13cb3004f369fc0884f1ef79f33d))
+
 ## 0.1.0 (2026-10-15)
 
 
