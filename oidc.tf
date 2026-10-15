@@ -13,7 +13,8 @@
 #   2. Here, replace the data source with
 #        import { to = aws_iam_openid_connect_provider.github, id = <arn> }
 #        resource "aws_iam_openid_connect_provider" "github" { url = ..., client_id_list = ["sts.amazonaws.com"] }
-#      and give the apply role (infra-ci-roles module) permission to manage it.
+#      and give the apply role (foundation/manage in the library's ci-policies
+#      catalog) permission to manage it.
 #   3. Update README.md and docs/migration.md.
 
 data "aws_iam_openid_connect_provider" "github" {

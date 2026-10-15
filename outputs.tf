@@ -25,12 +25,12 @@ output "github_oidc_provider_arn" {
 
 output "infra_ci_plan_role_arn" {
   description = "Role assumed by this repository's pull request plans (AWS_PLAN_ROLE_ARN)."
-  value       = module.infra_ci_roles.plan_role_arn
+  value       = module.infra_ci_plan.role_arn
 }
 
 output "infra_ci_apply_role_arn" {
   description = "Role assumed by this repository's release applies (AWS_APPLY_ROLE_ARN)."
-  value       = module.infra_ci_roles.apply_role_arn
+  value       = module.infra_ci_apply.role_arn
 }
 
 output "projects" {
@@ -41,9 +41,9 @@ output "projects" {
       domain           = project.domain
       record_names     = local.project_record_names[key]
       bucket_name      = module.site_bucket[key].name
-      plan_role_arn    = module.site_ci_roles[key].plan_role_arn
-      preview_role_arn = module.site_ci_roles[key].preview_role_arn
-      apply_role_arn   = module.site_ci_roles[key].apply_role_arn
+      plan_role_arn    = module.site_ci_plan[key].role_arn
+      preview_role_arn = module.site_ci_preview[key].role_arn
+      apply_role_arn   = module.site_ci_apply[key].role_arn
       hosted_zone_id   = module.zone.zone_id
     }
   }

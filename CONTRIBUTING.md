@@ -78,7 +78,7 @@ A plan that touches the imported hosted zone with anything other than tags needs
 
 ## Updating the shared modules
 
-The `context`, `tfstate-bucket`, `hosted-zone`, `infra-ci-roles`, `site-bucket`, and `site-ci-roles` modules come from the public Terraform Registry module [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws). Bump all six `version` pins together (`context.tf`, `state.tf`, `dns.tf`, `ci-roles.tf`, and two in `projects.tf`), run `terraform init -upgrade` locally, and open a `chore(deps)` PR. Dependabot does the same automatically. Review the library's changelog entry alongside the CI plan comment before merging. A change to a module's inputs or outputs belongs in the library repo, [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering), not here.
+The `context`, `tfstate-bucket`, `hosted-zone`, `site-bucket`, `ci-plan-role`, `ci-preview-role`, and `ci-apply-role` modules come from the public Terraform Registry module [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws). Bump all nine `version` pins together (`context.tf`, `state.tf`, `dns.tf`, two in `ci-roles.tf`, and four in `projects.tf`), run `terraform init -upgrade` locally, and open a `chore(deps)` PR. Dependabot does the same automatically. Review the library's changelog entry alongside the CI plan comment before merging. A change to a module's inputs or outputs belongs in the library repo, [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering), not here.
 
 ## Releases
 
