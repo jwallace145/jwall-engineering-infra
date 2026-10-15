@@ -1,26 +1,26 @@
-# GitHub Actions OIDC identity provider. The account already has one (the
-# main site's deploy roles trust it), so it is adopted rather than created.
-# Terraform ignores the import block once the resource is in state.
+# GitHub Actions OIDC identity provider.
+#
+# An account can hold only one IAM OIDC provider per URL, so every stack in
+# this account shares this one. It is currently owned by the prog-strength
+# infra stack (tagged ManagedBy=prog-strength-infra), so this stack only
+# references it. Sharing is safe: the provider grants nothing by itself, and
+# each role's trust policy restricts which repository/environment may assume
+# it.
+#
+# TODO(owner): move ownership of the provider into this stack. Steps:
+#   1. In prog-strength-infra, `terraform state rm` the provider and replace
+#      it with a data source like the one below.
+#   2. Here, replace the data source with
+#        import { to = aws_iam_openid_connect_provider.github, id = <arn> }
+#        resource "aws_iam_openid_connect_provider" "github" { url = ..., client_id_list = ["sts.amazonaws.com"] }
+#      and restore the ManageGitHubOidcProvider statement in ci-roles.tf.
+#   3. Update README.md and docs/migration.md.
 
 locals {
   github_oidc_host = "token.actions.githubusercontent.com"
   github_oidc_url  = "https://${local.github_oidc_host}"
 }
 
-import {
-  to = aws_iam_openid_connect_provider.github
-  id = "arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.github_oidc_host}"
-}
-
-resource "aws_iam_openid_connect_provider" "github" {
-  url            = local.github_oidc_url
-  client_id_list = ["sts.amazonaws.com"]
-
-  # AWS validates GitHub's tokens against its own trust store and ignores the
-  # thumbprint list; leaving it unset keeps the imported value as-is.
-
-  tags = {
-    Name      = "${local.name_prefix}-github-oidc"
-    Component = "github-oidc"
-  }
+data "aws_iam_openid_connect_provider" "github" {
+  url = local.github_oidc_url
 }

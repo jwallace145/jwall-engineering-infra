@@ -20,7 +20,7 @@ output "hosted_zone_name_servers" {
 
 output "github_oidc_provider_arn" {
   description = "ARN of the GitHub Actions OIDC identity provider."
-  value       = aws_iam_openid_connect_provider.github.arn
+  value       = data.aws_iam_openid_connect_provider.github.arn
 }
 
 output "infra_ci_plan_role_arn" {

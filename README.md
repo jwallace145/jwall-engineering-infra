@@ -3,7 +3,7 @@
 The foundation stack for every [jwall.engineering](https://jwall.engineering) site. It owns:
 
 - the shared Terraform state bucket `jwall-engineering-tfstate`
-- the GitHub Actions OIDC identity provider
+- a reference to the account's GitHub Actions OIDC identity provider (owned by prog-strength-infra for now)
 - the `jwall.engineering` Route 53 hosted zone (zone-level records only)
 - for each site in the `projects` registry, an S3 bucket and three CI roles
 - its own plan and apply CI roles
@@ -17,7 +17,7 @@ Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provi
 | `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the library's `context` module whose tags are applied through `default_tags` |
 | `backend.tf`, `backend/prod.hcl` | S3 backend with native lockfile locking (no DynamoDB) |
 | `state.tf` | The shared state bucket |
-| `oidc.tf` | GitHub OIDC provider (imported) |
+| `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
 | `dns.tf` | The hosted zone (imported) and its CAA record |
 | `ci-roles.tf` | This repo's own plan and apply roles |
 | `projects.tf` | The `projects` registry: one entry per site, each fed to the library's `site-bucket` and `site-ci-roles` modules |
@@ -63,7 +63,7 @@ The zone itself is owned here; every other record is owned by the project repos.
 
 The apply role is the highest-privilege identity in the setup because it creates IAM roles. It is constrained so that a compromised `prod` environment cannot escalate:
 
-- IAM actions are limited to roles and policies named `jwall-engineering-*` and to the GitHub OIDC provider. It cannot touch any other principal.
+- IAM actions are limited to roles and policies named `jwall-engineering-*`. It cannot touch any other principal, and it cannot modify the shared GitHub OIDC provider.
 - `iam:AttachRolePolicy` only accepts `ReadOnlyAccess` or a `jwall-engineering-*` customer-managed policy, so it cannot hand out `AdministratorAccess` to a role it creates.
 - S3 access is limited to the state bucket's configuration (no `DeleteBucket`) and to buckets named `jwall-engineering-*` or `<project>-*`.
 - Route 53 access is limited to the `jwall.engineering` zone. It cannot create or delete zones.
@@ -84,7 +84,7 @@ The state bucket does not exist before the first apply, so the first apply uses 
    terraform plan -out=bootstrap.tfplan
    ```
 
-   Review the plan. It should create the state bucket, this repo's two CI roles, the CAA record, the three project buckets and nine project CI roles, and **import** the OIDC provider and the hosted zone. The only changes on the imported resources should be tags (both) and the zone comment. Then:
+   Review the plan. It should create the state bucket, this repo's two CI roles, the CAA record, the three project buckets and nine project CI roles, and **import** the hosted zone. The only changes on the zone should be tags and its comment. The GitHub OIDC provider is read, not imported. Then:
 
    ```sh
    terraform apply bootstrap.tfplan
@@ -106,7 +106,7 @@ The state bucket does not exist before the first apply, so the first apply uses 
 
 4. **Finish the hand-off** listed at the end of this file.
 
-Both import blocks stay in the code; Terraform ignores them once the resources are in state.
+The zone's import block stays in the code; Terraform ignores it once the zone is in state.
 
 ## CI/CD
 

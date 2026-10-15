@@ -1,6 +1,6 @@
 # Migration: legacy resources to retire
 
-This stack adopts the account-wide pieces that `jwallace145/site` created first (the GitHub OIDC provider and the `jwall.engineering` hosted zone) and introduces a shared state bucket and per-project buckets and roles. The main site's current bucket and every existing per-project deploy role are **left untouched** by this repo. The owner retires them once each project has moved to the resources this stack provides.
+This stack adopts the `jwall.engineering` hosted zone that `jwallace145/site` created first and introduces a shared state bucket and per-project buckets and roles. The main site's current bucket and every existing per-project deploy role are **left untouched** by this repo. The owner retires them once each project has moved to the resources this stack provides.
 
 Inventory taken on 2026-10-14 from `jwallace145/site` (`infra/`) and its repository variables. AWS account `650503560686`, region `us-east-1`. Resource names follow that repo's `<name_prefix>-<domain>-<resource>` convention with `name_prefix = jwall-engineering-site`.
 
@@ -8,8 +8,11 @@ Inventory taken on 2026-10-14 from `jwallace145/site` (`infra/`) and its reposit
 
 | Resource | Identifier | Note |
 | --- | --- | --- |
-| GitHub OIDC provider | `arn:aws:iam::650503560686:oidc-provider/token.actions.githubusercontent.com` | Was created outside the site's Terraform (`github.create_oidc_provider = false`). Import adds tags only. |
 | Route 53 hosted zone | `jwall.engineering` (`module.dns[0].aws_route53_zone.this` in the site state) | Import changes tags and the zone comment. See "Hosted zone hand-over". |
+
+## Shared, not imported: the GitHub OIDC provider
+
+`arn:aws:iam::650503560686:oidc-provider/token.actions.githubusercontent.com` is the account's only GitHub OIDC provider (IAM allows one per URL) and is owned by the prog-strength infra stack (tagged `ManagedBy = prog-strength-infra`). This stack and the site repo reference it with data sources. Moving ownership here is a later task; the steps are in the TODO in `oidc.tf`.
 
 ## Legacy resources to retire
 
@@ -62,7 +65,7 @@ After bootstrap, the zone is in two Terraform states: this stack's and the site 
 
 ## Order of operations
 
-1. Bootstrap this stack (README). Imports the OIDC provider and zone; creates the state bucket, this repo's CI roles, the three project buckets and the nine project CI roles.
+1. Bootstrap this stack (README). Imports the zone; creates the state bucket, this repo's CI roles, the three project buckets and the nine project CI roles.
 2. Hand over the hosted zone (above).
 3. Move each project repo to its new bucket and roles, verify a deploy, then retire that project's legacy rows above.
 4. Migrate the site repo's state into the shared bucket (key `project=main-site/env=prod/main-site-prod.tfstate`), then retire `jwall-engineering-site-tfstate`.
