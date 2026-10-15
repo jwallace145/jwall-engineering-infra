@@ -38,7 +38,7 @@ module "site_ci_roles" {
   repository        = each.value.repository
   bucket_arn        = module.site_bucket[each.key].arn
   state_bucket_arn  = aws_s3_bucket.tfstate.arn
-  oidc_provider_arn = aws_iam_openid_connect_provider.github.arn
+  oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
   zone_id           = aws_route53_zone.this.zone_id
   record_names      = local.project_record_names[each.key]
 }

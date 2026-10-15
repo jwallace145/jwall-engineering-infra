@@ -64,7 +64,7 @@ The `commit-msg` hook runs commitlint on every commit; the `pre-commit` hook run
 | `Terraform fmt, validate, tflint` | `terraform fmt -check`, `terraform validate`, `tflint --recursive` |
 | `Terraform plan` | plan through the OIDC plan role, posted as a PR comment |
 
-A plan that touches an imported resource (the OIDC provider or the hosted zone) with anything other than tags needs a clear explanation in the PR.
+A plan that touches the imported hosted zone with anything other than tags needs a clear explanation in the PR.
 
 ## Releases
 

@@ -4,8 +4,8 @@
 #   jwall-engineering-infra-ci-apply  trusted for environment:prod  manages everything in this stack
 #
 # The apply role is the highest-privilege identity in the setup. Its IAM
-# permissions are restricted to roles and policies named jwall-engineering-*
-# and to the GitHub OIDC provider, and the managed policies it may attach are
+# permissions are restricted to roles and policies named jwall-engineering-*,
+# and the managed policies it may attach are
 # allow-listed, so a compromise of the prod environment cannot mint an
 # administrator. See README.md, "Why the apply role is scoped the way it is".
 
@@ -54,7 +54,7 @@ data "aws_iam_policy_document" "ci_plan_assume" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
     }
 
     condition {
@@ -79,7 +79,7 @@ data "aws_iam_policy_document" "ci_apply_assume" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
     }
 
     condition {
@@ -299,19 +299,8 @@ data "aws_iam_policy_document" "ci_apply" {
     resources = [local.managed_policy_arn]
   }
 
-  statement {
-    sid    = "ManageGitHubOidcProvider"
-    effect = "Allow"
-    actions = [
-      "iam:GetOpenIDConnectProvider",
-      "iam:TagOpenIDConnectProvider",
-      "iam:UntagOpenIDConnectProvider",
-      "iam:UpdateOpenIDConnectProviderThumbprint",
-      "iam:AddClientIDToOpenIDConnectProvider",
-      "iam:RemoveClientIDFromOpenIDConnectProvider",
-    ]
-    resources = [aws_iam_openid_connect_provider.github.arn]
-  }
+  # The GitHub OIDC provider is owned by prog-strength-infra (see oidc.tf), so
+  # this role only reads it (covered by ReadOnlyAccess).
 
   # --- Route 53: the jwall.engineering zone only ----------------------------
   statement {
