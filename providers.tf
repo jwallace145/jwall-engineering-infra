@@ -7,6 +7,3 @@ provider "aws" {
     tags = module.context.tags
   }
 }
-
-data "aws_caller_identity" "current" {}
-data "aws_partition" "current" {}

@@ -22,9 +22,6 @@ locals {
     repository_id = 1420037633
   }
 
-  account_id = data.aws_caller_identity.current.account_id
-  partition  = data.aws_partition.current.partition
-
   # Resource name prefix for this stack's own CI roles and Name tags. The
   # role names are fixed by convention (jwall-engineering-infra-ci-*), so this
   # is intentionally not module.context.name_prefix, which adds "-prod".
@@ -33,7 +30,7 @@ locals {
 
 module "context" {
   source  = "jwallace145/jwall-engineering/aws//modules/context"
-  version = "0.3.0"
+  version = "0.4.0"
 
   project      = local.context.project
   environment  = local.context.environment

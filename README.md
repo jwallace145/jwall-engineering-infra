@@ -17,8 +17,13 @@ This stack is a consumer of [`jwallace145/jwall-engineering/aws`](https://regist
 | Submodule | Used for | Where |
 | --- | --- | --- |
 | `//modules/context` | The tag set applied to every resource through `default_tags` | `context.tf` |
+| `//modules/tfstate-bucket` | The shared Terraform state bucket | `state.tf` |
+| `//modules/hosted-zone` | The `jwall.engineering` zone and its CAA record | `dns.tf` |
+| `//modules/infra-ci-roles` | This repo's plan and apply roles | `ci-roles.tf` |
 | `//modules/site-bucket` | One S3 bucket per project, `jwall-engineering-<project>` | `projects.tf` |
 | `//modules/site-ci-roles` | Plan, preview, and apply roles per project, trusted for that project's repository | `projects.tf` |
+
+The root module itself creates no resources directly. It is the composition: identity, the `projects` map, module calls, and outputs.
 
 Module sources look like this, with an exact `version` on every block:
 
@@ -26,13 +31,13 @@ Module sources look like this, with an exact `version` on every block:
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.3.0"
+  version  = "0.4.0"
 
   project = each.key
 }
 ```
 
-Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The three pins (one in `context.tf`, two in `projects.tf`) are always bumped together.
+Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The six pins (`context.tf`, `state.tf`, `dns.tf`, `ci-roles.tf`, and two in `projects.tf`) are always bumped together.
 
 **Upgrading.** When the library publishes a release, Dependabot's Terraform ecosystem opens a `chore(deps)` PR bumping the pins. The CI plan comment on that PR shows exactly what the new version changes in AWS. Read the library's [CHANGELOG](https://github.com/jwallace145/terraform-aws-jwall-engineering/blob/main/CHANGELOG.md) entry, check the plan, merge, and the change applies with the next release of this repo. While the library is on `0.x`, a breaking change bumps the minor version and is marked `!` in its changelog.
 
@@ -42,10 +47,11 @@ Versions are pinned exactly, not with `~>`, because Terraform records provider v
 | --- | --- |
 | `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the registry `context` module whose tags are applied through `default_tags` |
 | `backend.tf`, `backend/prod.hcl` | S3 backend with native lockfile locking (no DynamoDB) |
-| `state.tf` | The shared state bucket |
+| `state.tf` | The shared state bucket (`tfstate-bucket` module) |
 | `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
-| `dns.tf` | The hosted zone (imported) and its CAA record |
-| `ci-roles.tf` | This repo's own plan and apply roles |
+| `dns.tf` | The hosted zone and its CAA record (`hosted-zone` module) |
+| `ci-roles.tf` | This repo's own plan and apply roles (`infra-ci-roles` module) |
+| `moved.tf` | State moves from the pre-0.4.0 raw resources into the modules; delete after a release has applied them |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket` and `site-ci-roles` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |
 | `docs/migration.md` | Legacy resources to retire after the move |
@@ -87,7 +93,7 @@ The zone itself is owned here; every other record is owned by the project repos.
 
 ### Why the apply role is scoped the way it is
 
-The apply role is the highest-privilege identity in the setup because it creates IAM roles. It is constrained so that a compromised `prod` environment cannot escalate:
+Both roles come from the `infra-ci-roles` module, which holds the full policy text and justification. In short, the apply role is the highest-privilege identity in the setup because it creates IAM roles, and it is constrained so that a compromised `prod` environment cannot escalate:
 
 - IAM actions are limited to roles and policies named `jwall-engineering-*`. It cannot touch any other principal, and it cannot modify the shared GitHub OIDC provider.
 - `iam:AttachRolePolicy` only accepts `ReadOnlyAccess` or a `jwall-engineering-*` customer-managed policy, so it cannot hand out `AdministratorAccess` to a role it creates.
@@ -132,7 +138,7 @@ The state bucket does not exist before the first apply, so the first apply uses 
 
 4. **Finish the hand-off** listed at the end of this file.
 
-The zone's import block stays in the code; Terraform ignores it once the zone is in state.
+The zone was adopted with an import block during bootstrap; the block was removed once the zone was in state.
 
 ## CI/CD
 
