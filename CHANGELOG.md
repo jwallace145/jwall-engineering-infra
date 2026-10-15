@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.1.1...v0.1.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **iam:** bump jwall-engineering module to 0.5.0 ([#16](https://github.com/jwallace145/jwall-engineering-infra/issues/16)) ([f0cb9f3](https://github.com/jwallace145/jwall-engineering-infra/commit/f0cb9f3bccbd1829c843febaa3843bf36b48b441))
+
 ## [0.1.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.1.0...v0.1.1) (2026-10-15)
 
 
