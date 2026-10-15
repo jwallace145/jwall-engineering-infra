@@ -13,7 +13,10 @@ module "infra_ci_roles" {
   source  = "jwallace145/jwall-engineering/aws//modules/infra-ci-roles"
   version = "0.4.0"
 
-  project           = local.context.project
+  # Short role-name segment (jwall-engineering-infra-ci-plan/apply). Deliberately
+  # not local.context.project, which is the Project tag value; changing this
+  # renames and replaces the roles.
+  project           = "infra"
   name_root         = local.context.organization
   repository        = local.context.repository
   owner_id          = local.github.owner_id
