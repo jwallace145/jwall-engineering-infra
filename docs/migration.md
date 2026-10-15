@@ -31,9 +31,9 @@ destroyed, and the `production` and `preview` GitHub environments and the old
 ### CS Survival Guide and Guitar Knowledge Base
 
 Both are served by CloudFront from their own project repos. The Pages CNAMEs are gone and
-`letsencrypt.org` is no longer in the CAA issuer list. The only leftover is the
-`_github-pages-challenge-jwallace145.jwall.engineering` TXT domain-verification record,
-which no stack manages and can be deleted.
+`letsencrypt.org` is no longer in the CAA issuer list. The unmanaged
+`_github-pages-challenge-jwallace145.jwall.engineering` TXT domain-verification record was
+deleted by hand.
 
 ## Hosted zone hand-over
 
