@@ -32,7 +32,8 @@ locals {
 }
 
 module "context" {
-  source = "git::https://github.com/jwallace145/terraform-library.git//modules/context?ref=v0.1.0"
+  source  = "jwallace145/jwall-engineering/aws//modules/context"
+  version = "0.2.0"
 
   project      = local.context.project
   environment  = local.context.environment

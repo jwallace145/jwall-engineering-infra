@@ -3,7 +3,10 @@
 # CI roles (jwall-engineering-<key>-ci-{plan,preview,apply}) scoped to its
 # repository, bucket, state prefix and DNS names.
 #
-# Modules come from terraform-library, pinned to a release tag.
+# Modules come from the jwallace145/jwall-engineering/aws registry module,
+# pinned to an exact version in every block (module versions are not recorded
+# in .terraform.lock.hcl, so a range would not be reproducible). Dependabot
+# opens bump PRs; keep the three pins in context.tf and here identical.
 
 locals {
   projects = {
@@ -25,14 +28,16 @@ locals {
 
 module "site_bucket" {
   for_each = local.projects
-  source   = "git::https://github.com/jwallace145/terraform-library.git//modules/site-bucket?ref=v0.1.0"
+  source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
+  version  = "0.2.0"
 
   project = each.key
 }
 
 module "site_ci_roles" {
   for_each = local.projects
-  source   = "git::https://github.com/jwallace145/terraform-library.git//modules/site-ci-roles?ref=v0.1.0"
+  source   = "jwallace145/jwall-engineering/aws//modules/site-ci-roles"
+  version  = "0.2.0"
 
   project           = each.key
   repository        = each.value.repository
