@@ -25,7 +25,7 @@ site repo's old stack (`jwall-engineering-site-*` buckets, CloudFront distributi
 certificates, deploy, plan and preview roles, budget and the `www` record) was
 destroyed, and the `production` and `preview` GitHub environments and the old
 `AWS_ROLE_ARN`, `S3_BUCKET` and `AWS_REGION` variables were deleted. The old state bucket
-`jwall-engineering-site-tfstate` is superseded by `jwall-engineering-tfstate`, key
+`jwall-engineering-site-tfstate` was deleted; state now lives in `jwall-engineering-tfstate`, key
 `project=main-site/env=prod/main-site-prod.tfstate`.
 
 ### CS Survival Guide and Guitar Knowledge Base
