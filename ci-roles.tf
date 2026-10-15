@@ -15,7 +15,19 @@ locals {
     apply = "${local.name_prefix}-ci-apply"
   }
 
-  github_subject_prefix = "repo:${local.context.repository}"
+  # GitHub can issue the `sub` claim in two shapes: the classic
+  # repo:<owner>/<name> and the immutable repo:<owner>@<id>/<name>@<id>. Trust
+  # both so the roles keep working whichever setting the repository uses.
+  github_owner = split("/", local.context.repository)[0]
+  github_name  = split("/", local.context.repository)[1]
+
+  github_subject_prefixes = [
+    "repo:${local.context.repository}",
+    "repo:${local.github_owner}@${local.github.owner_id}/${local.github_name}@${local.github.repository_id}",
+  ]
+
+  plan_subjects  = [for p in local.github_subject_prefixes : "${p}:pull_request"]
+  apply_subjects = [for p in local.github_subject_prefixes : "${p}:environment:prod"]
 
   # Buckets the apply role may fully manage. The site-bucket module names
   # buckets jwall-engineering-<project>, so one pattern covers every project
@@ -66,7 +78,7 @@ data "aws_iam_policy_document" "ci_plan_assume" {
     condition {
       test     = "StringEquals"
       variable = "${local.github_oidc_host}:sub"
-      values   = ["${local.github_subject_prefix}:pull_request"]
+      values   = local.plan_subjects
     }
   }
 }
@@ -91,7 +103,7 @@ data "aws_iam_policy_document" "ci_apply_assume" {
     condition {
       test     = "StringEquals"
       variable = "${local.github_oidc_host}:sub"
-      values   = ["${local.github_subject_prefix}:environment:prod"]
+      values   = local.apply_subjects
     }
   }
 }

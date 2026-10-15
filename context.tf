@@ -13,6 +13,15 @@ locals {
     owner        = "jwallace145"
   }
 
+  # Numeric GitHub IDs for the immutable OIDC subject form
+  # (repo:<owner>@<owner_id>/<name>@<repo_id>:...), which GitHub issues when
+  # "use immutable subject" is on for the repository (the default for new
+  # repos). Look up with: gh api repos/<owner>/<repo> --jq '{id, owner_id: .owner.id}'
+  github = {
+    owner_id      = 35950238
+    repository_id = 1420037633
+  }
+
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
 
