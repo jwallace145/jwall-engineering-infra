@@ -34,7 +34,7 @@ locals {
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.4.0"
+  version  = "0.5.0"
 
   project = each.key
 }
@@ -42,7 +42,7 @@ module "site_bucket" {
 module "site_ci_roles" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-ci-roles"
-  version  = "0.4.0"
+  version  = "0.5.0"
 
   project           = each.key
   repository        = each.value.repository
