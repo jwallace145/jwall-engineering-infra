@@ -11,7 +11,7 @@
 
 module "infra_ci_roles" {
   source  = "jwallace145/jwall-engineering/aws//modules/infra-ci-roles"
-  version = "0.4.0"
+  version = "0.5.0"
 
   # Short role-name segment (jwall-engineering-infra-ci-plan/apply). Deliberately
   # not local.context.project, which is the Project tag value; changing this
