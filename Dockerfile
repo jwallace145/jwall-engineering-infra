@@ -7,7 +7,10 @@
 
 ARG PYTHON_VERSION=3.13
 ARG UV_VERSION=0.11.15
-# UV_VERSION is re-declared in the build stage; ARGs before the first FROM are global defaults only.
+
+# uv is copied out of its release image; `COPY --from` cannot expand variables,
+# so the image gets a named stage.
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 # --- stage 1: Terraform binary, verified against HashiCorp's checksums ---------
 FROM debian:bookworm-slim AS terraform
@@ -25,8 +28,7 @@ RUN curl -fsSLO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/t
 
 # --- stage 2: the Python package and the vendored stack -------------------------
 FROM python:${PYTHON_VERSION}-slim-bookworm AS build
-ARG UV_VERSION
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /usr/local/bin/
+COPY --from=uv /uv /uvx /usr/local/bin/
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 WORKDIR /src
 COPY pyproject.toml uv.lock README.md ./
