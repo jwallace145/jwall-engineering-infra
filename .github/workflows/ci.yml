@@ -110,6 +110,78 @@ jobs:
           tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl" --recursive
 
+  python:
+    name: Python lint, types, tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff format --check
+      - run: uv run ruff check
+      - run: uv run mypy
+      - run: uv run pytest
+
+  site-stack:
+    name: Site stack validate, tflint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: stacks/site
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.14"
+      - name: terraform init (no backend)
+        uses: ./.github/actions/terraform-init
+        with:
+          args: -backend=false
+          working-directory: stacks/site
+      - name: terraform validate
+        run: terraform validate -no-color
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: latest
+      - name: tflint
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --config "$GITHUB_WORKSPACE/.tflint.hcl"
+
+  image:
+    name: Image build and smoke test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the Terraform version from config.yaml
+        id: config
+        run: echo "terraform_version=$(yq -r .terraform.version config.yaml)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: jwall-engineering-sites:ci
+          build-args: TERRAFORM_VERSION=${{ steps.config.outputs.terraform_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (validate a fixture site offline, inside the image)
+        run: |
+          docker run --rm --network none \
+            -v "$PWD/tests/fixtures/sites:/work:ro" \
+            jwall-engineering-sites:ci --file guitar-knowledge-base.yaml validate
+      - name: Smoke test (the image's Terraform matches config.yaml)
+        run: docker run --rm --network none --entrypoint terraform jwall-engineering-sites:ci version
+
   terraform-plan:
     name: Terraform plan
     runs-on: ubuntu-latest

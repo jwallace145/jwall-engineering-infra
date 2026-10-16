@@ -10,6 +10,42 @@ The foundation stack for every [jwall.engineering](https://jwall.engineering) si
 
 Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. The shared building blocks are consumed from the public Terraform Registry, see [Shared modules](#shared-modules-from-the-terraform-registry). Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
 
+## jwall-engineering-sites: the sites CLI
+
+`jwall-engineering-sites` is the Python CLI (Typer, managed with `uv`) that
+provisions and publishes every site from one YAML file in its repository,
+`jwall-engineering-sites.yaml`. It wraps Terraform and S3: it renders the
+bundled site stack in `stacks/site/` from that file and `config.yaml`, runs
+`terraform` against the shared state bucket, syncs built content and
+invalidates CloudFront. Site repositories keep no Terraform. It ships as a
+versioned image in the private ECR repository `jwall-engineering-sites`,
+published by the release workflow, and site repositories run it through the
+reusable workflows this repository publishes. The design is in
+[#26](https://github.com/jwallace145/jwall-engineering-infra/pull/26).
+
+| Command | Role it expects | What it does |
+| --- | --- | --- |
+| `validate` | none | Validate both files, render the stack, `terraform validate` offline |
+| `plan` | `ci-plan` | Plan with the derived backend; writes the plan comment and `changes=true\|false` |
+| `preview deploy --pr N --dist DIR`, `preview remove --pr N` | `ci-preview` | Publish or remove `previews/pr-N/` |
+| `apply` | `ci-apply` | Init, plan, apply, write `outputs.json` |
+| `publish --dist DIR [--environment prod\|dev]` | `ci-apply` | Sync content and invalidate the distribution |
+| `release --dist DIR` | `ci-apply` | `apply` then `publish` |
+| `outputs`, `config show` | `ci-plan` / none | Stack outputs as JSON; the effective tool configuration |
+
+Every command checks that the credentials are the role it expects, that the
+built site and bucket exist, and that the Terraform in the image is the
+version `config.yaml` pins, before touching anything. Failures exit 1
+(Terraform or AWS), 2 (configuration) or 3 (preflight). Run artifacts and a
+debug log go to `./.jwall-engineering-sites/`.
+
+```sh
+uv sync                                  # the CLI and its dev tools
+uv run jwall-engineering-sites --help
+uv run ruff check && uv run mypy && uv run pytest
+docker build --build-arg "TERRAFORM_VERSION=$(yq -r .terraform.version config.yaml)" -t jwall-engineering-sites:local .
+```
+
 ## Shared modules from the Terraform Registry
 
 This stack is a consumer of [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws), the jwall-engineering module library published to the public Terraform Registry from [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering). The library is open source under MIT, versioned with semver, and released with the same Release Please flow as this repo. Consuming it here, the same way any third party would, is deliberate: the foundation stack eats its own dog food, so the modules are exercised in production before anyone else depends on them.
@@ -59,6 +95,10 @@ is being added here ([design](https://github.com/jwallace145/jwall-engineering-i
 | `dns.tf` | The hosted zone and its CAA record (`hosted-zone` module) |
 | `ci-roles.tf` | This repo's own plan and apply roles (`ci-plan-role` and `ci-apply-role` modules) |
 | `ecr.tf` | The ECR repository for the sites CLI image, configured from `config.yaml` at the repository root |
+| `config.yaml` (root) | Tool configuration for the sites CLI and the foundation stack: Terraform version, library pin, state bucket, DNS zone, ECR lifecycle, sync headers |
+| `src/jwall_engineering_sites/`, `tests/`, `pyproject.toml` | The sites CLI, its tests and its `uv` project |
+| `stacks/site/` | The site stack the CLI renders for each site, pinned to the library like any consumer |
+| `Dockerfile` | The CLI image: a pinned Terraform, the stack with modules and providers vendored, `config.yaml` |
 | `.github/actions/terraform-init` | `terraform init` with a retry for the registry's lag after a library release |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |

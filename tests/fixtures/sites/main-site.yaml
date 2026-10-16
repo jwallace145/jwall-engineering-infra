@@ -1,0 +1,18 @@
+version: 1
+project: main-site
+repository: jwallace145/site
+domain: jwall.engineering
+
+tags:
+  Organization: jwall-engineering
+  Project: main-site
+  Environment: prod
+  Repository: jwallace145/site
+  ManagedBy: terraform
+  Owner: jwallace145
+  CostCenter: personal # an extra tag, passed through
+
+site:
+  output_dir: dist
+  immutable_paths:
+    - "_astro/**"

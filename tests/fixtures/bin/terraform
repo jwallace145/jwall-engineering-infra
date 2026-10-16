@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# A fake terraform for tests: records every invocation, emits canned output.
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_TF_LOG:?}"
+case "$1" in
+  version) printf '{"terraform_version":"%s"}\n' "${FAKE_TF_VERSION:-1.14.7}" ;;
+  init) echo "Terraform has been successfully initialized!" ;;
+  validate) echo "Success! The configuration is valid." ;;
+  plan)
+    if [ "${FAKE_TF_LOCKED:-0}" = "1" ]; then
+      echo "Error: Error acquiring the state lock"
+      echo "Lock Info:"
+      echo "  ID:        1234"
+      echo "  Who:       someone@host"
+      echo "  Created:   2026-10-16 00:00:00 UTC"
+      exit 1
+    fi
+    echo "Plan: ${FAKE_TF_PLAN_SUMMARY:-0 to add, 0 to change, 0 to destroy.}"
+    exit "${FAKE_TF_PLAN_EXIT:-0}" ;;
+  apply) echo "Apply complete! Resources: 1 added, 0 changed, 0 destroyed." ;;
+  output) cat "${FAKE_TF_OUTPUTS:?}" ;;
+  *) echo "fake terraform: unknown command $1" >&2; exit 64 ;;
+esac
