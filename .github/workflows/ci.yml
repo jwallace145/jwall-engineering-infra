@@ -106,6 +106,8 @@ jobs:
         with:
           tflint_version: latest
       - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin downloads hit the unauthenticated API limit on shared runners
         run: |
           tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl" --recursive
@@ -150,6 +152,8 @@ jobs:
         with:
           tflint_version: latest
       - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin downloads hit the unauthenticated API limit on shared runners
         run: |
           tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl"

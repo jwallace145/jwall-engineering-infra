@@ -28,6 +28,10 @@ RUN curl -fsSLO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/t
 
 # --- stage 2: the Python package and the vendored stack -------------------------
 FROM python:${PYTHON_VERSION}-slim-bookworm AS build
+# git: the registry serves GitHub-hosted modules as git:: sources, which
+# terraform init clones.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /uvx /usr/local/bin/
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 WORKDIR /src
