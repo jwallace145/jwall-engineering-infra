@@ -178,6 +178,14 @@ project: guitar-knowledge-base            # bucket, roles, state key and tags de
 repository: jwallace145/guitar-knowledge-base
 domain: guitar.jwall.engineering
 
+tags:                                     # applied to every resource through default_tags
+  Organization: jwall-engineering         # these six are required and checked against the
+  Project: guitar-knowledge-base          # fields above; extra keys are allowed and passed
+  Environment: prod                       # through unchanged
+  Repository: jwallace145/guitar-knowledge-base
+  ManagedBy: terraform
+  Owner: jwallace145
+
 site:
   output_dir: site                        # built by the repository's CI, handed over as an artifact
   immutable_paths: []                     # e.g. ["_astro/**"]: hashed assets, cached for a year
@@ -200,6 +208,7 @@ Validation (Pydantic, unknown keys rejected, errors name the file and field):
 | `site.output_dir` | relative path, no `..` |
 | `site.immutable_paths` | glob patterns relative to `output_dir` |
 | `preview.enabled` | bool, default `true` |
+| `tags` | required map. The six required keys must all be present (`Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`); `Organization` must equal `context.organization`, `Project` must equal `project`, `Environment` must be `prod`, `Repository` must equal `repository`, `ManagedBy` must be `terraform`. Extra keys are allowed. Missing or mismatched required tags fail fast with exit code 2, before any AWS call. |
 
 Derived values (never configurable in the site file):
 
@@ -209,7 +218,7 @@ Derived values (never configurable in the site file):
 | CI roles | `<context.organization>-<project>-ci-{plan,preview,apply}` |
 | State key | `state.key_template` with `environment = prod` |
 | Preview prefix and URL | `previews/pr-<n>/`, `https://pr-<n>.preview.<domain>/` |
-| Tags | from the `context` module inside the stack, with `environment = prod` |
+| Tags | `tags` from the site file, passed to the stack's `default_tags`; the stack's `tags` variable validates the six required keys again, so Terraform enforces them even if the CLI is bypassed |
 
 The file is read from the working directory; `--file` overrides the path.
 
@@ -217,9 +226,12 @@ The file is read from the working directory; `--file` overrides the path.
 
 What the three `infra/` directories are today, with every site-specific
 value turned into a variable: `project`, `repository`, `domain_name`,
-`dev_domain_name`, `enable_preview`, `zone_id`, `organization`, `owner`. It
-calls `module "context"` and the library root module, both pinned to
-`library.version`. `backend "s3" {}` is empty; the CLI supplies the backend
+`dev_domain_name`, `enable_preview`, `zone_id` and `tags`. `tags` feeds the
+provider's `default_tags` directly and carries a validation that the six
+required keys are present, so the stack enforces the tagging contract on its
+own. It calls the library root module, pinned to `library.version`; the
+`context` module is no longer needed because the site file states the tags
+explicitly. `backend "s3" {}` is empty; the CLI supplies the backend
 configuration. Its outputs are what the CLI needs: `bucket_name`,
 `prod_url`, `prod_distribution_id`, `dev_url`, `dev_distribution_id`,
 `preview_url_pattern`, `preview_distribution_id`.
