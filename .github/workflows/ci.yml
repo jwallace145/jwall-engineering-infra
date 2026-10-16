@@ -107,7 +107,7 @@ jobs:
           tflint_version: latest
       - name: tflint
         run: |
-          tflint --init
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl" --recursive
 
   terraform-plan:
