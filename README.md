@@ -23,6 +23,7 @@ This stack is a consumer of [`jwallace145/jwall-engineering/aws`](https://regist
 | `//modules/ci-preview-role` | Preview role per project, with `static-site/previews` | `projects.tf` |
 | `//modules/ci-apply-role` | Apply roles for this repo and each project, with read and write policies from the `ci-policies` catalog | `ci-roles.tf`, `projects.tf` |
 | `//modules/site-bucket` | One S3 bucket per project, `jwall-engineering-<project>` | `projects.tf` |
+| `//modules/ecr-repository` | The private repository for the `jwall-engineering-sites` CLI image, configured from `config.yaml` | `ecr.tf` |
 
 The root module itself creates no resources directly. It is the composition: identity, the `projects` map, module calls, and outputs.
 
@@ -32,13 +33,13 @@ Module sources look like this, with an exact `version` on every block:
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.7.0"
+  version  = "0.8.1"
 
   project = each.key
 }
 ```
 
-Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The nine pins (`context.tf`, `state.tf`, `dns.tf`, two in `ci-roles.tf`, and four in `projects.tf`) are always bumped together.
+Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The ten pins (`context.tf`, `state.tf`, `dns.tf`, `ecr.tf`, two in `ci-roles.tf`, and four in `projects.tf`) are always bumped together, and so is `library.version` in `config.yaml`.
 
 **Upgrading.** When the library publishes a release, Dependabot's Terraform ecosystem opens a `chore(deps)` PR bumping the pins. The CI plan comment on that PR shows exactly what the new version changes in AWS. Read the library's [CHANGELOG](https://github.com/jwallace145/terraform-aws-jwall-engineering/blob/main/CHANGELOG.md) entry, check the plan, merge, and the change applies with the next release of this repo. While the library is on `0.x`, a breaking change bumps the minor version and is marked `!` in its changelog.
 
@@ -52,6 +53,7 @@ Versions are pinned exactly, not with `~>`, because Terraform records provider v
 | `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
 | `dns.tf` | The hosted zone and its CAA record (`hosted-zone` module) |
 | `ci-roles.tf` | This repo's own plan and apply roles (`ci-plan-role` and `ci-apply-role` modules) |
+| `ecr.tf`, `config.yaml` | The ECR repository for the sites CLI image, and the tool configuration it and the CLI read |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |
 | `docs/migration.md` | Legacy resources to retire after the move |
@@ -89,9 +91,9 @@ Each entry is passed to the `site-bucket`, `ci-plan-role`, `ci-preview-role` and
 
 | Role | Trusted for | Policies |
 | --- | --- | --- |
-| `jwall-engineering-<key>-ci-plan` | `pull_request` | `tfstate/read`, `static-site/read` |
-| `jwall-engineering-<key>-ci-preview` | `pull_request` | `static-site/previews` |
-| `jwall-engineering-<key>-ci-apply` | `environment:prod` | `tfstate/write`, `static-site/read`, `static-site/deploy` |
+| `jwall-engineering-<key>-ci-plan` | `pull_request` | `tfstate/read`, `static-site/read`, `ecr/pull` |
+| `jwall-engineering-<key>-ci-preview` | `pull_request` | `static-site/previews`, `ecr/pull` |
+| `jwall-engineering-<key>-ci-apply` | `environment:prod` | `tfstate/write`, `static-site/read`, `static-site/deploy`, `ecr/pull` |
 
 The zone itself is owned here; every other record is owned by the project repos. `terraform output projects` lists the bucket name and role ARNs per project.
 
@@ -100,7 +102,7 @@ The zone itself is owned here; every other record is owned by the project repos.
 | Role | Trusted for | Permissions |
 | --- | --- | --- |
 | `jwall-engineering-infra-ci-plan` | `pull_request` | `tfstate/read` (this stack's state key, write of its `.tflock` only), `foundation/read` |
-| `jwall-engineering-infra-ci-apply` | `environment:prod` | `tfstate/write`, `foundation/read`, `foundation/manage`: everything needed to manage this stack, see below |
+| `jwall-engineering-infra-ci-apply` | `environment:prod` | `tfstate/write`, `foundation/read`, `foundation/manage`: everything needed to manage this stack, see below; `ecr/push` for the sites CLI image |
 
 ### Why the apply role is scoped the way it is
 

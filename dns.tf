@@ -18,7 +18,7 @@ locals {
 
 module "zone" {
   source  = "jwallace145/jwall-engineering/aws//modules/hosted-zone"
-  version = "0.7.0"
+  version = "0.8.1"
 
   name        = local.zone_name
   comment     = "jwall-engineering: zone owned by ${local.context.repository}; records owned by project repos"

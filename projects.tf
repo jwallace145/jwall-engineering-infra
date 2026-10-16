@@ -34,7 +34,7 @@ locals {
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.7.0"
+  version  = "0.8.1"
 
   project = each.key
 
@@ -54,6 +54,7 @@ module "site_bucket" {
 # Each project's CI roles get their permissions as managed policies from the
 # library's ci-policies catalog. Plan only accepts read policies and preview
 # only static-site/previews, because both are assumable from any pull request.
+# Every role also pulls the jwall-engineering-sites CLI image (ecr/pull).
 locals {
   project_ci = {
     for key, project in local.projects : key => {
@@ -69,6 +70,9 @@ locals {
         zone_id      = module.zone.zone_id
         record_names = local.project_record_names[key]
       }
+      ecr = {
+        repository_arn = module.sites_image.arn
+      }
     }
   }
 }
@@ -76,7 +80,7 @@ locals {
 module "site_ci_plan" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version  = "0.7.0"
+  version  = "0.8.1"
 
   project           = each.key
   repository        = each.value.repository
@@ -84,18 +88,19 @@ module "site_ci_plan" {
   repository_id     = each.value.repository_id
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
 
-  policies = ["tfstate/read", "static-site/read"]
+  policies = ["tfstate/read", "static-site/read", "ecr/pull"]
 
   policy_inputs = {
     tfstate     = local.project_ci[each.key].tfstate
     static_site = local.project_ci[each.key].static_site
+    ecr         = local.project_ci[each.key].ecr
   }
 }
 
 module "site_ci_preview" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-preview-role"
-  version  = "0.7.0"
+  version  = "0.8.1"
 
   project           = each.key
   repository        = each.value.repository
@@ -103,17 +108,18 @@ module "site_ci_preview" {
   repository_id     = each.value.repository_id
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
 
-  policies = ["static-site/previews"]
+  policies = ["static-site/previews", "ecr/pull"]
 
   policy_inputs = {
     static_site = local.project_ci[each.key].static_site
+    ecr         = local.project_ci[each.key].ecr
   }
 }
 
 module "site_ci_apply" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version  = "0.7.0"
+  version  = "0.8.1"
 
   project           = each.key
   repository        = each.value.repository
@@ -122,11 +128,12 @@ module "site_ci_apply" {
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
   environment       = "prod"
 
-  policies = ["tfstate/write", "static-site/read", "static-site/deploy"]
+  policies = ["tfstate/write", "static-site/read", "static-site/deploy", "ecr/pull"]
 
   policy_inputs = {
     tfstate     = local.project_ci[each.key].tfstate
     static_site = local.project_ci[each.key].static_site
+    ecr         = local.project_ci[each.key].ecr
   }
 }
 

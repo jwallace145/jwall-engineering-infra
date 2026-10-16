@@ -1,0 +1,45 @@
+# Tool-level configuration for jwall-engineering-sites, the CLI that provisions
+# and publishes the sites. One top-level knob for everything about how the tool
+# runs, as opposed to what one site is (that lives in each site repository's
+# jwall-engineering-sites.yaml). The foundation stack reads the `ecr` section
+# with yamldecode; the CLI reads the whole file. Design:
+# https://github.com/jwallace145/jwall-engineering-infra/pull/26
+
+tool:
+  log_level: info # JES_LOG_LEVEL overrides, for local debugging
+  log_format: console # json in CI
+
+terraform:
+  version: 1.14.7
+  lock_timeout: 120s
+  plan_timeout: 15m
+
+library:
+  source: jwallace145/jwall-engineering/aws
+  version: 0.8.1 # the one module pin the whole fleet of sites shares
+
+state:
+  bucket: jwall-engineering-tfstate
+  region: us-east-1
+  key_template: project={project}/env={environment}/{project}-{environment}.tfstate
+
+context:
+  organization: jwall-engineering
+  owner: jwallace145
+
+dns:
+  zone: jwall.engineering
+  zone_id: Z029546536VUFGDCPXZ21
+
+ecr:
+  repository: jwall-engineering-sites
+  keep_release_images: 20
+  expire_untagged_after_days: 7
+
+sync:
+  cache_control: public, max-age=3600
+  preview_cache_control: public, max-age=300
+  immutable_cache_control: public, max-age=31536000, immutable
+
+plan:
+  comment_max_bytes: 60000
