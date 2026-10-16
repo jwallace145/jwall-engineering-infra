@@ -1,7 +1,7 @@
 # This repository's own CI roles, assumed by GitHub Actions through OIDC.
 #
 #   jwall-engineering-infra-ci-plan   trusted for pull_request      tfstate/read, foundation/read
-#   jwall-engineering-infra-ci-apply  trusted for environment:prod  tfstate/write, foundation/read, foundation/manage
+#   jwall-engineering-infra-ci-apply  trusted for environment:prod  tfstate/write, foundation/read, foundation/manage, ecr/push
 #
 # Each role gets its permissions as managed policies from the library's
 # ci-policies catalog, built for this stack. The plan role only accepts read
@@ -29,12 +29,17 @@ locals {
       state_bucket_arn = module.state_bucket.arn
       hosted_zone_arn  = module.zone.arn
     }
+
+    # The sites CLI image this repo publishes on release.
+    ecr = {
+      repository_arn = module.sites_image.arn
+    }
   }
 }
 
 module "infra_ci_plan" {
   source  = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version = "0.7.0"
+  version = "0.8.1"
 
   project           = local.infra_ci.project
   name_root         = local.context.organization
@@ -53,7 +58,7 @@ module "infra_ci_plan" {
 
 module "infra_ci_apply" {
   source  = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version = "0.7.0"
+  version = "0.8.1"
 
   project           = local.infra_ci.project
   name_root         = local.context.organization
@@ -63,10 +68,11 @@ module "infra_ci_apply" {
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
   environment       = "prod"
 
-  policies = ["tfstate/write", "foundation/read", "foundation/manage"]
+  policies = ["tfstate/write", "foundation/read", "foundation/manage", "ecr/push"]
 
   policy_inputs = {
     tfstate    = local.infra_ci.tfstate
     foundation = local.infra_ci.foundation
+    ecr        = local.infra_ci.ecr
   }
 }
