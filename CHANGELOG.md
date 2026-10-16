@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.4.0...v0.5.0) (2026-10-16)
+
+
+### Features
+
+* **ecr:** add the jwall-engineering-sites repository and ECR policies ([#27](https://github.com/jwallace145/jwall-engineering-infra/issues/27)) ([de0df48](https://github.com/jwallace145/jwall-engineering-infra/commit/de0df4857e61f99e39059c1b7dfbde45b4066e45))
+
 ## [0.4.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.3.0...v0.4.0) (2026-10-16)
 
 
