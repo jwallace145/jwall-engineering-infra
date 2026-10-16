@@ -19,8 +19,10 @@ locals {
 
   # Break-glass principals exempt from the hardened bucket policies on the
   # state bucket and every site bucket. The apply role must be here: it
-  # applies those policies. Being exempt grants nothing by itself.
+  # applies those policies. The root user is here so the owner can browse the
+  # buckets in the console. Being exempt grants nothing by itself.
   bucket_admin_principal_arns = [
+    "arn:aws:iam::650503560686:root",
     "arn:aws:iam::650503560686:user/prog-strength-admin",
     module.infra_ci_apply.role_arn,
   ]
