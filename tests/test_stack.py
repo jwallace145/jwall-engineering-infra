@@ -79,7 +79,7 @@ def _terraform(site: Site, settings: Settings, logger: logging.Logger) -> Terraf
 
 
 def test_prepare_writes_inputs_into_a_copy(
-    guitar: Site, settings: Settings, logger: logging.Logger
+    guitar: Site, settings: Settings, logger: logging.Logger, fake_terraform: Path
 ) -> None:
     terraform = _terraform(guitar, settings, logger)
     workdir = terraform.prepare()
@@ -219,7 +219,11 @@ def test_missing_stack_is_a_run_error(
 
 
 def test_failed_run_keeps_workdir_when_asked(
-    guitar: Site, settings: Settings, logger: logging.Logger, monkeypatch: pytest.MonkeyPatch
+    guitar: Site,
+    settings: Settings,
+    logger: logging.Logger,
+    fake_terraform: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JES_KEEP_WORKDIR", "1")
     terraform = _terraform(guitar, settings, logger)

@@ -7,6 +7,7 @@
 
 ARG PYTHON_VERSION=3.13
 ARG UV_VERSION=0.11.15
+# UV_VERSION is re-declared in the build stage; ARGs before the first FROM are global defaults only.
 
 # --- stage 1: Terraform binary, verified against HashiCorp's checksums ---------
 FROM debian:bookworm-slim AS terraform
@@ -23,7 +24,9 @@ RUN curl -fsSLO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/t
     && chmod 0755 terraform
 
 # --- stage 2: the Python package and the vendored stack -------------------------
-FROM ghcr.io/astral-sh/uv:${UV_VERSION}-python${PYTHON_VERSION}-bookworm-slim AS build
+FROM python:${PYTHON_VERSION}-slim-bookworm AS build
+ARG UV_VERSION
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /usr/local/bin/
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 WORKDIR /src
 COPY pyproject.toml uv.lock README.md ./
