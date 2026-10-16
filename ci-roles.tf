@@ -34,7 +34,7 @@ locals {
 
 module "infra_ci_plan" {
   source  = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version = "0.6.0"
+  version = "0.7.0"
 
   project           = local.infra_ci.project
   name_root         = local.context.organization
@@ -53,7 +53,7 @@ module "infra_ci_plan" {
 
 module "infra_ci_apply" {
   source  = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version = "0.6.0"
+  version = "0.7.0"
 
   project           = local.infra_ci.project
   name_root         = local.context.organization

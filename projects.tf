@@ -34,9 +34,21 @@ locals {
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.6.0"
+  version  = "0.7.0"
 
   project = each.key
+
+  # Hardened bucket policy: only the project's apply role writes prod/ and
+  # dev/, only its preview role writes previews/, and only the break-glass
+  # admins (state.tf) write anything else or change the bucket's
+  # configuration. Reads are unrestricted; the content is public through
+  # CloudFront.
+  admin_principal_arns = local.bucket_admin_principal_arns
+  prefix_writers = {
+    "prod/"     = [module.site_ci_apply[each.key].role_arn]
+    "dev/"      = [module.site_ci_apply[each.key].role_arn]
+    "previews/" = [module.site_ci_preview[each.key].role_arn]
+  }
 }
 
 # Each project's CI roles get their permissions as managed policies from the
@@ -50,7 +62,10 @@ locals {
         prefix     = "project=${key}/"
       }
       static_site = {
-        bucket_arn   = module.site_bucket[key].arn
+        # Built from the bucket's fixed name, not module.site_bucket[key].arn:
+        # each site bucket's policy names these roles, so reading the bucket
+        # module here would be a dependency cycle.
+        bucket_arn   = "arn:aws:s3:::jwall-engineering-${key}"
         zone_id      = module.zone.zone_id
         record_names = local.project_record_names[key]
       }
@@ -61,7 +76,7 @@ locals {
 module "site_ci_plan" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version  = "0.6.0"
+  version  = "0.7.0"
 
   project           = each.key
   repository        = each.value.repository
@@ -80,7 +95,7 @@ module "site_ci_plan" {
 module "site_ci_preview" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-preview-role"
-  version  = "0.6.0"
+  version  = "0.7.0"
 
   project           = each.key
   repository        = each.value.repository
@@ -98,7 +113,7 @@ module "site_ci_preview" {
 module "site_ci_apply" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version  = "0.6.0"
+  version  = "0.7.0"
 
   project           = each.key
   repository        = each.value.repository
@@ -112,5 +127,17 @@ module "site_ci_apply" {
   policy_inputs = {
     tfstate     = local.project_ci[each.key].tfstate
     static_site = local.project_ci[each.key].static_site
+  }
+}
+
+# local.project_ci builds each site bucket ARN from the bucket's name to avoid
+# a dependency cycle. Flag it if that ever drifts from the module's output.
+check "site_bucket_arns_match" {
+  assert {
+    condition = alltrue([
+      for key, project in local.projects :
+      module.site_bucket[key].arn == local.project_ci[key].static_site.bucket_arn
+    ])
+    error_message = "local.project_ci builds a site bucket ARN that differs from module.site_bucket's arn; the CI role policies would point at the wrong bucket."
   }
 }
