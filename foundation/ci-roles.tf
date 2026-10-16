@@ -32,7 +32,7 @@ locals {
 
     # The sites CLI image this repo publishes on release.
     ecr = {
-      repository_arn = module.sites_image.arn
+      repository_arn = local.sites_image_repository_arn
     }
   }
 }

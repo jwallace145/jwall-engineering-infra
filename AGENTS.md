@@ -24,7 +24,7 @@ This repository is Terraform for the jwall-engineering foundation stack (state b
 
 ```sh
 terraform fmt -recursive
-terraform init -backend=false && terraform validate
+(cd foundation && terraform init -backend=false && terraform validate)
 tflint --init && tflint --recursive
 npm ci && npm test
 ```

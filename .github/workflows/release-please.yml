@@ -55,6 +55,9 @@ jobs:
     permissions:
       contents: read
       id-token: write # assume the apply role through GitHub OIDC
+    defaults:
+      run:
+        working-directory: foundation
     steps:
       - uses: actions/checkout@v7
         with:
@@ -69,7 +72,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-apply-${{ needs.release-please.outputs.tag_name }}
       - name: terraform init
-        run: terraform init -backend-config=backend/prod.hcl
+        uses: ./.github/actions/terraform-init
+        with:
+          args: -backend-config=backend/prod.hcl
       - name: terraform plan
         run: terraform plan -no-color -lock-timeout=120s -out=tfplan
       - name: terraform apply

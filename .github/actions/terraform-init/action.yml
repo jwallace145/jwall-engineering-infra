@@ -1,0 +1,40 @@
+name: terraform init
+description: >-
+  Runs `terraform init` and retries when the Terraform Registry has not yet
+  published a pinned module version. Registry replicas lag a library release
+  by a few minutes, and a PR opened in that window fails with "Unresolvable
+  module version constraint" until it is re-run.
+
+inputs:
+  args:
+    description: Extra arguments for `terraform init`, for example `-backend=false`.
+    required: false
+    default: ""
+  working-directory:
+    description: Directory that holds the Terraform configuration.
+    required: false
+    default: foundation
+
+runs:
+  using: composite
+  steps:
+    - name: terraform init (retrying registry lag)
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INIT_ARGS: ${{ inputs.args }}
+      run: |
+        for attempt in 1 2 3 4 5; do
+          # shellcheck disable=SC2086
+          if terraform init -input=false $INIT_ARGS 2>&1 | tee init.log; then
+            rm -f init.log
+            exit 0
+          fi
+          if ! grep -q 'Unresolvable module version constraint' init.log; then
+            exit 1
+          fi
+          echo "::warning::The registry has not published the pinned module version yet; retrying in 30s ($attempt/5)"
+          sleep 30
+        done
+        echo "::error::terraform init failed: the pinned module version is still unavailable after 5 attempts"
+        exit 1

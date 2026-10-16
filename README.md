@@ -45,6 +45,11 @@ Versions are pinned exactly, not with `~>`, because Terraform records provider v
 
 ## Layout
 
+The foundation Terraform stack lives in `foundation/`; every `.tf` path below
+is relative to it. The repository root holds `config.yaml`, the tool
+configuration shared by the stack and the `jwall-engineering-sites` CLI that
+is being added here ([design](https://github.com/jwallace145/jwall-engineering-infra/pull/26)).
+
 | Path | Owns |
 | --- | --- |
 | `versions.tf`, `providers.tf`, `context.tf` | Terraform and provider constraints, region, identity, and the registry `context` module whose tags are applied through `default_tags` |
@@ -53,7 +58,8 @@ Versions are pinned exactly, not with `~>`, because Terraform records provider v
 | `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
 | `dns.tf` | The hosted zone and its CAA record (`hosted-zone` module) |
 | `ci-roles.tf` | This repo's own plan and apply roles (`ci-plan-role` and `ci-apply-role` modules) |
-| `ecr.tf`, `config.yaml` | The ECR repository for the sites CLI image, and the tool configuration it and the CLI read |
+| `ecr.tf` | The ECR repository for the sites CLI image, configured from `config.yaml` at the repository root |
+| `.github/actions/terraform-init` | `terraform init` with a retry for the registry's lag after a library release |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` modules |
 | `outputs.tf` | Values the project repos and this repo's CI consume |
 | `docs/migration.md` | Legacy resources to retire after the move |
@@ -123,6 +129,7 @@ The state bucket does not exist before the first apply, so the first apply uses 
 1. **Apply with local state.**
 
    ```sh
+   cd foundation
    export AWS_PROFILE=<admin profile>   # us-east-1, account 650503560686
    printf 'terraform {\n  backend "local" {}\n}\n' > backend_override.tf
    terraform init
@@ -171,12 +178,13 @@ Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AW
 ```sh
 npm ci                                   # commitlint
 pre-commit install --hook-type commit-msg --hook-type pre-commit
-terraform init -backend=false
-terraform fmt -check -recursive && terraform validate
-tflint --init && tflint --recursive
+terraform fmt -check -recursive          # from the repository root
+cd foundation
+terraform init -backend=false && terraform validate
+tflint --init && tflint --config ../.tflint.hcl --recursive
 ```
 
-A real plan needs AWS credentials and the remote backend: `terraform init -backend-config=backend/prod.hcl && terraform plan`.
+A real plan needs AWS credentials and the remote backend, from `foundation/`: `terraform init -backend-config=backend/prod.hcl && terraform plan`.
 
 ## Owner hand-off
 

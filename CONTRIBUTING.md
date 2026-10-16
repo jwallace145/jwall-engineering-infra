@@ -59,7 +59,7 @@ Requirements: Terraform `>= 1.11`, [tflint](https://github.com/terraform-linters
 ```sh
 npm ci
 pre-commit install --hook-type commit-msg --hook-type pre-commit
-terraform init -backend=false
+cd foundation && terraform init -backend=false
 tflint --init
 ```
 
