@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.3.0...v0.4.0) (2026-10-16)
+
+
+### Features
+
+* **s3:** exempt the root user from the hardened bucket policies ([#24](https://github.com/jwallace145/jwall-engineering-infra/issues/24)) ([6b831b2](https://github.com/jwallace145/jwall-engineering-infra/commit/6b831b21b043e39a07e024eb1625609de508a367))
+
 ## [0.3.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.2.0...v0.3.0) (2026-10-16)
 
 
