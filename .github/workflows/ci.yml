@@ -85,6 +85,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    defaults:
+      run:
+        working-directory: foundation
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
@@ -92,8 +95,11 @@ jobs:
           terraform_version: "~1.14"
       - name: terraform fmt -check
         run: terraform fmt -check -recursive -diff
+        working-directory: .
       - name: terraform init (no backend)
-        run: terraform init -backend=false
+        uses: ./.github/actions/terraform-init
+        with:
+          args: -backend=false
       - name: terraform validate
         run: terraform validate -no-color
       - uses: terraform-linters/setup-tflint@v6
@@ -101,7 +107,7 @@ jobs:
           tflint_version: latest
       - name: tflint
         run: |
-          tflint --init
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl" --recursive
 
   terraform-plan:
@@ -112,6 +118,9 @@ jobs:
       contents: read
       id-token: write # assume the plan role through GitHub OIDC
       pull-requests: write # post and update the plan comment
+    defaults:
+      run:
+        working-directory: foundation
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
@@ -124,7 +133,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-plan-pr-${{ github.event.pull_request.number }}
       - name: terraform init
-        run: terraform init -backend-config=backend/prod.hcl
+        uses: ./.github/actions/terraform-init
+        with:
+          args: -backend-config=backend/prod.hcl
       - name: terraform plan
         id: plan
         run: |
@@ -164,4 +175,4 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: terraform-plan
-          path: plan-comment.md
+          path: foundation/plan-comment.md

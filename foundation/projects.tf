@@ -71,7 +71,7 @@ locals {
         record_names = local.project_record_names[key]
       }
       ecr = {
-        repository_arn = module.sites_image.arn
+        repository_arn = local.sites_image_repository_arn
       }
     }
   }
