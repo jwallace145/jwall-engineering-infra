@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.2.0...v0.3.0) (2026-10-16)
+
+
+### Features
+
+* **s3:** harden the state and site bucket policies with library 0.7.0 ([#22](https://github.com/jwallace145/jwall-engineering-infra/issues/22)) ([d7cca1c](https://github.com/jwallace145/jwall-engineering-infra/commit/d7cca1c6d7fb1201900ac8eee49a050cc53b8bf8))
+
 ## [0.2.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.1.2...v0.2.0) (2026-10-15)
 
 
