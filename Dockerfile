@@ -41,7 +41,8 @@ WORKDIR /src
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
-RUN uv sync --locked --no-dev
+# --no-editable: an editable install points at /src, which the runtime stage does not have.
+RUN uv sync --locked --no-dev --no-editable
 
 COPY --from=terraform /tmp/terraform/terraform /usr/local/bin/terraform
 COPY stacks/site /opt/jwall-engineering-sites/stacks/site
