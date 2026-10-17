@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.5.0...v0.6.0) (2026-10-17)
+
+
+### Features
+
+* **cli:** add the jwall-engineering-sites package, site stack and image ([#30](https://github.com/jwallace145/jwall-engineering-infra/issues/30)) ([a53824f](https://github.com/jwallace145/jwall-engineering-infra/commit/a53824f6fc5f3638bb346971947dabd47f0c777a))
+
+
+### Bug Fixes
+
+* **cli:** read the package version from __init__.py so release PRs keep uv.lock valid ([#35](https://github.com/jwallace145/jwall-engineering-infra/issues/35)) ([05f9cf8](https://github.com/jwallace145/jwall-engineering-infra/commit/05f9cf857816a27b207234123a0de9bb32114101))
+
 ## [0.5.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.4.0...v0.5.0) (2026-10-16)
 
 
