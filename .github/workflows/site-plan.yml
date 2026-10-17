@@ -29,15 +29,21 @@ jobs:
       pull-requests: write # the sticky plan comment
     steps:
       - uses: actions/checkout@v7
+      - name: Check out jwall-engineering-infra at this workflow's own commit
+        uses: actions/checkout@v7
+        with:
+          repository: jwallace145/jwall-engineering-infra
+          ref: ${{ github.job_workflow_sha }}
+          path: .jwall-engineering-infra
       - name: validate
-        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        uses: ./.jwall-engineering-infra/.github/actions/jwall-engineering-sites
         with:
           command: validate
           role-arn: ${{ inputs.plan-role-arn }}
           debug: ${{ inputs.debug }}
       - name: plan
         id: plan
-        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        uses: ./.jwall-engineering-infra/.github/actions/jwall-engineering-sites
         with:
           command: plan
           role-arn: ${{ inputs.plan-role-arn }}

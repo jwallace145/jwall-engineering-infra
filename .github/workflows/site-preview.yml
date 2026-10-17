@@ -34,13 +34,19 @@ jobs:
       pull-requests: write # the sticky preview comment
     steps:
       - uses: actions/checkout@v7
+      - name: Check out jwall-engineering-infra at this workflow's own commit
+        uses: actions/checkout@v7
+        with:
+          repository: jwallace145/jwall-engineering-infra
+          ref: ${{ github.job_workflow_sha }}
+          path: .jwall-engineering-infra
       - uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.artifact }}
           path: .jwall-engineering-sites-dist
       - name: preview deploy
         id: deploy
-        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        uses: ./.jwall-engineering-infra/.github/actions/jwall-engineering-sites
         with:
           command: preview deploy --pr ${{ github.event.pull_request.number }} --dist .jwall-engineering-sites-dist
           role-arn: ${{ inputs.preview-role-arn }}
@@ -70,8 +76,14 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
+      - name: Check out jwall-engineering-infra at this workflow's own commit
+        uses: actions/checkout@v7
+        with:
+          repository: jwallace145/jwall-engineering-infra
+          ref: ${{ github.job_workflow_sha }}
+          path: .jwall-engineering-infra
       - name: preview remove
-        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        uses: ./.jwall-engineering-infra/.github/actions/jwall-engineering-sites
         with:
           command: preview remove --pr ${{ github.event.pull_request.number }}
           role-arn: ${{ inputs.preview-role-arn }}
