@@ -7,6 +7,7 @@ The foundation stack for every [jwall.engineering](https://jwall.engineering) si
 - the `jwall.engineering` Route 53 hosted zone (zone-level records only)
 - for each site in the `projects` registry, an S3 bucket and three CI roles
 - its own plan and apply CI roles
+- the `jwall-engineering-sites` CLI that every site repository's CI runs to plan, preview, apply and publish, its image in a private ECR repository, and the reusable workflows that run it
 
 Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. The shared building blocks are consumed from the public Terraform Registry, see [Shared modules](#shared-modules-from-the-terraform-registry). Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
 
@@ -128,9 +129,9 @@ Versions are pinned exactly, not with `~>`, because Terraform records provider v
 ## Layout
 
 The foundation Terraform stack lives in `foundation/`; every `.tf` path below
-is relative to it. The repository root holds `config.yaml`, the tool
-configuration shared by the stack and the `jwall-engineering-sites` CLI that
-is being added here ([design](https://github.com/jwallace145/jwall-engineering-infra/pull/26)).
+is relative to it. The repository root holds the `jwall-engineering-sites`
+CLI and `config.yaml`, the tool configuration shared by the stack and the CLI
+([design](https://github.com/jwallace145/jwall-engineering-infra/pull/26)).
 
 | Path | Owns |
 | --- | --- |
@@ -250,12 +251,16 @@ The state bucket does not exist before the first apply, so the first apply uses 
 
 - `Commit messages`: commitlint over every commit in `base..head`
 - `PR title`: Conventional Commit check on the title
-- `Terraform fmt, validate, tflint`
-- `Terraform plan`: assumes the plan role through OIDC and posts the plan as a PR comment that is updated on every push
+- `Terraform fmt, validate, tflint` (`foundation/`) and `Site stack validate, tflint` (`stacks/site/`)
+- `Terraform plan`: assumes the plan role through OIDC and posts the foundation plan as a PR comment that is updated on every push
+- `Python lint, types, tests`: ruff, mypy and pytest for the sites CLI
+- `Image build and smoke test`: builds the CLI image, runs `validate` inside it offline, checks its Terraform version and enforces the compressed-size budget
 
-**Releases and applies** (`.github/workflows/release-please.yml`, on push to `main`):
+Every `terraform init` goes through `.github/actions/terraform-init`, which retries the registry's few-minute lag after a library release.
 
-Merges to `main` accumulate in a Release Please PR. Merging that PR creates a tag, and the `apply` job then checks out the tag, assumes the apply role in the `prod` GitHub environment, and runs `terraform apply`. Nothing is applied to AWS without that human merge.
+**Releases, applies and the image** (`.github/workflows/release-please.yml`, on push to `main`):
+
+Merges to `main` accumulate in a Release Please PR. Merging that PR creates a tag; the `apply` job checks out the tag, assumes the apply role in the `prod` GitHub environment and runs `terraform apply`; then the `image` job, also in `prod`, builds the CLI image and pushes it to ECR as `jwall-engineering-sites:<tag>`. Nothing is applied to AWS without that human merge. The release bumps the package version in `src/jwall_engineering_sites/__init__.py` and the image tag the composite action runs (`.github/actions/jwall-engineering-sites/action.yml`); the reusable workflows carry no version, since they use the action from their own commit. `workflow_dispatch` with a `tag` re-publishes the image for an existing release.
 
 Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN`.
 

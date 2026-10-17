@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 from jwall_engineering_sites import __version__
 from tests.conftest import REPO_ROOT
 
@@ -78,3 +80,15 @@ def test_workflows_use_the_action_from_their_own_commit() -> None:
         assert "ref: ${{ github.job_workflow_sha }}" in text, name
         assert LOCAL_ACTION in text, name
         assert "jwall-engineering-sites@v" not in text, f"{name} pins the action by tag"
+
+
+def test_site_stack_pins_the_configured_library_version() -> None:
+    """stacks/site pins the library like any consumer; config.yaml names the same version."""
+    config = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    main_tf = (REPO_ROOT / "stacks" / "site" / "main.tf").read_text()
+    match = re.search(
+        r'source\s*=\s*"jwallace145/jwall-engineering/aws"\s*\n\s*version\s*=\s*"([\d.]+)"', main_tf
+    )
+    assert match, "stacks/site/main.tf must pin the library root module"
+    assert match.group(1) == config["library"]["version"]
+    assert config["library"]["source"] == "jwallace145/jwall-engineering/aws"

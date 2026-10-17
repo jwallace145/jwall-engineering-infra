@@ -79,14 +79,15 @@ A plan that touches the imported hosted zone with anything other than tags needs
 
 ## Updating the shared modules
 
-The `context`, `tfstate-bucket`, `hosted-zone`, `site-bucket`, `ci-plan-role`, `ci-preview-role`, and `ci-apply-role` modules come from the public Terraform Registry module [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws). Bump all ten `version` pins together (`context.tf`, `state.tf`, `dns.tf`, `ecr.tf`, two in `ci-roles.tf`, and four in `projects.tf`) and `library.version` in `config.yaml`, run `terraform init -upgrade` locally, and open a `chore(deps)` PR. Dependabot does the same automatically. Review the library's changelog entry alongside the CI plan comment before merging. A change to a module's inputs or outputs belongs in the library repo, [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering), not here.
+The `context`, `tfstate-bucket`, `hosted-zone`, `site-bucket`, `ci-plan-role`, `ci-preview-role`, and `ci-apply-role` modules come from the public Terraform Registry module [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws). Bump all eleven `version` pins together (`context.tf`, `state.tf`, `dns.tf`, `ecr.tf`, two in `ci-roles.tf`, four in `projects.tf`, all under `foundation/`, and `stacks/site/main.tf`) and `library.version` in `config.yaml` (a test checks that `stacks/site` and `config.yaml` agree), run `terraform init -upgrade` locally, and open a `chore(deps)` PR. Dependabot does the same automatically. Review the library's changelog entry alongside the CI plan comment before merging. A change to a module's inputs or outputs belongs in the library repo, [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering), not here.
 
 ## Releases
 
 Release Please opens and maintains a release PR as changes land on `main`. Merging that PR:
 
-1. tags a new version (starting at `v0.1.0`) and updates `CHANGELOG.md`;
-2. triggers the `apply` job, which checks out the tag, assumes the apply role in the `prod` environment, and runs `terraform apply`.
+1. tags a new version (starting at `v0.1.0`), updates `CHANGELOG.md`, and bumps the sites CLI version in `src/jwall_engineering_sites/__init__.py` and the image tag in `.github/actions/jwall-engineering-sites/action.yml` (the `x-release-please-version` annotations; keep them, and never add one under `.github/workflows/`, which the release bot cannot commit to);
+2. triggers the `apply` job, which checks out the tag, assumes the apply role in the `prod` environment, and runs `terraform apply`;
+3. triggers the `image` job, which builds the CLI image and pushes `jwall-engineering-sites:<tag>` to ECR. Site repositories then receive a Dependabot PR bumping their reusable workflow refs to the new tag.
 
 Merging the release PR is the deliberate act that changes AWS. Merge it when the accumulated plan is what you want applied. Release PRs are authored by `jwallace145-release-bot[bot]` so that CI runs on them.
 
