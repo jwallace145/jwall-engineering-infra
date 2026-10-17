@@ -503,3 +503,45 @@ Terraform must see nothing to do.
 - Publishing the CLI to a public package index.
 - A `dev` environment workflow (`publish --environment dev` exists, but no
   reusable workflow calls it yet).
+
+## Implementation notes (2026-10-17)
+
+The rollout followed the table above; these are the deviations and findings
+worth knowing when reading the code.
+
+- **No credential-free `validate` job.** Pulling the private image needs ECR
+  credentials, so `site-plan.yml` has one `plan` job that runs `validate`
+  then `plan` as the plan role. Callers skip it on `edited` events.
+- **No version literals in the reusable workflows.** The release bot's app
+  token cannot commit under `.github/workflows/`, and a `.yml` extra-file
+  given as a plain string gets Release Please's `$.version` updater. Each
+  reusable workflow instead checks this repository out at
+  `github.job_workflow_sha` and uses the composite action from that
+  checkout; only `action.yml` carries the image tag, registered with the
+  `generic` updater. Role ARNs are explicit inputs.
+- **Dynamic package version.** `uv.lock` records the project's own version,
+  so a release PR that bumped `pyproject.toml` failed `uv sync --locked`. The
+  version lives in `__init__.py` (hatchling, `dynamic = ["version"]`).
+- **Image size.** 494 MB compressed at first; 234 MB after removing the
+  unpacked providers that `terraform init` leaves beside the packed mirror,
+  dropping `git`, `pip` and bytecode, pruning botocore to `s3`, `sts` and
+  `cloudfront`, using `typer-slim`, and building on Alpine. CI enforces a
+  250 MB compressed budget. The AWS provider archive (~155 MB) is the floor.
+- **Cache headers.** `sync.html_cache_control` (`public, max-age=0,
+  must-revalidate`) applies to pages in prod and previews; `immutable_paths`
+  win; other assets keep `cache_control`. This reproduces what the Astro
+  site did by hand and improves the Zensical sites.
+- **Site tags are explicit.** `jwall-engineering-sites.yaml` requires the six
+  tags; the CLI cross-checks them and the stack's `tags` variable validates
+  them again. The `context` module is no longer used by the site stack.
+- **Release ordering.** The ECR repository is created only after the apply
+  role's `foundation/manage` update that grants `ecr:CreateRepository`
+  (`depends_on`, with the repository ARN built from its configured name).
+  The image job runs in the `prod` environment, like `apply`, because the
+  apply role trusts only that subject.
+- **Registry lag.** PRs opened within minutes of a library release failed
+  `terraform init`; `.github/actions/terraform-init` retries that one error.
+- **Acceptance held.** Every site's migration PR planned "no changes"
+  (the `site` repository's plan showed only two new outputs), previews
+  deployed and were removed on close, and each site's first release through
+  `site-deploy.yml` applied with no changes, published and invalidated.
