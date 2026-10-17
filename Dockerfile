@@ -33,7 +33,10 @@ FROM python:${PYTHON_VERSION}-slim-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /uvx /usr/local/bin/
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
+# The virtual environment is created at its final path: console-script
+# shebangs are absolute, so a venv moved after creation does not start.
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/jwall-engineering-sites/venv
 WORKDIR /src
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-dev --no-install-project
@@ -57,7 +60,7 @@ LABEL org.opencontainers.image.title="jwall-engineering-sites" \
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 sites
-COPY --from=build /src/.venv /opt/jwall-engineering-sites/venv
+COPY --from=build /opt/jwall-engineering-sites/venv /opt/jwall-engineering-sites/venv
 COPY --from=build /usr/local/bin/terraform /usr/local/bin/terraform
 COPY --from=build /opt/jwall-engineering-sites/stacks /opt/jwall-engineering-sites/stacks
 COPY --from=build /opt/jwall-engineering-sites/plugins /opt/jwall-engineering-sites/plugins
