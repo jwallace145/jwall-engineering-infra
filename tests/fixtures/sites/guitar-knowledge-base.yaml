@@ -1,0 +1,18 @@
+version: 1
+project: guitar-knowledge-base
+repository: jwallace145/guitar-knowledge-base
+domain: guitar.jwall.engineering
+
+tags:
+  Organization: jwall-engineering
+  Project: guitar-knowledge-base
+  Environment: prod
+  Repository: jwallace145/guitar-knowledge-base
+  ManagedBy: terraform
+  Owner: jwallace145
+
+site:
+  output_dir: site
+
+preview:
+  enabled: true

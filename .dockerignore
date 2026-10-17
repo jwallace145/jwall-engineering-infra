@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+.terraform
+**/.terraform
+**/*.tfstate*
+**/.terraform.lock.hcl
+node_modules
+tests
+foundation
+docs
+.jwall-engineering-sites
+__pycache__
+*.pyc

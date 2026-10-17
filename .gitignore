@@ -22,3 +22,15 @@ node_modules/
 .DS_Store
 .idea/
 .vscode/
+
+# Python (jwall-engineering-sites)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+
+# jwall-engineering-sites run artifacts
+.jwall-engineering-sites/

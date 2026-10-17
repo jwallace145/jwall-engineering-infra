@@ -1,0 +1,50 @@
+[project]
+name = "jwall-engineering-sites"
+version = "0.5.0"
+description = "Provisions and publishes the jwall.engineering sites from one YAML file per site, wrapping Terraform and S3."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+  "boto3>=1.40",
+  "pydantic>=2.11",
+  "pyyaml>=6.0",
+  "typer>=0.17",
+]
+
+[project.scripts]
+jwall-engineering-sites = "jwall_engineering_sites.cli:app"
+
+[dependency-groups]
+dev = [
+  "boto3-stubs[cloudfront,s3,sts]>=1.40",
+  "moto[s3,sts]>=5.1",
+  "mypy>=1.17",
+  "pytest>=8.4",
+  "ruff>=0.13",
+  "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "W", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["moto", "moto.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -61,6 +61,7 @@ npm ci
 pre-commit install --hook-type commit-msg --hook-type pre-commit
 cd foundation && terraform init -backend=false
 tflint --init
+cd .. && uv sync                         # the sites CLI and its dev tools
 ```
 
 The `commit-msg` hook runs commitlint on every commit; the `pre-commit` hook runs `terraform fmt`, `terraform validate`, and `tflint`. CI is the authoritative check; the hooks exist so mistakes are caught before they are pushed. Skip them once with `git commit --no-verify` if you must, and expect CI to object.
