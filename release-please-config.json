@@ -59,6 +59,10 @@
     }
   ],
   "packages": {
-    ".": {}
+    ".": {
+      "extra-files": [
+        "src/jwall_engineering_sites/__init__.py"
+      ]
+    }
   }
 }

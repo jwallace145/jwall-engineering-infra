@@ -447,7 +447,6 @@ wheels = [
 
 [[package]]
 name = "jwall-engineering-sites"
-version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },

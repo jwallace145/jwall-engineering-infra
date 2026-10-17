@@ -1,6 +1,9 @@
 [project]
 name = "jwall-engineering-sites"
-version = "0.5.0"
+# The version lives in src/jwall_engineering_sites/__init__.py, bumped by
+# Release Please. Keeping it out of pyproject.toml keeps it out of uv.lock, so
+# a release PR does not invalidate the lock.
+dynamic = ["version"]
 description = "Provisions and publishes the jwall.engineering sites from one YAML file per site, wrapping Terraform and S3."
 readme = "README.md"
 license = "MIT"
@@ -26,8 +29,14 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.8,<0.13"]
-build-backend = "uv_build"
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/jwall_engineering_sites/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jwall_engineering_sites"]
 
 [tool.ruff]
 line-length = 100
