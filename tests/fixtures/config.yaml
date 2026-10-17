@@ -37,9 +37,10 @@ ecr:
   expire_untagged_after_days: 7
 
 sync:
-  cache_control: public, max-age=3600
+  cache_control: public, max-age=3600 # assets without a content hash
   preview_cache_control: public, max-age=300
-  immutable_cache_control: public, max-age=31536000, immutable
+  html_cache_control: public, max-age=0, must-revalidate # pages: always fresh after a publish
+  immutable_cache_control: public, max-age=31536000, immutable # site.immutable_paths
 
 plan:
   comment_max_bytes: 60000

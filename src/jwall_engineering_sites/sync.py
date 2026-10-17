@@ -95,8 +95,15 @@ def scan_local(
     cache_control: str,
     immutable_cache_control: str,
     immutable_paths: Sequence[str],
+    html_cache_control: str | None = None,
 ) -> list[LocalFile]:
-    """Every file under `dist` with its headers decided. Sorted by path."""
+    """Every file under `dist` with its headers decided. Sorted by path.
+
+    Precedence: a path matching `immutable_paths` is immutable; otherwise HTML
+    gets `html_cache_control` when given (pages must be fresh after a publish,
+    which CloudFront invalidation and this header achieve together); everything
+    else gets `cache_control`.
+    """
     if not dist.is_dir():
         raise PreflightError(f"{dist} is not a directory")
     if not (dist / "index.html").is_file():
@@ -105,6 +112,12 @@ def scan_local(
     for path in sorted(p for p in dist.rglob("*") if p.is_file()):
         rel = PurePosixPath(path.relative_to(dist).as_posix())
         immutable = any(rel.full_match(pattern) for pattern in immutable_paths)
+        if immutable:
+            header = immutable_cache_control
+        elif html_cache_control is not None and is_html(str(rel)):
+            header = html_cache_control
+        else:
+            header = cache_control
         data = path.read_bytes()
         files.append(
             LocalFile(
@@ -113,7 +126,7 @@ def scan_local(
                 size=len(data),
                 md5=hashlib.md5(data).hexdigest(),
                 content_type=content_type_for(rel),
-                cache_control=immutable_cache_control if immutable else cache_control,
+                cache_control=header,
             )
         )
     return files
