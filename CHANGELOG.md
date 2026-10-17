@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.8.0...v0.8.1) (2026-10-17)
+
+
+### Documentation
+
+* describe the sites CLI, its release pipeline and the version pins ([#43](https://github.com/jwallace145/jwall-engineering-infra/issues/43)) ([4efa8be](https://github.com/jwallace145/jwall-engineering-infra/commit/4efa8be16a3d4211dc451eaf0f4096ee09e0a2f6))
+
 ## [0.8.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.7.0...v0.8.0) (2026-10-17)
 
 
