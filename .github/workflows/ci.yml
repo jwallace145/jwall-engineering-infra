@@ -188,6 +188,26 @@ jobs:
           test -s "$RUNNER_TEMP/site/.jwall-engineering-sites/jwall-engineering-sites.log"
       - name: Smoke test (the image's Terraform matches config.yaml)
         run: docker run --rm --network none --entrypoint terraform jwall-engineering-sites:ci version
+      - name: Smoke test (the pruned botocore still serves the clients the tool uses)
+        run: |
+          docker run --rm --network none --entrypoint python jwall-engineering-sites:ci -c '
+          import boto3
+          for service in ("s3", "sts", "cloudfront"):
+              boto3.session.Session(region_name="us-east-1").client(service)
+          print("boto3 clients ok")'
+      - name: Image size budget
+        env:
+          MAX_COMPRESSED_MB: "250" # what a consumer downloads; the AWS provider archive alone is ~130 MB
+        run: |
+          uncompressed=$(docker image inspect jwall-engineering-sites:ci --format '{{.Size}}')
+          compressed=$(docker save jwall-engineering-sites:ci | gzip -1 | wc -c)
+          u_mb=$((uncompressed / 1024 / 1024)); c_mb=$((compressed / 1024 / 1024))
+          printf '## Image size\n\n- compressed (network): %s MB (budget %s MB)\n- uncompressed: %s MB\n' "$c_mb" "$MAX_COMPRESSED_MB" "$u_mb" >> "$GITHUB_STEP_SUMMARY"
+          echo "compressed ${c_mb} MB, uncompressed ${u_mb} MB"
+          if [ "$c_mb" -gt "$MAX_COMPRESSED_MB" ]; then
+            echo "::error::the image is ${c_mb} MB compressed, over the ${MAX_COMPRESSED_MB} MB budget"
+            exit 1
+          fi
 
   terraform-plan:
     name: Terraform plan

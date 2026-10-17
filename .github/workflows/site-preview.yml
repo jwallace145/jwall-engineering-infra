@@ -1,0 +1,91 @@
+name: Site preview
+
+# Reusable: publishes a built site to previews/pr-<n>/ as the preview role on
+# open, synchronize and reopen, and removes it on close. The caller builds the
+# site and uploads it as an artifact first.
+
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: Name of the uploaded artifact that holds the built site.
+        required: true
+        type: string
+      preview-role-arn:
+        description: ARN of the site's ci-preview role (usually vars.AWS_PREVIEW_ROLE_ARN).
+        required: true
+        type: string
+      debug:
+        description: Console log at debug level.
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: jwall-engineering-sites preview deploy
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the preview role, through OIDC
+      pull-requests: write # the sticky preview comment
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: .jwall-engineering-sites-dist
+      - name: preview deploy
+        id: deploy
+        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        with:
+          command: preview deploy --pr ${{ github.event.pull_request.number }} --dist .jwall-engineering-sites-dist
+          role-arn: ${{ inputs.preview-role-arn }}
+          debug: ${{ inputs.debug }}
+      - name: Post the preview comment (updated on each push)
+        if: always() && steps.deploy.outcome == 'success'
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: preview
+          path: .jwall-engineering-sites/preview-comment.md
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jwall-engineering-sites-${{ github.job }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  remove:
+    name: jwall-engineering-sites preview remove
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: preview remove
+        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        with:
+          command: preview remove --pr ${{ github.event.pull_request.number }}
+          role-arn: ${{ inputs.preview-role-arn }}
+          debug: ${{ inputs.debug }}
+      - name: Update the preview comment
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: preview
+          path: .jwall-engineering-sites/preview-comment.md
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jwall-engineering-sites-${{ github.job }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore

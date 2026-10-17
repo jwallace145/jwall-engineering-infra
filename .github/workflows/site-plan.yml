@@ -1,0 +1,58 @@
+name: Site plan
+
+# Reusable: validates a site repository's jwall-engineering-sites.yaml, plans
+# its infrastructure as the plan role and posts the plan as a sticky comment.
+# Call it from the site's pull request workflow; skip it on `edited` events.
+
+on:
+  workflow_call:
+    inputs:
+      plan-role-arn:
+        description: ARN of the site's ci-plan role (usually vars.AWS_PLAN_ROLE_ARN).
+        required: true
+        type: string
+      debug:
+        description: Console log at debug level.
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  plan:
+    name: jwall-engineering-sites plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the plan role, through OIDC
+      pull-requests: write # the sticky plan comment
+    steps:
+      - uses: actions/checkout@v7
+      - name: validate
+        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        with:
+          command: validate
+          role-arn: ${{ inputs.plan-role-arn }}
+          debug: ${{ inputs.debug }}
+      - name: plan
+        id: plan
+        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        with:
+          command: plan
+          role-arn: ${{ inputs.plan-role-arn }}
+          debug: ${{ inputs.debug }}
+      - name: Post the plan comment (updated on each push)
+        if: always() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: terraform-plan
+          path: .jwall-engineering-sites/plan-comment.md
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jwall-engineering-sites-${{ github.job }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore
