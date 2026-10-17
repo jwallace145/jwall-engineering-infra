@@ -1,0 +1,57 @@
+name: Site release please
+
+# Reusable: runs Release Please for a site repository with the release bot's
+# app token, and reports whether a release was created and its tag. Call it
+# with `secrets: inherit`; it reads RELEASE_BOT_CLIENT_ID and
+# RELEASE_BOT_PRIVATE_KEY from the caller.
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        required: false
+        type: string
+        default: release-please-config.json
+      manifest-file:
+        required: false
+        type: string
+        default: .release-please-manifest.json
+    secrets:
+      RELEASE_BOT_CLIENT_ID:
+        required: true
+      RELEASE_BOT_PRIVATE_KEY:
+        required: true
+    outputs:
+      release_created:
+        description: "'true' when this run created a release."
+        value: ${{ jobs.release-please.outputs.release_created }}
+      tag:
+        description: The created release's tag, for example v1.4.0.
+        value: ${{ jobs.release-please.outputs.tag }}
+
+permissions: {}
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      # A GitHub App token (not GITHUB_TOKEN) so that release PRs are authored
+      # by the release bot and CI runs on them.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+      - uses: googleapis/release-please-action@v5
+        id: rp
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}

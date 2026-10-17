@@ -46,6 +46,52 @@ uv run ruff check && uv run mypy && uv run pytest
 docker build --build-arg "TERRAFORM_VERSION=$(yq -r .terraform.version config.yaml)" -t jwall-engineering-sites:local .
 ```
 
+### Reusable workflows for site repositories
+
+Site repositories do not run the image themselves. They call the reusable
+workflows this repository publishes, pinned to an exact tag that Dependabot
+bumps. The workflow at tag `vX.Y.Z` runs image `vX.Y.Z` (the composite action
+`.github/actions/jwall-engineering-sites` pins the tag, and Release Please
+bumps it with the package version), so one pin covers both.
+
+| Workflow | Calls | Caller needs |
+| --- | --- | --- |
+| `site-plan.yml` | `validate`, then `plan`, and posts the sticky plan comment | `plan-role-arn`; `id-token: write`, `pull-requests: write` |
+| `site-preview.yml` | `preview deploy` on open/synchronize/reopen, `preview remove` on close, and the sticky preview comment | `artifact`, `preview-role-arn`; the same permissions |
+| `site-release-please.yml` | Release Please with the release bot; outputs `release_created` and `tag` | `secrets: inherit` |
+| `site-deploy.yml` | `release` in the caller's `prod` environment at the tag | `artifact`, `tag`, `apply-role-arn`; `id-token: write` |
+
+Every job uploads `.jwall-engineering-sites/` (the debug log, plan text and
+comment files) as an artifact. A site's preview workflow is a build job plus
+one call:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+jobs:
+  build:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen && uv run zensical build --strict --clean
+      - uses: actions/upload-artifact@v4
+        with: { name: site, path: site }
+  preview:
+    needs: build
+    if: always() && !cancelled()
+    uses: jwallace145/jwall-engineering-infra/.github/workflows/site-preview.yml@v0.6.1
+    with:
+      artifact: site
+      preview-role-arn: ${{ vars.AWS_PREVIEW_ROLE_ARN }}
+    permissions: { contents: read, id-token: write, pull-requests: write }
+```
+
+The release workflow (`workflow_dispatch` with a `tag`) can re-publish the
+image for an existing tag without cutting a release.
+
 ## Shared modules from the Terraform Registry
 
 This stack is a consumer of [`jwallace145/jwall-engineering/aws`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws), the jwall-engineering module library published to the public Terraform Registry from [`jwallace145/terraform-aws-jwall-engineering`](https://github.com/jwallace145/terraform-aws-jwall-engineering). The library is open source under MIT, versioned with semver, and released with the same Release Please flow as this repo. Consuming it here, the same way any third party would, is deliberate: the foundation stack eats its own dog food, so the modules are exercised in production before anyone else depends on them.

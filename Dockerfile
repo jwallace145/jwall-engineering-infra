@@ -35,7 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=uv /uv /uvx /usr/local/bin/
 # The virtual environment is created at its final path: console-script
 # shebangs are absolute, so a venv moved after creation does not start.
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
+# No bytecode compilation: it adds tens of MB for a start-up gain nobody notices.
+ENV UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/jwall-engineering-sites/venv
 WORKDIR /src
 COPY pyproject.toml uv.lock README.md ./
@@ -47,9 +48,14 @@ RUN uv sync --locked --no-dev --no-editable
 COPY --from=terraform /tmp/terraform/terraform /usr/local/bin/terraform
 COPY stacks/site /opt/jwall-engineering-sites/stacks/site
 # Fetch the library modules and mirror the providers so run-time init is offline.
+# The mirror holds the providers as packed archives; the unpacked copies that
+# `init` leaves under .terraform/providers are the single largest thing in the
+# image and run time never reads them, so they go. The modules stay.
 RUN cd /opt/jwall-engineering-sites/stacks/site \
     && terraform init -backend=false -input=false \
-    && terraform providers mirror /opt/jwall-engineering-sites/plugins
+    && terraform providers mirror /opt/jwall-engineering-sites/plugins \
+    && rm -rf .terraform/providers \
+    && find /opt/jwall-engineering-sites/stacks/site/.terraform/modules -type d \( -name .git -o -name examples -o -name tests -o -name docs \) -prune -exec rm -rf {} +
 
 # --- stage 3: the runtime image --------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim-bookworm
@@ -58,9 +64,9 @@ LABEL org.opencontainers.image.title="jwall-engineering-sites" \
       org.opencontainers.image.source="https://github.com/jwallace145/jwall-engineering-infra" \
       org.opencontainers.image.description="Provisions and publishes the jwall.engineering sites" \
       terraform.version="${TERRAFORM_VERSION}"
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 1000 sites
+# No git at run time: the library modules are already in the image.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/jwall-engineering-sites/venv /opt/jwall-engineering-sites/venv
 COPY --from=build /usr/local/bin/terraform /usr/local/bin/terraform
 COPY --from=build /opt/jwall-engineering-sites/stacks /opt/jwall-engineering-sites/stacks
@@ -69,8 +75,8 @@ COPY config.yaml /etc/jwall-engineering-sites/config.yaml
 ENV PATH="/opt/jwall-engineering-sites/venv/bin:${PATH}" \
     TF_IN_AUTOMATION=1 \
     TF_INPUT=0 \
-    TF_PLUGIN_CACHE_DIR="" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 # The workspace (a site repository checkout) is mounted here. Root inside the
 # container so files it writes into the mounted workspace stay deletable by the
 # runner; nothing in the image needs privileges.

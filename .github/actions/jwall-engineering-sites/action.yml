@@ -1,0 +1,79 @@
+name: jwall-engineering-sites
+description: >-
+  Runs one jwall-engineering-sites command from the versioned image in the
+  private ECR repository: assumes the given CI role through OIDC, logs in to
+  ECR, pulls the image and runs it with the workspace mounted. The reusable
+  site-*.yml workflows in this repository are built on this action.
+
+inputs:
+  command:
+    description: The command and its arguments, for example `plan` or `preview deploy --pr 7 --dist dist`.
+    required: true
+  role-arn:
+    description: ARN of the CI role to assume. The tool checks it is the role the command expects.
+    required: true
+  debug:
+    description: Console log at debug level. The debug log file is always written.
+    required: false
+    default: "false"
+  aws-region:
+    description: Region of the ECR repository and the sites.
+    required: false
+    default: us-east-1
+  head-sha:
+    description: Commit the run describes in comments and summaries (defaults to the pull request head or the pushed commit).
+    required: false
+    default: ""
+
+outputs:
+  result:
+    description: For `plan`, `no-changes`, `changes` or `failed`.
+    value: ${{ steps.run.outputs.result }}
+  changes:
+    description: For `plan`, `true` when the plan has changes.
+    value: ${{ steps.run.outputs.changes }}
+  preview_url:
+    description: For `preview deploy`, the preview URL.
+    value: ${{ steps.run.outputs.preview_url }}
+  prod_url:
+    description: For `publish` and `release`, the production URL.
+    value: ${{ steps.run.outputs.prod_url }}
+
+runs:
+  using: composite
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: jwall-engineering-sites-${{ github.run_id }}-${{ github.run_attempt }}
+    - uses: aws-actions/amazon-ecr-login@v2
+      id: ecr
+    - name: jwall-engineering-sites ${{ inputs.command }}
+      id: run
+      shell: bash
+      env:
+        # Bumped by Release Please together with the package version, so the
+        # workflow ref a site pins and the image it runs are the same version.
+        IMAGE_TAG: v0.6.1 # x-release-please-version
+        REGISTRY: ${{ steps.ecr.outputs.registry }}
+        COMMAND: ${{ inputs.command }}
+        DEBUG: ${{ inputs.debug }}
+        JES_HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha || github.sha }}
+      run: |
+        image="$REGISTRY/jwall-engineering-sites:$IMAGE_TAG"
+        echo "::group::docker pull $image"
+        docker pull --quiet "$image"
+        echo "::endgroup::"
+        debug_flag=""
+        if [ "$DEBUG" = "true" ] || [ "${ACTIONS_STEP_DEBUG:-}" = "true" ]; then debug_flag="--debug"; fi
+        # shellcheck disable=SC2086
+        docker run --rm \
+          --volume "$GITHUB_WORKSPACE:/work" --workdir /work \
+          --env AWS_ACCESS_KEY_ID --env AWS_SECRET_ACCESS_KEY --env AWS_SESSION_TOKEN \
+          --env AWS_REGION --env AWS_DEFAULT_REGION \
+          --env GITHUB_ACTIONS --env GITHUB_SHA --env GITHUB_SERVER_URL --env GITHUB_REPOSITORY --env GITHUB_RUN_ID \
+          --env JES_HEAD_SHA \
+          --env GITHUB_OUTPUT=/github/output --volume "$GITHUB_OUTPUT:/github/output" \
+          --env GITHUB_STEP_SUMMARY=/github/summary --volume "$GITHUB_STEP_SUMMARY:/github/summary" \
+          "$image" $debug_flag $COMMAND

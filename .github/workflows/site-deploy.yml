@@ -1,0 +1,68 @@
+name: Site deploy
+
+# Reusable: in the caller's `prod` environment, applies a site's infrastructure
+# and publishes the built site for a release tag (`release`: apply, sync to
+# prod/, invalidate CloudFront). The caller builds the site at the tag and
+# uploads it as an artifact first.
+
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: Name of the uploaded artifact that holds the site built at the tag.
+        required: true
+        type: string
+      tag:
+        description: The release tag to deploy, for example v1.4.0.
+        required: true
+        type: string
+      apply-role-arn:
+        description: ARN of the site's ci-apply role (usually vars.AWS_APPLY_ROLE_ARN).
+        required: true
+        type: string
+      site-url:
+        description: The production URL, shown on the environment.
+        required: false
+        type: string
+        default: ""
+      debug:
+        description: Console log at debug level.
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: jwall-engineering-sites release
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: ${{ inputs.site-url }}
+    permissions:
+      contents: read
+      id-token: write # the apply role, through OIDC
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: .jwall-engineering-sites-dist
+      - name: release
+        uses: jwallace145/jwall-engineering-infra/.github/actions/jwall-engineering-sites@v0.6.1 # x-release-please-version
+        with:
+          command: release --dist .jwall-engineering-sites-dist
+          role-arn: ${{ inputs.apply-role-arn }}
+          head-sha: ${{ github.sha }}
+          debug: ${{ inputs.debug }}
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jwall-engineering-sites-${{ github.job }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore
