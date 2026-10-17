@@ -44,6 +44,11 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
 # --no-editable: an editable install points at /src, which the runtime stage does not have.
 RUN uv sync --locked --no-dev --no-editable
+# botocore ships API definitions for every AWS service; the tool uses three.
+# Keep those plus botocore's shared files (endpoints, partitions, retries).
+RUN cd /opt/jwall-engineering-sites/venv/lib/python3.13/site-packages/botocore/data \
+    && find . -mindepth 1 -maxdepth 1 -type d ! -name s3 ! -name sts ! -name cloudfront -exec rm -rf {} + \
+    && find /opt/jwall-engineering-sites/venv -type d -name __pycache__ -prune -exec rm -rf {} +
 
 COPY --from=terraform /tmp/terraform/terraform /usr/local/bin/terraform
 COPY stacks/site /opt/jwall-engineering-sites/stacks/site
@@ -64,9 +69,13 @@ LABEL org.opencontainers.image.title="jwall-engineering-sites" \
       org.opencontainers.image.source="https://github.com/jwallace145/jwall-engineering-infra" \
       org.opencontainers.image.description="Provisions and publishes the jwall.engineering sites" \
       terraform.version="${TERRAFORM_VERSION}"
-# No git at run time: the library modules are already in the image.
+# No git at run time: the library modules are already in the image. No pip
+# either: the virtual environment is complete and nothing installs at run time.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y pip setuptools wheel >/dev/null 2>&1 || true \
+    && rm -rf /usr/local/lib/python3.13/ensurepip /usr/local/lib/python3.13/idlelib \
+       /usr/local/lib/python3.13/tkinter /usr/local/lib/python3.13/test /root/.cache
 COPY --from=build /opt/jwall-engineering-sites/venv /opt/jwall-engineering-sites/venv
 COPY --from=build /usr/local/bin/terraform /usr/local/bin/terraform
 COPY --from=build /opt/jwall-engineering-sites/stacks /opt/jwall-engineering-sites/stacks
