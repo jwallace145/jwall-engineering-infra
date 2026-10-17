@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.6.1...v0.7.0) (2026-10-17)
+
+
+### Features
+
+* **actions:** add the composite action and reusable site workflows ([#38](https://github.com/jwallace145/jwall-engineering-infra/issues/38)) ([54a3437](https://github.com/jwallace145/jwall-engineering-infra/commit/54a343763957de1b4885b571b40e7aecfd8cdd94))
+
+
+### Bug Fixes
+
+* **actions:** use the action from the reusable workflow commit instead of a bumped tag ([#39](https://github.com/jwallace145/jwall-engineering-infra/issues/39)) ([1c46986](https://github.com/jwallace145/jwall-engineering-infra/commit/1c46986869ae2dcad933516c5ff0fd569cf87c7f))
+
 ## [0.6.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.6.0...v0.6.1) (2026-10-17)
 
 
