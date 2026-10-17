@@ -180,9 +180,12 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Smoke test (validate a fixture site offline, inside the image)
         run: |
+          # A writable copy: the tool writes its artifacts and debug log into the workspace.
+          cp -r tests/fixtures/sites "$RUNNER_TEMP/site"
           docker run --rm --network none \
-            -v "$PWD/tests/fixtures/sites:/work:ro" \
+            -v "$RUNNER_TEMP/site:/work" \
             jwall-engineering-sites:ci --file guitar-knowledge-base.yaml validate
+          test -s "$RUNNER_TEMP/site/.jwall-engineering-sites/jwall-engineering-sites.log"
       - name: Smoke test (the image's Terraform matches config.yaml)
         run: docker run --rm --network none --entrypoint terraform jwall-engineering-sites:ci version
 

@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from .errors import ConfigError
+
 LOGGER_NAME = "jwall-engineering-sites"
 ARTIFACTS_DIR = Path(".jwall-engineering-sites")
 LOG_FILE_NAME = "jwall-engineering-sites.log"
@@ -53,7 +55,12 @@ class _FileFormatter(logging.Formatter):
 def artifacts_dir(base: Path | None = None) -> Path:
     """Where run artifacts (plan text, comment files, the debug log) go."""
     directory = (base or Path.cwd()) / ARTIFACTS_DIR
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigError(
+            f"cannot create {directory}: {exc.strerror}; the working directory must be writable"
+        ) from exc
     return directory
 
 

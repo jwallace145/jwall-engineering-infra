@@ -33,6 +33,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,
+    pretty_exceptions_enable=False,
 )
 preview_app = typer.Typer(
     help="Pull request previews under previews/pr-<n>/.", no_args_is_help=True
@@ -79,8 +80,8 @@ def main(
     config: Annotated[Path | None, typer.Option("--config", help="Path to config.yaml.")] = None,
     debug: Annotated[bool, typer.Option("--debug", help="Console log at debug level.")] = False,
 ) -> None:
-    artifacts = artifacts_dir()
     try:
+        artifacts = artifacts_dir()
         settings = load_settings(config)
     except SitesError as exc:
         # Logging is not configured yet: report plainly.

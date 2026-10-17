@@ -167,3 +167,10 @@ def test_outputs(workspace: Path, fake_terraform: Path) -> None:
     assert result.exit_code == 0, result.output
     payload = result.output[result.output.index("{") :]
     assert json.loads(payload)["prod_distribution_id"] == "E1PROD"
+
+
+def test_unwritable_workspace_exits_2(workspace: Path) -> None:
+    (workspace / ".jwall-engineering-sites").write_text("not a directory")
+    result = runner.invoke(cli.app, ["config", "show"])
+    assert result.exit_code == 2
+    assert "must be writable" in result.output
