@@ -7,6 +7,12 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Re-publish the CLI image for an existing release tag (for example v0.6.0)
+        required: true
+        type: string
 
 concurrency:
   group: release
@@ -22,6 +28,7 @@ env:
 jobs:
   release-please:
     name: Release Please
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -48,7 +55,7 @@ jobs:
     name: Terraform apply (${{ needs.release-please.outputs.tag_name }})
     runs-on: ubuntu-latest
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: github.event_name == 'push' && needs.release-please.outputs.release_created == 'true'
     environment:
       name: prod
       url: https://github.com/${{ github.repository }}/releases/tag/${{ needs.release-please.outputs.tag_name }}
@@ -81,17 +88,30 @@ jobs:
         run: terraform apply -no-color -lock-timeout=120s tfplan
 
   image:
-    name: Publish image (${{ needs.release-please.outputs.tag_name }})
+    name: Publish image (${{ needs.release-please.outputs.tag_name || inputs.tag }})
     runs-on: ubuntu-latest
     needs: [release-please, apply]
-    if: needs.release-please.outputs.release_created == 'true'
+    # After a release's apply, or on demand for an existing tag. The apply
+    # role's trust policy accepts only the `prod` environment's OIDC subject.
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' &&
+         needs.apply.result == 'success' &&
+         needs.release-please.outputs.release_created == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+      )
+    environment:
+      name: prod
     permissions:
       contents: read
       id-token: write # assume the apply role, which holds ecr/push
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: refs/tags/${{ needs.release-please.outputs.tag_name || inputs.tag }}
       - name: Read the image settings from config.yaml
         id: config
         run: |
@@ -101,7 +121,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: gha-image-${{ needs.release-please.outputs.tag_name }}
+          role-session-name: gha-image-${{ needs.release-please.outputs.tag_name || inputs.tag }}
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
       - uses: docker/setup-buildx-action@v4
@@ -111,9 +131,9 @@ jobs:
           push: true
           platforms: linux/amd64
           provenance: false
-          tags: ${{ steps.ecr.outputs.registry }}/${{ steps.config.outputs.repository }}:${{ needs.release-please.outputs.tag_name }}
+          tags: ${{ steps.ecr.outputs.registry }}/${{ steps.config.outputs.repository }}:${{ env.TAG }}
           build-args: TERRAFORM_VERSION=${{ steps.config.outputs.terraform_version }}
       - name: Summary
         env:
-          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ steps.config.outputs.repository }}:${{ needs.release-please.outputs.tag_name }}
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ steps.config.outputs.repository }}:${{ env.TAG }}
         run: printf '## Image\n\n- `%s`\n' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
