@@ -27,11 +27,12 @@ RUN curl -fsSLO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/t
     && chmod 0755 terraform
 
 # --- stage 2: the Python package and the vendored stack -------------------------
-FROM python:${PYTHON_VERSION}-slim-bookworm AS build
-# git: the registry serves GitHub-hosted modules as git:: sources, which
-# terraform init clones.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
-    && rm -rf /var/lib/apt/lists/*
+# Alpine for both stages: the virtual environment is copied between them, so
+# the wheels (musl) must match. Terraform is a static binary and every
+# dependency ships musl wheels. git: the registry serves GitHub-hosted modules
+# as git:: sources, which terraform init clones.
+FROM python:${PYTHON_VERSION}-alpine AS build
+RUN apk add --no-cache ca-certificates git
 COPY --from=uv /uv /uvx /usr/local/bin/
 # The virtual environment is created at its final path: console-script
 # shebangs are absolute, so a venv moved after creation does not start.
@@ -63,7 +64,7 @@ RUN cd /opt/jwall-engineering-sites/stacks/site \
     && find /opt/jwall-engineering-sites/stacks/site/.terraform/modules -type d \( -name .git -o -name examples -o -name tests -o -name docs \) -prune -exec rm -rf {} +
 
 # --- stage 3: the runtime image --------------------------------------------------
-FROM python:${PYTHON_VERSION}-slim-bookworm
+FROM python:${PYTHON_VERSION}-alpine
 ARG TERRAFORM_VERSION
 LABEL org.opencontainers.image.title="jwall-engineering-sites" \
       org.opencontainers.image.source="https://github.com/jwallace145/jwall-engineering-infra" \
@@ -71,8 +72,7 @@ LABEL org.opencontainers.image.title="jwall-engineering-sites" \
       terraform.version="${TERRAFORM_VERSION}"
 # No git at run time: the library modules are already in the image. No pip
 # either: the virtual environment is complete and nothing installs at run time.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
+RUN apk add --no-cache ca-certificates \
     && python -m pip uninstall -y pip setuptools wheel >/dev/null 2>&1 || true \
     && rm -rf /usr/local/lib/python3.13/ensurepip /usr/local/lib/python3.13/idlelib \
        /usr/local/lib/python3.13/tkinter /usr/local/lib/python3.13/test /root/.cache
