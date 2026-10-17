@@ -98,6 +98,7 @@ class EcrSection(_Section):
 class SyncSection(_Section):
     cache_control: str
     preview_cache_control: str
+    html_cache_control: str
     immutable_cache_control: str
 
 

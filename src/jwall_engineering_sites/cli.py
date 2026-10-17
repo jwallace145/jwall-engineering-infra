@@ -154,6 +154,7 @@ def _sync_to(
         cache_control=cache_control,
         immutable_cache_control=run.settings.sync.immutable_cache_control,
         immutable_paths=site.config.site.immutable_paths,
+        html_cache_control=run.settings.sync.html_cache_control,
     )
     remote = sync.list_remote(client, site.bucket, prefix)
     plan = sync.plan_sync(prefix, local, remote)

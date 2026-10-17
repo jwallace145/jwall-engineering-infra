@@ -25,6 +25,9 @@ CACHE = "public, max-age=3600"
 IMMUTABLE = "public, max-age=31536000, immutable"
 
 
+HTML = "public, max-age=0, must-revalidate"
+
+
 def test_scan_local_headers(dist: Path) -> None:
     files = {f.rel_path: f for f in scan_local(dist, CACHE, IMMUTABLE, ["_astro/**"])}
     assert set(files) == {"index.html", "about.html", "_astro/app.abc123.js", "robots.txt"}
@@ -33,6 +36,14 @@ def test_scan_local_headers(dist: Path) -> None:
     assert files["_astro/app.abc123.js"].cache_control == IMMUTABLE
     assert files["_astro/app.abc123.js"].content_type == "text/javascript; charset=utf-8"
     assert files["robots.txt"].md5 == hashlib.md5(b"User-agent: *").hexdigest()
+
+
+def test_html_cache_control_applies_to_pages_only(dist: Path) -> None:
+    files = {f.rel_path: f for f in scan_local(dist, CACHE, IMMUTABLE, ["_astro/**"], HTML)}
+    assert files["index.html"].cache_control == HTML
+    assert files["about.html"].cache_control == HTML
+    assert files["robots.txt"].cache_control == CACHE
+    assert files["_astro/app.abc123.js"].cache_control == IMMUTABLE, "immutable wins over HTML"
 
 
 def test_scan_local_requires_index(tmp_path: Path) -> None:
