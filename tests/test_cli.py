@@ -103,7 +103,9 @@ def test_preview_deploy_and_remove(
         )
         assert "previews/pr-12/index.html" in keys
         head = s3.head_object(Bucket=BUCKET, Key="previews/pr-12/index.html")
-        assert head["CacheControl"] == "public, max-age=300"
+        assert head["CacheControl"] == "public, max-age=0, must-revalidate"
+        asset = s3.head_object(Bucket=BUCKET, Key="previews/pr-12/robots.txt")
+        assert asset["CacheControl"] == "public, max-age=300"
         comment = (workspace / ".jwall-engineering-sites" / "preview-comment.md").read_text()
         assert comment.startswith("**https://pr-12.preview.guitar.jwall.engineering/**")
         assert (
@@ -142,6 +144,10 @@ def test_release_applies_then_publishes(workspace: Path, dist: Path, fake_terraf
         assert result.exit_code == 0, result.output
         assert (
             s3.head_object(Bucket=BUCKET, Key="prod/index.html")["CacheControl"]
+            == "public, max-age=0, must-revalidate"
+        )
+        assert (
+            s3.head_object(Bucket=BUCKET, Key="prod/robots.txt")["CacheControl"]
             == "public, max-age=3600"
         )
     calls = fake_terraform.read_text().splitlines()
