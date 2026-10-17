@@ -62,10 +62,10 @@
     ".": {
       "extra-files": [
         "src/jwall_engineering_sites/__init__.py",
-        ".github/actions/jwall-engineering-sites/action.yml",
-        ".github/workflows/site-plan.yml",
-        ".github/workflows/site-preview.yml",
-        ".github/workflows/site-deploy.yml"
+        {
+          "type": "generic",
+          "path": ".github/actions/jwall-engineering-sites/action.yml"
+        }
       ]
     }
   }
