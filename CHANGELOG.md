@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.7.0...v0.8.0) (2026-10-17)
+
+
+### Features
+
+* **cli:** serve HTML with must-revalidate and keep cached assets for an hour ([#41](https://github.com/jwallace145/jwall-engineering-infra/issues/41)) ([8f0fab9](https://github.com/jwallace145/jwall-engineering-infra/commit/8f0fab9c0c4d881a49fb41580b22e8290c0f8042))
+
 ## [0.7.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.6.1...v0.7.0) (2026-10-17)
 
 
