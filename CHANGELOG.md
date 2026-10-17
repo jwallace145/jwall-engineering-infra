@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.6.0...v0.6.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **ci:** publish the CLI image from the prod environment and allow re-publishing a tag ([#36](https://github.com/jwallace145/jwall-engineering-infra/issues/36)) ([bfb3a10](https://github.com/jwallace145/jwall-engineering-infra/commit/bfb3a10e6357d914f7a66d6189480734d9ca7674))
+
 ## [0.6.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.5.0...v0.6.0) (2026-10-17)
 
 
