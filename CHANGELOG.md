@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.9.0...v0.9.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **dns:** bump the library to 0.9.1 so the verification TXT value is not double-quoted ([#47](https://github.com/jwallace145/jwall-engineering-infra/issues/47)) ([5030e27](https://github.com/jwallace145/jwall-engineering-infra/commit/5030e273c1042aecc0370b81ee204f3d78c40efe))
+
 ## [0.9.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.8.1...v0.9.0) (2026-10-19)
 
 
