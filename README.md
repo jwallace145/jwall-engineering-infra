@@ -101,7 +101,7 @@ This stack is a consumer of [`jwallace145/jwall-engineering/aws`](https://regist
 | --- | --- | --- |
 | `//modules/context` | The tag set applied to every resource through `default_tags` | `context.tf` |
 | `//modules/tfstate-bucket` | The shared Terraform state bucket | `state.tf` |
-| `//modules/hosted-zone` | The `jwall.engineering` zone and its CAA record | `dns.tf` |
+| `//modules/hosted-zone` | The `jwall.engineering` zone, its CAA record and the GitHub Pages domain-verification TXT record | `dns.tf` |
 | `//modules/ci-plan-role` | Plan roles for this repo and each project, with read policies from the `ci-policies` catalog | `ci-roles.tf`, `projects.tf` |
 | `//modules/ci-preview-role` | Preview role per project, with `static-site/previews` | `projects.tf` |
 | `//modules/ci-apply-role` | Apply roles for this repo and each project, with read and write policies from the `ci-policies` catalog | `ci-roles.tf`, `projects.tf` |
@@ -116,7 +116,7 @@ Module sources look like this, with an exact `version` on every block:
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.8.1"
+  version  = "0.9.0"
 
   project = each.key
 }
@@ -139,7 +139,7 @@ CLI and `config.yaml`, the tool configuration shared by the stack and the CLI
 | `backend.tf`, `backend/prod.hcl` | S3 backend with native lockfile locking (no DynamoDB) |
 | `state.tf` | The shared state bucket (`tfstate-bucket` module) |
 | `oidc.tf` | GitHub OIDC provider (data source; owned by prog-strength-infra, see the TODO there) |
-| `dns.tf` | The hosted zone and its CAA record (`hosted-zone` module) |
+| `dns.tf` | The hosted zone, its CAA record and the zone owner's TXT records (`hosted-zone` module) |
 | `ci-roles.tf` | This repo's own plan and apply roles (`ci-plan-role` and `ci-apply-role` modules) |
 | `ecr.tf` | The ECR repository for the sites CLI image, configured from `config.yaml` at the repository root |
 | `config.yaml` (root) | Tool configuration for the sites CLI and the foundation stack: Terraform version, library pin, state bucket, DNS zone, ECR lifecycle, sync headers |

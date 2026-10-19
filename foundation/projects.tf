@@ -34,7 +34,7 @@ locals {
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.8.1"
+  version  = "0.9.0"
 
   project = each.key
 
@@ -80,7 +80,7 @@ locals {
 module "site_ci_plan" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version  = "0.8.1"
+  version  = "0.9.0"
 
   project           = each.key
   repository        = each.value.repository
@@ -100,7 +100,7 @@ module "site_ci_plan" {
 module "site_ci_preview" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-preview-role"
-  version  = "0.8.1"
+  version  = "0.9.0"
 
   project           = each.key
   repository        = each.value.repository
@@ -119,7 +119,7 @@ module "site_ci_preview" {
 module "site_ci_apply" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version  = "0.8.1"
+  version  = "0.9.0"
 
   project           = each.key
   repository        = each.value.repository
