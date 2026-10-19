@@ -16,7 +16,7 @@ terraform:
 
 library:
   source: jwallace145/jwall-engineering/aws
-  version: 0.8.1 # the one module pin the whole fleet of sites shares
+  version: 0.9.0 # the one module pin the whole fleet of sites shares
 
 state:
   bucket: jwall-engineering-tfstate
