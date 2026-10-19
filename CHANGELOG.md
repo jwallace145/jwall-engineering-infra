@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.8.1...v0.9.0) (2026-10-19)
+
+
+### Features
+
+* **dns:** manage the GitHub Pages domain-verification TXT record and bump the library to 0.9.0 ([#45](https://github.com/jwallace145/jwall-engineering-infra/issues/45)) ([ce8d5eb](https://github.com/jwallace145/jwall-engineering-infra/commit/ce8d5ebf8a92ad3ad8668761efdf226b1371719b))
+
 ## [0.8.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.8.0...v0.8.1) (2026-10-17)
 
 
