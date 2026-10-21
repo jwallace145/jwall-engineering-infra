@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.9.1...v0.10.0) (2026-10-21)
+
+
+### Features
+
+* **report:** brand the plan and preview comments and post them as the sites app ([#49](https://github.com/jwallace145/jwall-engineering-infra/issues/49)) ([d7b8f13](https://github.com/jwallace145/jwall-engineering-infra/commit/d7b8f133d8c12c9b8021ed3ec524ab27d1a65a0a))
+
 ## [0.9.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.9.0...v0.9.1) (2026-10-19)
 
 

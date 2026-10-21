@@ -55,7 +55,7 @@ runs:
       env:
         # Bumped by Release Please together with the package version, so the
         # workflow ref a site pins and the image it runs are the same version.
-        IMAGE_TAG: v0.9.1 # x-release-please-version
+        IMAGE_TAG: v0.10.0 # x-release-please-version
         REGISTRY: ${{ steps.ecr.outputs.registry }}
         COMMAND: ${{ inputs.command }}
         DEBUG: ${{ inputs.debug }}
