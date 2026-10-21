@@ -33,6 +33,7 @@ reusable workflows this repository publishes. The design is in
 | `publish --dist DIR [--environment prod\|dev]` | `ci-apply` | Sync content and invalidate the distribution |
 | `release --dist DIR` | `ci-apply` | `apply` then `publish` |
 | `outputs`, `config show` | `ci-plan` / none | Stack outputs as JSON; the effective tool configuration |
+| `report plan-comment --exit-code N --plan FILE --subject S` | none | Render the branded plan comment from a saved plan log (this repo's own CI uses it) |
 
 Every command checks that the credentials are the role it expects, that the
 built site and bucket exist, and that the Terraform in the image is the
@@ -57,8 +58,8 @@ bumps it with the package version), so one pin covers both.
 
 | Workflow | Calls | Caller needs |
 | --- | --- | --- |
-| `site-plan.yml` | `validate`, then `plan`, and posts the sticky plan comment | `plan-role-arn`; `id-token: write`, `pull-requests: write` |
-| `site-preview.yml` | `preview deploy` on open/synchronize/reopen, `preview remove` on close, and the sticky preview comment | `artifact`, `preview-role-arn`; the same permissions |
+| `site-plan.yml` | `validate`, then `plan`, and posts the sticky plan comment | `plan-role-arn`; `id-token: write`, `pull-requests: write`; optionally `app-client-id` and the `app-private-key` secret |
+| `site-preview.yml` | `preview deploy` on open/synchronize/reopen, `preview remove` on close, and the sticky preview comment | `artifact`, `preview-role-arn`; the same permissions and optional app inputs |
 | `site-release-please.yml` | Release Please with the release bot; outputs `release_created` and `tag` | `secrets: inherit` |
 | `site-deploy.yml` | `release` in the caller's `prod` environment at the tag | `artifact`, `tag`, `apply-role-arn`; `id-token: write` |
 
@@ -87,8 +88,45 @@ jobs:
     with:
       artifact: site
       preview-role-arn: ${{ vars.AWS_PREVIEW_ROLE_ARN }}
+      app-client-id: ${{ vars.JES_APP_CLIENT_ID }} # optional: comments come from the app
+    secrets:
+      app-private-key: ${{ secrets.JES_APP_PRIVATE_KEY }}
     permissions: { contents: read, id-token: write, pull-requests: write }
 ```
+
+### The pull request comments
+
+The plan and preview comments are the product's face in a site repository, so
+the CLI renders them (`report.py`) as one branded card rather than raw plan
+text: a centred **JWall Engineering Sites** header naming the site, one
+GitHub alert that carries the verdict, the detail a reviewer needs without
+expanding anything, the full Terraform output folded away, and a footer with
+the tool version, the commit and the workflow run. The alert is conditional
+on what the plan found:
+
+| Plan result | Alert | Shown without expanding |
+| --- | --- | --- |
+| No changes | `NOTE`: merging will not touch AWS | nothing else |
+| Changes | `WARNING` with the add/change/destroy counts | a counts table and a per-resource action table |
+| Any destroy or replace | `CAUTION` naming how many resources are destroyed or replaced | the same tables, with 🗑️ and ♻️ rows to check |
+| Plan failed | `CAUTION` | the Terraform output, already expanded |
+
+The resource table lists at most 40 resources (the rest are in the full
+output) and the whole comment is kept under `plan.comment_max_bytes` from
+`config.yaml`, truncating the plan text from the head. This repository's own
+`Terraform plan` job renders its comment with `report plan-comment`, so the
+foundation plan and the site plans look the same.
+
+**Who posts the comment.** By default the sticky comment is authored by
+`github-actions[bot]`. Pass `app-client-id` (and the `app-private-key`
+secret) to `site-plan.yml` and `site-preview.yml`, or set `JES_APP_CLIENT_ID`
+and `JES_APP_PRIVATE_KEY` in this repository, and the workflows mint a
+short-lived installation token for the **JWall Engineering Sites** GitHub
+App and post as it, with the app's name and avatar. The app needs only
+*Pull requests: read and write* and has to be installed on every repository
+that posts. If the token cannot be minted the step warns and the comment
+falls back to `github-actions[bot]`. A comment that already exists on a pull
+request keeps its original author; the app shows up on new pull requests.
 
 The release workflow (`workflow_dispatch` with a `tag`) can re-publish the
 image for an existing tag without cutting a release.
@@ -252,7 +290,7 @@ The state bucket does not exist before the first apply, so the first apply uses 
 - `Commit messages`: commitlint over every commit in `base..head`
 - `PR title`: Conventional Commit check on the title
 - `Terraform fmt, validate, tflint` (`foundation/`) and `Site stack validate, tflint` (`stacks/site/`)
-- `Terraform plan`: assumes the plan role through OIDC and posts the foundation plan as a PR comment that is updated on every push
+- `Terraform plan`: assumes the plan role through OIDC and posts the foundation plan as the branded sticky PR comment (rendered by `jwall-engineering-sites report plan-comment`), updated on every push
 - `Python lint, types, tests`: ruff, mypy and pytest for the sites CLI
 - `Image build and smoke test`: builds the CLI image, runs `validate` inside it offline, checks its Terraform version and enforces the compressed-size budget
 
@@ -292,6 +330,7 @@ Not automated; these need the owner's credentials or the GitHub UI.
 - Run the bootstrap steps above.
 - Create the GitHub `prod` environment with a deployment branch restriction to `main`.
 - Set repository variables from `terraform output`: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN` here, and each project's role ARNs and bucket name (from `terraform output projects`) in that project's repo.
+- Optional, for comments authored by the product rather than `github-actions[bot]`: create a GitHub App named **JWall Engineering Sites** (no webhook; permissions *Pull requests: read and write*; upload an avatar), generate a private key, and install it on this repo and every site repo. In each of those repos set the variable `JES_APP_CLIENT_ID` to the app's client ID and the secret `JES_APP_PRIVATE_KEY` to the full `.pem` contents, and pass them to the reusable workflows as shown above.
 - Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`.
 - Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
 

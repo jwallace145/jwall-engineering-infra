@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .report import Provenance
+
 
 def write_output(name: str, value: str) -> None:
     """Append `name=value` to GITHUB_OUTPUT when it is set."""
@@ -37,3 +39,17 @@ def run_url() -> str | None:
 
 def head_sha() -> str | None:
     return os.environ.get("JES_HEAD_SHA") or os.environ.get("GITHUB_SHA")
+
+
+def commit_url(sha: str | None) -> str | None:
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repository = os.environ.get("GITHUB_REPOSITORY")
+    if sha and server and repository:
+        return f"{server}/{repository}/commit/{sha}"
+    return None
+
+
+def provenance(version: str) -> Provenance:
+    """What the comments' footer says about this run."""
+    sha = head_sha()
+    return Provenance(version=version, sha=sha, commit_url=commit_url(sha), run_url=run_url())

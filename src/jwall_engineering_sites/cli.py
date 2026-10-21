@@ -39,8 +39,12 @@ preview_app = typer.Typer(
     help="Pull request previews under previews/pr-<n>/.", no_args_is_help=True
 )
 config_app = typer.Typer(help="The tool configuration.", no_args_is_help=True)
+report_app = typer.Typer(
+    help="Render the Markdown the workflows post, from saved output.", no_args_is_help=True
+)
 app.add_typer(preview_app, name="preview")
 app.add_typer(config_app, name="config")
+app.add_typer(report_app, name="report")
 
 LOG_FILE = "jwall-engineering-sites.log"
 
@@ -228,9 +232,8 @@ def plan(ctx: typer.Context) -> None:
                 exit_code,
                 plan_text,
                 run.settings.plan.comment_max_bytes,
-                github.head_sha(),
-                github.run_url(),
-                tool_version(),
+                run.site.config.domain,
+                github.provenance(tool_version()),
             )
             (run.artifacts / "plan-comment.md").write_text(comment)
             github.write_output("result", report.plan_result_name(exit_code))
@@ -265,7 +268,7 @@ def preview_deploy(
             result = _sync_to(run, session, prefix, path, run.settings.sync.preview_cache_control)
         url = site.preview_url(pr)
         (run.artifacts / "preview-comment.md").write_text(
-            report.preview_comment(url, github.head_sha())
+            report.preview_comment(url, pr, site.config.domain, github.provenance(tool_version()))
         )
         github.write_output("preview_url", url)
         github.append_summary(report.sync_summary(f"Preview for #{pr}", url, result, None))
@@ -288,10 +291,45 @@ def preview_remove(
         session = boto3.session.Session(region_name=site.region)
         with phase("remove"):
             count = sync.delete_prefix(session.client("s3"), site.bucket, prefix, run.logger)
-        (run.artifacts / "preview-comment.md").write_text(report.preview_removed_comment())
+        (run.artifacts / "preview-comment.md").write_text(
+            report.preview_removed_comment(
+                pr, site.config.domain, github.provenance(tool_version())
+            )
+        )
         github.append_summary(
             report.run_summary(f"Preview for #{pr} removed", {"objects deleted": str(count)})
         )
+
+    _command(body)(ctx)
+
+
+@report_app.command("plan-comment")
+def report_plan_comment(
+    ctx: typer.Context,
+    exit_code: Annotated[
+        int, typer.Option("--exit-code", help="Exit code of `terraform plan -detailed-exitcode`.")
+    ],
+    plan: Annotated[
+        Path, typer.Option("--plan", help="The saved `terraform plan -no-color` output.")
+    ],
+    subject: Annotated[str, typer.Option("--subject", help="What was planned, for the title.")],
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Where to write (default: the artifacts dir).")
+    ] = None,
+) -> None:
+    """Render the plan comment from a saved plan log. This repository's own CI uses it."""
+
+    def body(run: Run) -> None:
+        comment = report.plan_comment(
+            exit_code,
+            plan.read_text(),
+            run.settings.plan.comment_max_bytes,
+            subject,
+            github.provenance(tool_version()),
+        )
+        target = out or run.artifacts / "plan-comment.md"
+        target.write_text(comment)
+        run.logger.info("wrote %s (%s)", target, report.plan_result_name(exit_code))
 
     _command(body)(ctx)
 

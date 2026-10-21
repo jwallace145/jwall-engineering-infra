@@ -71,12 +71,37 @@ def test_plan_writes_comment_and_outputs(
     assert result.exit_code == 0, result.output
     artifacts = workspace / ".jwall-engineering-sites"
     assert "Plan: 1 to add" in (artifacts / "plan.txt").read_text()
-    assert (
-        (artifacts / "plan-comment.md")
-        .read_text()
-        .startswith("### Terraform plan: changes pending")
-    )
+    comment = (artifacts / "plan-comment.md").read_text()
+    assert "JWall Engineering Sites" in comment
+    assert "> [!WARNING]" in comment and "Changes pending" in comment
+    assert "`guitar.jwall.engineering`" in comment
     assert "result=changes\nchanges=true\n" in github_output.read_text()
+
+
+def test_report_plan_comment_renders_a_plan_log(workspace: Path, tmp_path: Path) -> None:
+    plan_log = tmp_path / "plan.log"
+    plan_log.write_text("No changes. Your infrastructure matches the configuration.\n")
+    out = tmp_path / "plan-comment.md"
+    result = runner.invoke(
+        cli.app,
+        [
+            "report",
+            "plan-comment",
+            "--exit-code",
+            "0",
+            "--plan",
+            str(plan_log),
+            "--subject",
+            "the foundation stack",
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    comment = out.read_text()
+    assert "JWall Engineering Sites" in comment
+    assert "> [!NOTE]" in comment and "No changes" in comment
+    assert "the foundation stack" in comment
 
 
 def test_plan_refuses_the_wrong_role(workspace: Path, fake_terraform: Path) -> None:
@@ -107,7 +132,9 @@ def test_preview_deploy_and_remove(
         asset = s3.head_object(Bucket=BUCKET, Key="previews/pr-12/robots.txt")
         assert asset["CacheControl"] == "public, max-age=300"
         comment = (workspace / ".jwall-engineering-sites" / "preview-comment.md").read_text()
-        assert comment.startswith("**https://pr-12.preview.guitar.jwall.engineering/**")
+        assert "JWall Engineering Sites" in comment
+        assert "**https://pr-12.preview.guitar.jwall.engineering/**" in comment
+        assert "#12" in comment
         assert (
             "preview_url=https://pr-12.preview.guitar.jwall.engineering/"
             in github_output.read_text()
@@ -116,9 +143,9 @@ def test_preview_deploy_and_remove(
         result = runner.invoke(cli.app, ["preview", "remove", "--pr", "12"])
         assert result.exit_code == 0, result.output
         assert "Contents" not in s3.list_objects_v2(Bucket=BUCKET, Prefix="previews/pr-12/")
-        assert (
-            "Removed" in (workspace / ".jwall-engineering-sites" / "preview-comment.md").read_text()
-        )
+        removed = (workspace / ".jwall-engineering-sites" / "preview-comment.md").read_text()
+        assert "JWall Engineering Sites" in removed
+        assert "removed" in removed.lower() and "#12" in removed
 
 
 def test_preview_deploy_needs_a_built_site(workspace: Path, tmp_path: Path) -> None:
