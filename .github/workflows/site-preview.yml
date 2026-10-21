@@ -2,7 +2,9 @@ name: Site preview
 
 # Reusable: publishes a built site to previews/pr-<n>/ as the preview role on
 # open, synchronize and reopen, and removes it on close. The caller builds the
-# site and uploads it as an artifact first.
+# site and uploads it as an artifact first. Pass `app-client-id` and the
+# `app-private-key` secret to post the comment as the JWall Engineering Sites
+# GitHub App instead of github-actions.
 
 on:
   workflow_call:
@@ -15,11 +17,20 @@ on:
         description: ARN of the site's ci-preview role (usually vars.AWS_PREVIEW_ROLE_ARN).
         required: true
         type: string
+      app-client-id:
+        description: ID of the JWall Engineering Sites GitHub App that authors the comment (usually vars.JES_APP_CLIENT_ID). Empty posts as github-actions.
+        required: false
+        type: string
+        default: ""
       debug:
         description: Console log at debug level.
         required: false
         type: boolean
         default: false
+    secrets:
+      app-private-key:
+        description: Private key of the JWall Engineering Sites GitHub App (usually secrets.JES_APP_PRIVATE_KEY). Needed with app-client-id.
+        required: false
 
 permissions: {}
 
@@ -51,10 +62,19 @@ jobs:
           command: preview deploy --pr ${{ github.event.pull_request.number }} --dist .jwall-engineering-sites-dist
           role-arn: ${{ inputs.preview-role-arn }}
           debug: ${{ inputs.debug }}
+      - name: Mint a comment token for the JWall Engineering Sites app
+        id: app-token
+        if: always() && steps.deploy.outcome == 'success' && inputs.app-client-id != ''
+        continue-on-error: true # a misconfigured app falls back to github-actions
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
       - name: Post the preview comment (updated on each push)
         if: always() && steps.deploy.outcome == 'success'
         uses: marocchino/sticky-pull-request-comment@v3
         with:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           header: preview
           path: .jwall-engineering-sites/preview-comment.md
       - name: Upload the run log and artifacts
@@ -88,9 +108,18 @@ jobs:
           command: preview remove --pr ${{ github.event.pull_request.number }}
           role-arn: ${{ inputs.preview-role-arn }}
           debug: ${{ inputs.debug }}
+      - name: Mint a comment token for the JWall Engineering Sites app
+        id: app-token
+        if: inputs.app-client-id != ''
+        continue-on-error: true # a misconfigured app falls back to github-actions
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
       - name: Update the preview comment
         uses: marocchino/sticky-pull-request-comment@v3
         with:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           header: preview
           path: .jwall-engineering-sites/preview-comment.md
       - name: Upload the run log and artifacts

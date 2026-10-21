@@ -246,32 +246,34 @@ jobs:
           cat plan.log
           # 0 = no changes, 2 = changes, anything else = error
           [ "$code" -eq 0 ] || [ "$code" -eq 2 ]
-      - name: Build plan comment
+      - uses: astral-sh/setup-uv@v7
         if: always() && steps.plan.outcome != 'skipped'
+        with:
+          enable-cache: true
+      - name: Build plan comment (the sites CLI renders it, so it matches the site repos)
+        if: always() && steps.plan.outcome != 'skipped'
+        working-directory: .
+        env:
+          JES_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          {
-            if [ "${{ steps.plan.outputs.exitcode }}" = "0" ]; then
-              echo "### Terraform plan: no changes"
-            elif [ "${{ steps.plan.outputs.exitcode }}" = "2" ]; then
-              echo "### Terraform plan: changes pending"
-            else
-              echo "### Terraform plan: failed"
-            fi
-            echo
-            echo "Commit ${{ github.event.pull_request.head.sha }} · [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-            echo
-            echo "<details><summary>Show plan</summary>"
-            echo
-            echo '```hcl'
-            # GitHub comments cap at 65536 chars; keep the tail, which holds the summary.
-            tail -c 60000 plan.log
-            echo '```'
-            echo
-            echo "</details>"
-          } > plan-comment.md
+          uv sync --locked
+          uv run jwall-engineering-sites report plan-comment \
+            --exit-code "${{ steps.plan.outputs.exitcode }}" \
+            --plan foundation/plan.log \
+            --subject jwall-engineering-infra/foundation \
+            --out foundation/plan-comment.md
+      - name: Mint a comment token for the JWall Engineering Sites app
+        id: app-token
+        if: always() && steps.plan.outcome != 'skipped' && vars.JES_APP_CLIENT_ID != ''
+        continue-on-error: true # a misconfigured app falls back to github-actions
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JES_APP_PRIVATE_KEY }}
       - name: Post plan comment (updated on each push)
         if: always() && steps.plan.outcome != 'skipped'
         uses: marocchino/sticky-pull-request-comment@v3
         with:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           header: terraform-plan
           path: foundation/plan-comment.md

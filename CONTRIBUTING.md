@@ -7,7 +7,7 @@ This repo follows the jwall-engineering conventions. The short version: one-line
 1. Branch from `main`.
 2. Make the change. Keep Terraform formatted (`terraform fmt`) and run the local checks below.
 3. Open a PR with a typed template (see below). The PR title must be a valid Conventional Commit.
-4. Review the `Terraform plan` comment CI posts on the PR. It is updated on every push.
+4. Review the `Terraform plan` comment CI posts on the PR. It is updated on every push; its alert says whether merging changes, destroys or leaves AWS alone, and the resource table under it lists each action.
 5. Merge with **squash** or **rebase**. Merge commits are disabled and history stays linear.
 
 Direct pushes to `main` are not allowed. The only exception was the initial scaffold commit during bootstrap.
