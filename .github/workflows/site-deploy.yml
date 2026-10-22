@@ -66,7 +66,7 @@ jobs:
           debug: ${{ inputs.debug }}
       - name: Upload the run log and artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jwall-engineering-sites-${{ github.job }}-${{ github.run_attempt }}
           path: .jwall-engineering-sites/
