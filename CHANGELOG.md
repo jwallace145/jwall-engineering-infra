@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.10.0...v0.10.1) (2026-10-22)
+
+
+### Documentation
+
+* say which commit types release and how to ship hidden-type dependency bumps ([#58](https://github.com/jwallace145/jwall-engineering-infra/issues/58)) ([91b598a](https://github.com/jwallace145/jwall-engineering-infra/commit/91b598a87aeadb941f71bbfa8df563d2100c6da0))
+
 ## [0.10.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.9.1...v0.10.0) (2026-10-21)
 
 
