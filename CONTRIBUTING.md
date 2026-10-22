@@ -42,6 +42,8 @@ gh pr merge <n> --squash --subject "ci: bump actions/checkout from 6 to 7"
 
 The CI plan comment still has to show no changes.
 
+Pick the type with the release in mind. Release Please only cuts a release when a commit of a type that appears in `CHANGELOG.md` lands on `main`: `feat`, `fix`, `perf`, `revert` or `docs`. `chore`, `ci`, `build`, `refactor`, `style` and `test` are hidden from the changelog and never release on their own, and a `Release-As` footer cannot help because squash commits carry only the PR title. A bump that should ship, such as a Terraform provider in `foundation/` or anything that goes into the CLI image, is a `fix(deps):`. Bumps that only touch tooling stay `chore` or `ci` and ride along with the next release. If hidden-type bumps have piled up and you want them applied now, merge a PR of a visible type (a `docs:` change is enough) and Release Please will open the release PR for them.
+
 ## Pull request templates
 
 Templates live in `.github/PULL_REQUEST_TEMPLATE/`, one per type: `feat.md`, `fix.md`, `docs.md`, `chore.md`, `refactor.md`, `ci.md`. Pick one with
