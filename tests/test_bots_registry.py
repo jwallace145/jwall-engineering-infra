@@ -36,17 +36,18 @@ def test_bot_state_prefixes_are_in_the_state_bucket_policy() -> None:
     assert "module.bot_ci_apply[key].role_arn" in state
 
 
-def _yaml(path: str) -> dict[str, object]:
+def _yaml(path: str) -> dict[Any, Any]:
+    """A workflow as data. PyYAML reads the bare `on:` key as True, hence Any keys."""
     import yaml
 
-    data: dict[str, object] = yaml.safe_load((REPO_ROOT / path).read_text())
+    data: dict[Any, Any] = yaml.safe_load((REPO_ROOT / path).read_text())
     return data
 
 
 def test_workflow_matrices_list_every_bot() -> None:
-    ci: dict[str, Any] = _yaml(".github/workflows/ci.yml")  # type: ignore[assignment]
+    ci: dict[Any, Any] = _yaml(".github/workflows/ci.yml")
     plan_projects = {i["project"] for i in ci["jobs"]["bot-plan"]["strategy"]["matrix"]["include"]}
-    apply: dict[str, Any] = _yaml(".github/workflows/bot-apply.yml")  # type: ignore[assignment]
+    apply: dict[Any, Any] = _yaml(".github/workflows/bot-apply.yml")
     # PyYAML reads the bare `on:` key as True.
     options = set(apply[True]["workflow_dispatch"]["inputs"]["project"]["options"])
     assert plan_projects == set(registry()) == options
@@ -66,7 +67,7 @@ def test_container_release_runs_this_commit_and_pins_nothing() -> None:
     assert "@v0." not in text and "x-release-please-version" not in text
     assert "bot reconcile --version" in text
     assert "--config .jwall-engineering-infra/config.yaml" in text
-    release: dict[str, Any] = _yaml(".github/workflows/container-release.yml")  # type: ignore[assignment]
+    release: dict[Any, Any] = _yaml(".github/workflows/container-release.yml")
     assert release["permissions"] == {}
     job = release["jobs"]["release"]
     assert job["permissions"] == {"contents": "read", "id-token": "write"}
