@@ -14,7 +14,7 @@ locals {
 
 module "image" {
   source  = "jwallace145/jwall-engineering/aws//modules/ecr-repository"
-  version = "0.10.0"
+  version = "0.10.1"
 
   name                       = local.name
   keep_release_images        = var.keep_release_images
@@ -23,7 +23,7 @@ module "image" {
 
 module "network" {
   source  = "jwallace145/jwall-engineering/aws//modules/vpc"
-  version = "0.10.0"
+  version = "0.10.1"
 
   name               = local.name
   availability_zones = var.availability_zones
@@ -31,7 +31,7 @@ module "network" {
 
 module "records" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.10.0"
+  version = "0.10.1"
   count   = var.records_enabled ? 1 : 0
 
   name = "${local.name}-records"
@@ -39,7 +39,7 @@ module "records" {
 
 module "bot" {
   source  = "jwallace145/jwall-engineering/aws//modules/container-instance"
-  version = "0.10.0"
+  version = "0.10.1"
 
   name                 = "${local.name}-bot"
   project              = var.project
