@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.10.1...v0.11.0) (2026-10-28)
+
+
+### Features
+
+* add the container-image and lichess-bot kinds ([#60](https://github.com/jwallace145/jwall-engineering-infra/issues/60)) ([7c0271a](https://github.com/jwallace145/jwall-engineering-infra/commit/7c0271a3231f8e3a1f08c6896b58a13bbe4f3a12))
+* **bot:** derive bot role ARNs from config.yaml instead of repository variables ([#63](https://github.com/jwallace145/jwall-engineering-infra/issues/63)) ([0a111e4](https://github.com/jwallace145/jwall-engineering-infra/commit/0a111e4be2117b74903076ad9bcdbfebb4e4cabd))
+
 ## [0.10.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.10.0...v0.10.1) (2026-10-22)
 
 
