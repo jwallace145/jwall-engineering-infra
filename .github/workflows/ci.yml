@@ -158,6 +158,37 @@ jobs:
           tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl"
 
+
+  bot-stack:
+    name: Bot stack validate, tflint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: stacks/bot
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.14"
+      - name: terraform init (no backend)
+        uses: ./.github/actions/terraform-init
+        with:
+          args: -backend=false
+          working-directory: stacks/bot
+      - name: terraform validate
+        run: terraform validate -no-color
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: latest
+      - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin downloads hit the unauthenticated API limit on shared runners
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --config "$GITHUB_WORKSPACE/.tflint.hcl"
+
   image:
     name: Image build and smoke test
     runs-on: ubuntu-latest
@@ -192,7 +223,7 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint python jwall-engineering-sites:ci -c '
           import boto3
-          for service in ("s3", "sts", "cloudfront"):
+          for service in ("s3", "sts", "cloudfront", "ssm", "ec2", "logs", "ecr"):
               boto3.session.Session(region_name="us-east-1").client(service)
           print("boto3 clients ok")'
       - name: Image size budget

@@ -16,7 +16,7 @@ terraform:
 
 library:
   source: jwallace145/jwall-engineering/aws
-  version: 0.9.1 # the one module pin the whole fleet of sites shares
+  version: 0.10.0 # the one module pin the whole fleet shares (sites and bots)
 
 state:
   bucket: jwall-engineering-tfstate
@@ -44,3 +44,11 @@ sync:
 
 plan:
   comment_max_bytes: 60000
+
+bot:
+  # Bot projects (components: container-image + lichess-bot). The container
+  # must log this within health_seconds after a deploy, or it is rolled back.
+  health_log_pattern: awaiting challenges
+  health_seconds: 90
+  records_prefix: records/ # game records: <prefix>pgn|meta/schema=1/engine=<tag>/date=<day>/
+  availability_zones: [us-east-1a, us-east-1b]

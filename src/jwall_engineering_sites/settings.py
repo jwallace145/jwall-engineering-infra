@@ -102,6 +102,15 @@ class SyncSection(_Section):
     immutable_cache_control: str
 
 
+class BotSection(_Section):
+    """How bot projects run: the health check and the records layout prefix."""
+
+    health_log_pattern: str
+    health_seconds: int = Field(ge=10, le=600)
+    records_prefix: str = Field(pattern=r"^([a-z0-9][a-z0-9-]*/)+$")
+    availability_zones: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+
 class PlanSection(_Section):
     comment_max_bytes: int = Field(ge=1024, le=65000)
 
@@ -118,6 +127,7 @@ class Settings(_Section):
     ecr: EcrSection
     sync: SyncSection
     plan: PlanSection
+    bot: BotSection
 
     def state_key(self, project: str, environment: str) -> str:
         return self.state.key_template.format(project=project, environment=environment)

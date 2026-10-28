@@ -92,3 +92,26 @@ def test_site_stack_pins_the_configured_library_version() -> None:
     assert match, "stacks/site/main.tf must pin the library root module"
     assert match.group(1) == config["library"]["version"]
     assert config["library"]["source"] == "jwallace145/jwall-engineering/aws"
+
+
+_MODULE_PIN = re.compile(
+    r'source\s*=\s*"jwallace145/jwall-engineering/aws(?://modules/[a-z-]+)?"\s*\n\s*version\s*=\s*"([\d.]+)"'
+)
+
+
+def test_bot_stack_pins_the_configured_library_version() -> None:
+    config = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    pins = _MODULE_PIN.findall((REPO_ROOT / "stacks" / "bot" / "main.tf").read_text())
+    assert len(pins) == 4, (
+        "stacks/bot composes ecr-repository, vpc, private-bucket, container-instance"
+    )
+    assert set(pins) == {config["library"]["version"]}
+
+
+def test_every_registry_pin_matches_config() -> None:
+    """AGENTS.md: every module pin in the repository moves together with library.version."""
+    config = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    files = [*(REPO_ROOT / "foundation").glob("*.tf"), *(REPO_ROOT / "stacks").glob("*/*.tf")]
+    pins = [pin for f in files for pin in _MODULE_PIN.findall(f.read_text())]
+    assert pins, "no registry module pins found"
+    assert set(pins) == {config["library"]["version"]}
