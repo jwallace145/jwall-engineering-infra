@@ -265,3 +265,84 @@ def test_destroy_refuses_sites(workspace: Path, fake_terraform: Path) -> None:
         result = runner.invoke(cli.app, ["destroy", "--yes"])
     assert result.exit_code == 3
     assert "not supported for sites" in result.output
+
+
+BOT_RELEASE_ROLE = (
+    "arn:aws:sts::650503560686:assumed-role/jwall-engineering-rusty-chess-ci-release/s"
+)
+TOKEN_PARAM = "/jwall-engineering/rusty-chess/lichess-token"
+
+
+def test_secrets_set_prompts_hidden(bot_workspace: Path) -> None:
+    with mock_aws():
+        result = runner.invoke(
+            cli.app, ["bot", "secrets", "set", "LICHESS_TOKEN"], input="lip_t0k\n"
+        )
+        assert result.exit_code == 0, result.output
+        value = boto3.client("ssm", region_name="us-east-1").get_parameter(
+            Name=TOKEN_PARAM, WithDecryption=True
+        )["Parameter"]["Value"]
+    assert value == "lip_t0k"
+    assert "lip_t0k" not in result.output
+    assert TOKEN_PARAM in result.output
+
+
+def test_secrets_set_refuses_an_undeclared_name(bot_workspace: Path) -> None:
+    with mock_aws():
+        result = runner.invoke(cli.app, ["bot", "secrets", "set", "OTHER"], input="x\n")
+    assert result.exit_code == 2
+    assert "LICHESS_TOKEN" in result.output
+
+
+def test_secrets_check_exit_codes(bot_workspace: Path) -> None:
+    with mock_aws():
+        missing = runner.invoke(cli.app, ["bot", "secrets", "check", "LICHESS_TOKEN"])
+        boto3.client("ssm", region_name="us-east-1").put_parameter(
+            Name=TOKEN_PARAM, Value="x", Type="SecureString"
+        )
+        present = runner.invoke(cli.app, ["bot", "secrets", "check", "LICHESS_TOKEN"])
+    assert missing.exit_code == 3 and "not set" in missing.output
+    assert present.exit_code == 0 and "set" in present.output
+    assert "x\n" not in present.output
+
+
+def test_bot_status_output(bot_workspace: Path) -> None:
+    with mock_aws(), _as_role(BOT_PLAN_ROLE):
+        boto3.client("ssm", region_name="us-east-1").put_parameter(
+            Name="/jwall-engineering/rusty-chess/bot/status", Value="ok", Type="String"
+        )
+        result = runner.invoke(cli.app, ["bot", "status"])
+    assert result.exit_code == 0, result.output
+    assert "status:            ok" in result.output
+    assert "instance:          none" in result.output
+
+
+def test_bot_status_accepts_the_release_role(bot_workspace: Path) -> None:
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        result = runner.invoke(cli.app, ["bot", "status"])
+    assert result.exit_code == 0, result.output
+
+
+def test_bot_status_refuses_other_roles(bot_workspace: Path) -> None:
+    with mock_aws(), _as_role(PLAN_ROLE):
+        result = runner.invoke(cli.app, ["bot", "status"])
+    assert result.exit_code == 3
+
+
+def test_bot_logs_prints_events(bot_workspace: Path) -> None:
+    with mock_aws(), _as_role(BOT_PLAN_ROLE):
+        logs = boto3.client("logs", region_name="us-east-1")
+        group = "/jwall-engineering/rusty-chess/bot"
+        logs.create_log_group(logGroupName=group)
+        logs.create_log_stream(logGroupName=group, logStreamName="app-v0.14.0")
+        import time
+
+        logs.put_log_events(
+            logGroupName=group,
+            logStreamName="app-v0.14.0",
+            logEvents=[{"timestamp": int(time.time() * 1000), "message": "awaiting challenges"}],
+        )
+        result = runner.invoke(cli.app, ["bot", "logs", "--since", "10m"])
+    assert result.exit_code == 0, result.output
+    assert "awaiting challenges" in result.output
+    assert "app-v0.14.0" in result.output

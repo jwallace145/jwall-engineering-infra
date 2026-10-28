@@ -22,10 +22,11 @@ import boto3
 import typer
 
 from . import aws, github, report, stack, sync
-from .errors import PreflightError, SitesError
+from . import bot as botlib
+from .errors import ConfigError, PreflightError, SitesError
 from .log import annotate_error, artifacts_dir, phase, setup_logging
 from .project import Project, Role
-from .settings import Settings, default_config_path, load_settings
+from .settings import Settings, default_config_path, load_settings, parse_duration
 from .site import DEV_PREFIX, PROD_PREFIX, SITE_FILE, Site, load_site_config
 
 app = typer.Typer(
@@ -43,6 +44,15 @@ config_app = typer.Typer(help="The tool configuration.", no_args_is_help=True)
 report_app = typer.Typer(
     help="Render the Markdown the workflows post, from saved output.", no_args_is_help=True
 )
+bot_app = typer.Typer(
+    help="Bot projects: the container image and the Lichess bot server.", no_args_is_help=True
+)
+secrets_app = typer.Typer(
+    help="The bot's secrets in SSM Parameter Store (values are never printed).",
+    no_args_is_help=True,
+)
+bot_app.add_typer(secrets_app, name="secrets")
+app.add_typer(bot_app, name="bot")
 app.add_typer(preview_app, name="preview")
 app.add_typer(config_app, name="config")
 app.add_typer(report_app, name="report")
@@ -532,6 +542,120 @@ def config_show(ctx: typer.Context) -> None:
     """Print the effective tool configuration as JSON."""
     run: Run = ctx.obj
     print(json.dumps(run.settings.model_dump(mode="json"), indent=2, sort_keys=True))
+
+
+# -- bot projects ----------------------------------------------------------------
+
+
+def _bot_project(run: Run) -> Project:
+    project = run.project
+    if project.kind != "bot":
+        raise PreflightError(f"{project.project} is a site; the bot commands work on bot projects")
+    return project
+
+
+def _bot_session(run: Run, roles: list[Role] | None) -> boto3.session.Session:
+    """A session in the project's region, after checking the role when `roles` is given."""
+    project = _bot_project(run)
+    session = boto3.session.Session(region_name=project.region)
+    with phase("preflight"):
+        if roles is None:
+            _, arn = aws.caller_identity(session.client("sts"))
+            run.logger.info("running as %s", arn)
+        else:
+            aws.check_any_role(
+                session.client("sts"), [project.role_name(r) for r in roles], run.logger
+            )
+    return session
+
+
+def _secret_parameter(project: Project, name: str) -> str:
+    try:
+        return project.bot.secrets[name]
+    except KeyError:
+        declared = ", ".join(sorted(project.bot.secrets))
+        raise ConfigError(
+            f"{name} is not a declared secret; the project declares {declared}"
+        ) from None
+
+
+@secrets_app.command("set")
+def secrets_set(
+    ctx: typer.Context,
+    name: Annotated[
+        str, typer.Argument(help="Secret name from lichess-bot.secrets, e.g. LICHESS_TOKEN.")
+    ],
+) -> None:
+    """Prompt for a secret (no echo) and write it as a SecureString. Run from the owner's shell."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        parameter = _secret_parameter(project, name)
+        session = _bot_session(run, roles=None)
+        value = typer.prompt(f"{name}", hide_input=True)
+        if not value.strip():
+            raise PreflightError(f"{name} must not be empty")
+        botlib.put_secret(session.client("ssm"), parameter, value.strip())
+        run.logger.info(
+            "wrote %s to %s; a running bot picks it up with `bot deploy --restart`", name, parameter
+        )
+
+    _command(body)(ctx)
+
+
+@secrets_app.command("check")
+def secrets_check(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Argument(help="Secret name from lichess-bot.secrets.")],
+) -> None:
+    """Exit 0 if the secret exists, 3 if not. Never reads its value."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        parameter = _secret_parameter(project, name)
+        session = _bot_session(run, roles=None)
+        if not botlib.secret_exists(session.client("ssm"), parameter):
+            raise PreflightError(f"{name} ({parameter}) is not set")
+        run.logger.info("%s (%s) is set", name, parameter)
+
+    _command(body)(ctx)
+
+
+@bot_app.command("status")
+def bot_status(ctx: typer.Context) -> None:
+    """The instance, desired and running versions, rollout status and last records sync."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        session = _bot_session(run, roles=["plan", "release"])
+        print(botlib.render_status(botlib.status(session, project)))
+
+    _command(body)(ctx)
+
+
+@bot_app.command("logs")
+def bot_logs(
+    ctx: typer.Context,
+    since: Annotated[str, typer.Option("--since", help="How far back, e.g. 10m, 2h.")] = "10m",
+    follow: Annotated[
+        bool, typer.Option("--follow", "-f", help="Keep printing new events.")
+    ] = False,
+) -> None:
+    """Print the bot container's CloudWatch logs."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        try:
+            seconds = parse_duration(since)
+        except ValueError as exc:
+            raise ConfigError(f"--since: {exc}") from exc
+        session = _bot_session(run, roles=["plan", "release"])
+        for line in botlib.tail_logs(
+            session.client("logs"), project.log_group, seconds, follow, run.logger
+        ):
+            print(line, flush=True)
+
+    _command(body)(ctx)
 
 
 if __name__ == "__main__":  # pragma: no cover
