@@ -1,0 +1,89 @@
+name: Bot apply
+
+# Applies a bot project's stack (stacks/bot): its image repository, VPC,
+# records bucket and instance. Run by hand, after reading the bot plan
+# comment, while the bot is idle: a change to the instance's AMI, type or
+# user data replaces the instance and ends the game in progress. That is why
+# this is not chained to every release of this repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: The bot project to apply (foundation/bots.tf).
+        required: true
+        type: choice
+        options:
+          - rusty-chess
+      destroy:
+        description: Destroy the stack instead (the records bucket and the secret are kept).
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: bot-apply-${{ inputs.project }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  apply:
+    name: ${{ inputs.destroy && 'Destroy' || 'Apply' }} ${{ inputs.project }}
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+    permissions:
+      contents: read
+      id-token: write # assume the bot's apply role through GitHub OIDC
+    steps:
+      - uses: actions/checkout@v7
+      - name: Look up the bot's repository
+        id: bot
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          repository=$(sed -n "s/^ *${PROJECT} *= *{ *repository *= *\"\([^\"]*\)\".*/\1/p" foundation/bots.tf)
+          test -n "$repository" || { echo "::error::$PROJECT is not in foundation/bots.tf"; exit 1; }
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+      - name: Check out the bot's project file (its default branch)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.bot.outputs.repository }}
+          path: .consumer
+          sparse-checkout: |
+            jwall-engineering-sites.yaml
+            lichess
+          sparse-checkout-cone-mode: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.7"
+          terraform_wrapper: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/jwall-engineering-${{ inputs.project }}-ci-apply
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-bot-apply-${{ inputs.project }}-${{ github.run_id }}
+      - name: jwall-engineering-sites ${{ inputs.destroy && 'destroy' || 'apply' }}
+        env:
+          JES_STACKS_ROOT: ${{ github.workspace }}/stacks
+          COMMAND: ${{ inputs.destroy && 'destroy --yes' || 'apply' }}
+        run: |
+          # COMMAND is `apply` or `destroy --yes`: two words on purpose.
+          # shellcheck disable=SC2086
+          uv run jwall-engineering-sites --file .consumer/jwall-engineering-sites.yaml $COMMAND
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bot-apply-${{ inputs.project }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore
