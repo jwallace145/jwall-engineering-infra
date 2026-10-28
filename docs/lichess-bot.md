@@ -226,7 +226,7 @@ as `bot status` and `bot logs`. `bot secrets` needs no role.
 | `bot deploy --version vX.Y.Z [--restart]` | `ci-release` | Roll the bot to a pushed tag and follow the swap |
 | `bot reconcile [--version vX.Y.Z] [--dry-run]` | `ci-release` | Build, push and deploy as needed; idempotent |
 | `bot status` | `ci-plan` or `ci-release` | Instance, versions, status, last records sync |
-| `bot logs [--since 10m] [--follow]` | `ci-plan` or `ci-release` | The container's CloudWatch logs |
+| `bot logs [--since 10m] [--follow]` | `ci-plan` | The container's CloudWatch logs |
 | `bot secrets set\|check NAME` | your shell | Write or check a secret |
 
 ## The caller workflow

@@ -682,3 +682,10 @@ def test_bot_deploy_refuses_a_booting_instance(
     assert result.exit_code == 3
     assert "i-boot is pending" in result.output
     assert desired is None, "nothing is written before the instance can take the command"
+
+
+def test_bot_logs_refuses_the_release_role(bot_workspace: Path) -> None:
+    """Only the plan role may read the logs (container/read); the release role ships images."""
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        result = runner.invoke(cli.app, ["bot", "logs"])
+    assert result.exit_code == 3

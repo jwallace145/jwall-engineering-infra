@@ -671,7 +671,7 @@ def bot_logs(
             seconds = parse_duration(since)
         except ValueError as exc:
             raise ConfigError(f"--since: {exc}") from exc
-        session = _bot_session(run, roles=["plan", "release"])
+        session = _bot_session(run, roles=["plan"])
         for line in botlib.tail_logs(
             session.client("logs"), project.log_group, seconds, follow, run.logger
         ):

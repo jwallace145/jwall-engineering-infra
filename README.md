@@ -40,7 +40,8 @@ reusable workflows this repository publishes. The design is in
 | `bot push --version vX.Y.Z` | `ci-release` | Push the image under the release tag; refuses an existing tag |
 | `bot deploy --version vX.Y.Z [--restart]` | `ci-release` | Roll the bot to a pushed tag and follow the swap (waits for the game in progress) |
 | `bot reconcile [--version vX.Y.Z] [--dry-run]` | `ci-release` | Build, push and deploy as needed; idempotent; what the release workflow runs |
-| `bot status`, `bot logs [--since D] [--follow]` | `ci-plan` or `ci-release` | Instance, versions and rollout status; the container's CloudWatch logs |
+| `bot status` | `ci-plan` or `ci-release` | Instance, versions and rollout status |
+| `bot logs [--since D] [--follow]` | `ci-plan` | The container's CloudWatch logs |
 | `bot secrets set\|check NAME` | the owner's shell | Write (no echo) or check a SecureString secret |
 
 Every command checks that the credentials are the role it expects, that the
