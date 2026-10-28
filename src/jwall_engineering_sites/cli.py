@@ -709,7 +709,10 @@ def _build(run: Run, project: Project, tag: str) -> str:
         run.logger.info("%s: sha256 %s verified", asset, digest)
         binary = releases.extract_binary(archive, project.image.artifact.binary, work / "engine")
     with phase("build"):
-        context = image.prepare_context(project, tag, binary, work / "context", Path.cwd())
+        # Paths in the project file (lichess/config.yml, dockerfile) are relative to
+        # the file's own directory, wherever the command runs from.
+        consumer_root = run.site_file.resolve().parent
+        context = image.prepare_context(project, tag, binary, work / "context", consumer_root)
         name = image.build(context, project, tag, run.logger)
     with phase("smoke test"):
         nodes = image.smoke_test(name, project, run.logger)
