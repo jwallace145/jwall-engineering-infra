@@ -23,7 +23,7 @@ import typer
 
 from . import aws, github, image, releases, report, rollout, stack, sync
 from . import bot as botlib
-from .errors import ConfigError, PreflightError, SitesError
+from .errors import ConfigError, PreflightError, RunError, SitesError
 from .log import annotate_error, artifacts_dir, phase, setup_logging
 from .project import Project, Role
 from .settings import Settings, default_config_path, load_settings, parse_duration
@@ -502,17 +502,39 @@ def destroy(
                 "repository are deleted"
             )
         _preflight(run, "apply", prefix=None)
+        session = boto3.session.Session(region_name=project.region)
+        try:
+            tags = image.present_tags(session.client("ecr"), project.image_repository)
+        except RunError:
+            tags = set()  # no repository (never applied, or already destroyed)
+        if tags:
+            raise PreflightError(
+                f"{project.image_repository} still holds {len(tags)} image tag(s); the repository "
+                "refuses deletion while it has images. Delete them first with admin credentials: "
+                f"aws ecr batch-delete-image --repository-name {project.image_repository} "
+                '--image-ids "$(aws ecr list-images --repository-name '
+                f'{project.image_repository} --query imageIds --output json)"'
+            )
 
         def tf(terraform: stack.Terraform) -> None:
             with phase("init"):
                 terraform.init()
+            # The records bucket has prevent_destroy, which would reject the whole
+            # plan. Releasing it from state keeps the bucket and its games.
+            if any(a.startswith("module.records") for a in terraform.state_list()):
+                with phase("keep records"):
+                    terraform.state_rm("module.records")
+                    run.logger.info(
+                        "released %s from Terraform state; the bucket and its games are kept",
+                        project.records_bucket,
+                    )
             with phase("destroy"):
                 terraform.destroy()
 
         _with_terraform(run, tf)
         run.logger.info(
-            "destroyed %s; kept: the records bucket %s (prevent_destroy) and the secret "
-            "parameters, which Terraform never owned",
+            "destroyed %s; kept: the records bucket %s (no longer managed by Terraform) and "
+            "the secret parameters, which Terraform never owned",
             project.project,
             project.records_bucket,
         )
@@ -721,7 +743,9 @@ def _deploy(
             f"{project.image_repository}:{tag} is not in the repository; push it first"
         )
     instance = botlib.find_instance(session.client("ec2"), project.project)
-    if instance is None or instance.state not in ("running", "pending"):
+    # Not "pending": its SSM agent is not registered yet and would refuse the
+    # command; a booting instance converges to the desired version on its own.
+    if instance is None or instance.state != "running":
         raise PreflightError(
             f"no running instance tagged tag:Project={project.project}, "
             f"tag:Component={botlib.INSTANCE_COMPONENT}"
@@ -740,7 +764,15 @@ def _deploy(
         run.logger.info(
             "asked %s to reconcile to %s; it waits for the game in progress", instance.id, tag
         )
-        rollout.follow(ssm, command_id, instance.id, project, tag, run.logger)
+        outcome = rollout.follow(ssm, command_id, instance.id, project, tag, run.logger)
+    if outcome == "superseded":
+        run.logger.info("%s was superseded by a newer deploy; that one is being shipped", tag)
+        github.append_summary(
+            report.run_summary(
+                f"{tag} superseded", {"instance": instance.id, "previous": before or "nothing"}
+            )
+        )
+        return
     run.logger.info("deployed %s (was %s)", tag, before or "nothing")
     github.write_output("version", tag)
     github.append_summary(

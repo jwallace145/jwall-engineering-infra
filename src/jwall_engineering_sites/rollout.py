@@ -83,19 +83,37 @@ def decide(
 
 def send_reconcile(ssm: SSMClient, instance_id: str, restart: bool = False) -> str:
     command = TRIGGER + (" --restart" if restart else "")
-    response = ssm.send_command(
-        InstanceIds=[instance_id],
-        DocumentName="AWS-RunShellScript",
-        Parameters={"commands": [command], "executionTimeout": ["120"]},
-        Comment="jwall-engineering-sites deploy",
-    )
+    try:
+        response = ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": [command], "executionTimeout": ["120"]},
+            Comment="jwall-engineering-sites deploy",
+        )
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        raise RunError(
+            f"could not send the reconcile command to {instance_id} ({code}); the desired "
+            "version is set and the instance converges to it at its next boot"
+        ) from exc
     return response["Command"]["CommandId"]
 
 
-def _parameters(ssm: SSMClient, project: Project) -> tuple[str | None, str | None]:
-    names = [project.parameter("status"), project.parameter("running-version")]
+def _parameters(ssm: SSMClient, project: Project) -> tuple[str | None, str | None, str | None]:
+    names = [
+        project.parameter("status"),
+        project.parameter("running-version"),
+        project.parameter("desired-version"),
+    ]
     found = {p["Name"]: p["Value"] for p in ssm.get_parameters(Names=names).get("Parameters", [])}
-    return found.get(names[0]), found.get(names[1])
+    return found.get(names[0]), found.get(names[1]), found.get(names[2])
+
+
+def _not_yet(exc: BaseException) -> bool:
+    """Only InvocationDoesNotExist means the command has not reached the agent yet."""
+    if isinstance(exc, ClientError):
+        return exc.response.get("Error", {}).get("Code") == "InvocationDoesNotExist"
+    return True
 
 
 def follow(
@@ -113,9 +131,11 @@ def follow(
 ) -> str:
     """Wait for the trigger to succeed, then for the reconciler to finish.
 
-    Returns "ok" when the status is `ok` and the running version is `version`.
-    Raises RunError on a failed trigger, a `failed:` status, or after
-    `max_seconds` (the swap then continues on the instance)."""
+    Returns "ok" when the status is `ok` and the running version is `version`,
+    or "superseded" when a newer deploy replaced `version` as the desired
+    version (the reconciler then ships the newer one). Raises RunError on a
+    failed trigger, a `failed:` status, or after `max_seconds` (the swap then
+    continues on the instance)."""
     started = clock()
 
     # 1. The trigger command: it only starts a systemd unit, so it is quick.
@@ -125,6 +145,10 @@ def follow(
                 CommandId=command_id, InstanceId=instance_id
             )
         except not_yet as exc:
+            if not _not_yet(exc):
+                raise RunError(
+                    f"cannot follow the reconcile command on {instance_id}: {exc}"
+                ) from exc
             if clock() - started > TRIGGER_GRACE_SECONDS:
                 raise RunError(f"the reconcile command never reached {instance_id}: {exc}") from exc
             sleep(2)
@@ -149,10 +173,13 @@ def follow(
     # 2. The reconciler, through the parameters it writes.
     last: tuple[str | None, str | None] | None = None
     while True:
-        status, running = _parameters(ssm, project)
+        status, running, desired = _parameters(ssm, project)
         if (status, running) != last:
             logger.info("status: %s (running %s)", status or "not set", running or "nothing")
             last = (status, running)
+        if desired and desired != version:
+            logger.info("%s was superseded by a newer deploy of %s", version, desired)
+            return "superseded"
         if status and status.startswith(FAILED):
             raise RunError(f"deploy of {version} failed on the instance: {status}")
         if status == "ok" and running == version:

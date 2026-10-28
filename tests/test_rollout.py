@@ -164,3 +164,78 @@ def test_send_reconcile_uses_the_async_trigger() -> None:
     assert sent["InstanceIds"] == ["i-1"]
     assert sent["DocumentName"] == "AWS-RunShellScript"
     assert sent["Parameters"]["commands"] == ["container-reconcile-async --restart"]
+
+
+def test_follow_returns_superseded_when_a_newer_deploy_wins(bot: Project) -> None:
+    ssm = FakeSSM(
+        [{"Status": "Success"}],
+        [
+            {
+                "status": "waiting:v0.14.0",
+                "running-version": "v0.14.0",
+                "desired-version": "v0.15.0",
+            },
+            {
+                "status": "waiting:v0.14.0",
+                "running-version": "v0.14.0",
+                "desired-version": "v0.16.0",
+            },
+            {"status": "ok", "running-version": "v0.16.0", "desired-version": "v0.16.0"},
+        ],
+    )
+    assert _follow(ssm, bot, "v0.15.0") == "superseded"
+
+
+def test_follow_does_not_retry_access_denied(bot: Project) -> None:
+    from botocore.exceptions import ClientError
+
+    denied = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Get")
+    ssm = FakeSSM([denied], [])
+    clock = iter(range(0, 10**6, 1))
+    with pytest.raises(RunError, match="AccessDeniedException") as exc:
+        rollout.follow(
+            ssm,  # type: ignore[arg-type]
+            "cmd-1",
+            "i-1",
+            bot,
+            "v0.15.0",
+            logging.getLogger("t"),
+            sleep=lambda _: None,
+            clock=lambda: float(next(clock)),
+        )
+    assert "never reached" not in str(exc.value), "access denied must not be retried as 'not yet'"
+
+
+def test_follow_retries_invocation_does_not_exist(bot: Project) -> None:
+    from botocore.exceptions import ClientError
+
+    not_yet = ClientError({"Error": {"Code": "InvocationDoesNotExist", "Message": ""}}, "Get")
+    ssm = FakeSSM(
+        [not_yet, {"Status": "Success"}],
+        [{"status": "ok", "running-version": "v0.15.0", "desired-version": "v0.15.0"}],
+    )
+    clock = iter(range(0, 1000, 1))
+    assert (
+        rollout.follow(
+            ssm,  # type: ignore[arg-type]
+            "cmd-1",
+            "i-1",
+            bot,
+            "v0.15.0",
+            logging.getLogger("t"),
+            sleep=lambda _: None,
+            clock=lambda: float(next(clock)),
+        )
+        == "ok"
+    )
+
+
+def test_send_reconcile_wraps_client_errors() -> None:
+    from botocore.exceptions import ClientError
+
+    class SSM:
+        def send_command(self, **kwargs: Any) -> dict[str, Any]:
+            raise ClientError({"Error": {"Code": "InvalidInstanceId", "Message": "x"}}, "Send")
+
+    with pytest.raises(RunError, match="InvalidInstanceId"):
+        rollout.send_reconcile(SSM(), "i-1")  # type: ignore[arg-type]

@@ -127,7 +127,9 @@ Everything else in the config, including matchmaking, stays yours.
    - starts the new version and gives it 90 seconds to log
      `awaiting challenges`.
 4. The workflow follows the status until it reads `ok`, or fails on
-   `failed:<reason>`. Your release shows the result as a check.
+   `failed:<reason>`. Your release shows the result as a check. If a newer
+   release is deployed while this one waits, this run ends green as
+   *superseded*, and the newer run ships.
 
 Guarantees:
 
@@ -208,12 +210,17 @@ sudo docker ps; sudo docker logs --tail 100 app
 
 ## Commands
 
+The commands check that they run as the role in the table. In CI the
+workflows assume it. From your own shell with admin credentials, either
+assume the role, or set `JES_SKIP_ROLE_CHECK=1` for read-only commands such
+as `bot status` and `bot logs`. `bot secrets` needs no role.
+
 | Command | Role | What it does |
 |---|---|---|
 | `validate` | none | Validate the file and the bot stack offline |
 | `plan` | `ci-plan` | Plan `stacks/bot`, with the plan comment |
 | `apply` | `ci-apply` | Apply `stacks/bot` |
-| `destroy --yes` | `ci-apply` | Destroy the stack; the records bucket and the secret stay |
+| `destroy --yes` | `ci-apply` | Destroy the stack. It refuses while images remain; the records bucket is released from state and kept, and the secret stays |
 | `bot build --version vX.Y.Z` | none | Download, verify, build and smoke-test locally (Docker) |
 | `bot push --version vX.Y.Z` | `ci-release` | Push a built image; refuses an existing tag |
 | `bot deploy --version vX.Y.Z [--restart]` | `ci-release` | Roll the bot to a pushed tag and follow the swap |
@@ -311,8 +318,16 @@ deployed. Fix and publish a new release.
    in progress and restarts with the new token.
 4. Revoke the old token.
 
-**Destroy.** Run Bot apply with `destroy`, or `destroy --yes` with the apply
-role. The records bucket and the secret parameter are kept.
+**Destroy.**
+
+1. Delete the images with admin credentials. The image repository refuses
+   deletion while it holds any, and `destroy` stops with the exact command
+   to run.
+2. Run Bot apply with `destroy`, or `destroy --yes` with the apply role.
+
+The records bucket is released from Terraform state first, because its
+`prevent_destroy` would otherwise reject the whole plan. The bucket and its
+games are kept, along with the secret parameter.
 
 ## Owner setup, once
 

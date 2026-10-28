@@ -279,6 +279,17 @@ class Terraform:
             args, allowed=(0,), timeout=self.settings.terraform.plan_timeout_seconds * 2
         )
 
+    def state_list(self) -> list[str]:
+        result = self._run(["state", "list"], allowed=(0,), timeout=120, stream=False)
+        return [line.strip() for line in result.output.splitlines() if line.strip()]
+
+    def state_rm(self, address: str) -> None:
+        self._run(
+            ["state", "rm", f"-lock-timeout={self.settings.terraform.lock_timeout}", address],
+            allowed=(0,),
+            timeout=120,
+        )
+
     def outputs(self) -> dict[str, Any]:
         result = self._run(
             ["output", "-no-color", "-json"], allowed=(0,), timeout=120, stream=False

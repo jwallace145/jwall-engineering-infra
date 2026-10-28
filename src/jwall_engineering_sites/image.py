@@ -153,13 +153,15 @@ def tag_exists(ecr: ECRClient, repository: str, tag: str) -> bool:
 
 
 def present_tags(ecr: ECRClient, repository: str) -> set[str]:
-    """Every tag in the repository (ECR API only; no docker login)."""
+    """Every tag in the repository (ECR API only; no docker login). Uses
+    DescribeImages, which the release role holds; it has no ListImages."""
     tags: set[str] = set()
     try:
-        for page in ecr.get_paginator("list_images").paginate(
+        for page in ecr.get_paginator("describe_images").paginate(
             repositoryName=repository, filter={"tagStatus": "TAGGED"}
         ):
-            tags.update(i["imageTag"] for i in page.get("imageIds", []) if "imageTag" in i)
+            for detail in page.get("imageDetails", []):
+                tags.update(detail.get("imageTags", []))
     except ClientError as exc:
         raise RunError(f"cannot list the tags of {repository}: {exc}") from exc
     return tags

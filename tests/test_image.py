@@ -161,3 +161,31 @@ def test_push_tags_and_pushes(bot: Project, fake_docker: Path) -> None:
         f"tag jwall-engineering-rusty-chess:v0.14.0 {remote}",
         f"push {remote}",
     ]
+
+
+def test_present_tags_needs_only_describe_images() -> None:
+    """The release role may DescribeImages but not ListImages."""
+    ecr = boto3.client("ecr", region_name="us-east-1")
+    with Stubber(ecr) as stub:
+        stub.add_response(
+            "describe_images",
+            {
+                "imageDetails": [
+                    {"imageTags": ["v0.13.0"], "imageDigest": "sha256:a"},
+                    {"imageDigest": "sha256:untagged"},
+                ],
+                "nextToken": "n",
+            },
+            {"repositoryName": "jwall-engineering-rusty-chess", "filter": {"tagStatus": "TAGGED"}},
+        )
+        stub.add_response(
+            "describe_images",
+            {"imageDetails": [{"imageTags": ["v0.14.0", "extra"], "imageDigest": "sha256:b"}]},
+            {
+                "repositoryName": "jwall-engineering-rusty-chess",
+                "filter": {"tagStatus": "TAGGED"},
+                "nextToken": "n",
+            },
+        )
+        tags = image.present_tags(ecr, "jwall-engineering-rusty-chess")
+    assert tags == {"v0.13.0", "v0.14.0", "extra"}

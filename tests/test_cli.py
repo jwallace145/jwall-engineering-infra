@@ -251,13 +251,40 @@ def test_destroy_requires_yes(bot_workspace: Path, fake_terraform: Path) -> None
 
 
 def test_destroy_bot_calls_terraform_destroy(bot_workspace: Path, fake_terraform: Path) -> None:
-    with _as_role(BOT_APPLY_ROLE):
+    with mock_aws(), _as_role(BOT_APPLY_ROLE):
         result = runner.invoke(cli.app, ["destroy", "--yes"])
     assert result.exit_code == 0, result.output
     assert "destroy -input=false -no-color -auto-approve -lock-timeout=120s" in (
         fake_terraform.read_text()
     )
     assert "records bucket" in result.output and "secret" in result.output
+
+
+def test_destroy_releases_the_records_bucket_from_state_first(
+    bot_workspace: Path, fake_terraform: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """prevent_destroy on the bucket would reject the whole destroy plan."""
+    monkeypatch.setenv(
+        "FAKE_TF_STATE_LIST",
+        "module.records[0].aws_s3_bucket.this module.bot.aws_instance.this",
+    )
+    with mock_aws(), _as_role(BOT_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 0, result.output
+    calls = [c for c in fake_terraform.read_text().splitlines() if not c.startswith("version")]
+    rm = calls.index("state rm -lock-timeout=120s module.records")
+    destroy = next(i for i, c in enumerate(calls) if c.startswith("destroy "))
+    assert rm < destroy
+
+
+def test_destroy_refuses_while_images_remain(bot_workspace: Path, fake_terraform: Path) -> None:
+    with mock_aws(), _as_role(BOT_APPLY_ROLE):
+        _ecr_with("v0.14.0")
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 3
+    assert "batch-delete-image" in result.output
+    calls = fake_terraform.read_text().splitlines() if fake_terraform.exists() else []
+    assert not any(c.startswith("destroy") for c in calls)
 
 
 def test_destroy_refuses_sites(workspace: Path, fake_terraform: Path) -> None:
@@ -636,3 +663,22 @@ def test_reconcile_builds_pushes_and_deploys_the_newest(
     verbs = [line.split()[0] for line in fake_docker.read_text().splitlines()]
     assert verbs == ["build", "run", "login", "tag", "push"]
     assert running == "v0.14.0"
+
+
+def test_bot_deploy_refuses_a_booting_instance(
+    bot_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jwall_engineering_sites import bot as bot_module
+
+    monkeypatch.setattr(
+        bot_module,
+        "find_instance",
+        lambda *a, **k: bot_module.InstanceInfo(id="i-boot", state="pending", public_ip=None),
+    )
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with("v0.14.0")
+        result = runner.invoke(cli.app, ["bot", "deploy", "--version", "v0.14.0"])
+        desired = _param("desired-version")
+    assert result.exit_code == 3
+    assert "i-boot is pending" in result.output
+    assert desired is None, "nothing is written before the instance can take the command"

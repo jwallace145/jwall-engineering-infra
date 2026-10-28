@@ -21,6 +21,11 @@ case "$1" in
     exit "${FAKE_TF_PLAN_EXIT:-0}" ;;
   apply) echo "Apply complete! Resources: 1 added, 0 changed, 0 destroyed." ;;
   destroy) echo "Destroy complete! Resources: 9 destroyed." ;;
+  state)
+    case "$2" in
+      list) printf '%s\n' ${FAKE_TF_STATE_LIST:-} ;;
+      rm) echo "Removed $3" ;;
+    esac ;;
   output) cat "${FAKE_TF_OUTPUTS:?}" ;;
   *) echo "fake terraform: unknown command $1" >&2; exit 64 ;;
 esac
