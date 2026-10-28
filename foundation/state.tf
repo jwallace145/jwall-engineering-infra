@@ -42,12 +42,18 @@ locals {
         write = [module.site_ci_apply[key].role_arn]
       }
     },
+    {
+      for key, bot in local.bots : "project=${key}/" => {
+        read  = [module.bot_ci_plan[key].role_arn]
+        write = [module.bot_ci_apply[key].role_arn]
+      }
+    },
   )
 }
 
 module "state_bucket" {
   source  = "jwallace145/jwall-engineering/aws//modules/tfstate-bucket"
-  version = "0.9.1"
+  version = "0.10.0"
 
   name = local.state_bucket_name
 

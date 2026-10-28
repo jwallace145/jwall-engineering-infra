@@ -69,6 +69,28 @@ def check_role(
     return arn
 
 
+def check_any_role(
+    sts: STSClient,
+    expected_roles: list[str],
+    logger: Logger,
+    environ: dict[str, str] | None = None,
+) -> str:
+    """Like `check_role`, accepting any of several roles (read-only commands
+    that both the plan and the release role may run)."""
+    env = os.environ if environ is None else environ
+    _, arn = caller_identity(sts)
+    if env.get(ENV_SKIP_ROLE_CHECK) == "1":
+        logger.warning("%s=1: not checking the role of %s", ENV_SKIP_ROLE_CHECK, arn)
+        return arn
+    if role_name_from_arn(arn) not in expected_roles:
+        raise PreflightError(
+            f"this command must run as one of {', '.join(expected_roles)}; "
+            f"the credentials are {arn}"
+        )
+    logger.info("running as %s", arn)
+    return arn
+
+
 def check_bucket(s3: S3Client, bucket: str) -> None:
     try:
         s3.head_bucket(Bucket=bucket)

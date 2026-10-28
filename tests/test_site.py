@@ -52,9 +52,16 @@ def test_every_fixture_loads(site: Site) -> None:
     assert site.dev_url is None
 
 
+def test_every_site_fixture_still_loads_as_a_site(site: Site) -> None:
+    assert site.config.kind == "site"
+    assert site.config.components == ()
+    assert site.config.site is not None
+
+
 def test_main_site_keeps_extra_tags_and_immutable_paths(settings: Settings) -> None:
     config = load_site_config(FIXTURES / "sites" / "main-site.yaml")
     assert config.tags["CostCenter"] == "personal"
+    assert config.site is not None
     assert config.site.immutable_paths == ("_astro/**",)
     assert config.site.output_dir == "dist"
 
@@ -155,4 +162,5 @@ def test_model_is_frozen(guitar: Site) -> None:
 def test_site_config_defaults() -> None:
     config = SiteConfig.model_validate(_raw(drop=("preview",)))
     assert config.preview.enabled is True
+    assert config.site is not None
     assert config.site.immutable_paths == ()

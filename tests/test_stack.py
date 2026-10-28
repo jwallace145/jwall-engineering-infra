@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 from jwall_engineering_sites.errors import RunError
+from jwall_engineering_sites.project import Project
 from jwall_engineering_sites.settings import Settings
 from jwall_engineering_sites.site import Site
 from jwall_engineering_sites.stack import (
     PLAN_CHANGES,
     PLAN_NO_CHANGES,
     Terraform,
+    default_stack_dir,
     render_backend,
     render_tfvars,
 )
@@ -70,6 +72,54 @@ def test_tfvars_are_valid_for_the_stack_variables(site: Site) -> None:
         if line.startswith('variable "')
     }
     assert set(render_tfvars(site)) == declared
+
+
+def _declared(stack: str) -> set[str]:
+    return {
+        line.split('"')[1]
+        for line in (REPO_ROOT / "stacks" / stack / "variables.tf").read_text().splitlines()
+        if line.startswith('variable "')
+    }
+
+
+def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
+    assert render_tfvars(bot, settings) == {
+        "project": "rusty-chess",
+        "repository": "jwallace145/rusty-chess-v2",
+        "tags": dict(bot.config.tags),
+        "instance_type": "t3.micro",
+        "architecture": "x86_64",
+        "secret_parameters": {"LICHESS_TOKEN": "/jwall-engineering/rusty-chess/lichess-token"},
+        "container_environment": {"ENGINE_HASH_MB": "128", "ENGINE_MOVE_OVERHEAD_MS": "500"},
+        "bot_name": "rusty-chess-bot",
+        "records_enabled": True,
+        "records_prefix": "records/",
+        "records_container_path": "/opt/lichess-bot/game_records",
+        "log_retention_days": 30,
+        "health_log_pattern": "awaiting challenges",
+        "health_seconds": 90,
+        "availability_zones": ["us-east-1a", "us-east-1b"],
+        "keep_release_images": 20,
+        "expire_untagged_after_days": 7,
+    }
+
+
+def test_bot_tfvars_are_valid_for_the_bot_stack(bot: Project, settings: Settings) -> None:
+    assert set(render_tfvars(bot, settings)) == _declared("bot")
+
+
+def test_site_project_renders_the_site_tfvars(site: Site, settings: Settings) -> None:
+    project = Project.from_config(site.config, settings)
+    assert render_tfvars(project, settings) == render_tfvars(site)
+
+
+def test_stack_dir_by_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JES_STACK_DIR", raising=False)
+    monkeypatch.setenv("JES_STACKS_ROOT", "/somewhere/stacks")
+    assert default_stack_dir("bot") == Path("/somewhere/stacks/bot")
+    assert default_stack_dir("site") == Path("/somewhere/stacks/site")
+    monkeypatch.setenv("JES_STACK_DIR", "/explicit")
+    assert default_stack_dir("bot") == Path("/explicit")
 
 
 def _terraform(site: Site, settings: Settings, logger: logging.Logger) -> Terraform:

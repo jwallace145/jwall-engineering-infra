@@ -78,3 +78,19 @@ def test_env_overrides_only_logging(tmp_path: Path) -> None:
 def test_missing_file_is_a_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="not found"):
         load_settings(tmp_path / "nope.yaml", environ={})
+
+
+def test_bot_section_defaults(settings: Settings) -> None:
+    assert settings.bot.health_log_pattern == "awaiting challenges"
+    assert settings.bot.health_seconds == 90
+    assert settings.bot.records_prefix == "records/"
+    assert settings.bot.availability_zones == ("us-east-1a", "us-east-1b")
+
+
+def test_bot_health_seconds_bounds(tmp_path: Path) -> None:
+    raw = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    raw["bot"]["health_seconds"] = 5
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="health_seconds"):
+        load_settings(path, environ={})

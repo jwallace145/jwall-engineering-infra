@@ -1,5 +1,5 @@
-# jwall-engineering-sites: the CLI, a pinned Terraform, the site stack with its
-# modules and providers vendored, and config.yaml. Only the S3 backend touches
+# jwall-engineering-sites: the CLI, a pinned Terraform, the site and bot stacks
+# with their modules and providers vendored, and config.yaml. Only the S3 backend touches
 # the network at run time.
 #
 # Build: docker build --build-arg TERRAFORM_VERSION=<terraform.version from config.yaml> .
@@ -45,23 +45,28 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
 # --no-editable: an editable install points at /src, which the runtime stage does not have.
 RUN uv sync --locked --no-dev --no-editable
-# botocore ships API definitions for every AWS service; the tool uses three.
+# botocore ships API definitions for every AWS service; the tool uses seven.
 # Keep those plus botocore's shared files (endpoints, partitions, retries).
 RUN cd /opt/jwall-engineering-sites/venv/lib/python3.13/site-packages/botocore/data \
-    && find . -mindepth 1 -maxdepth 1 -type d ! -name s3 ! -name sts ! -name cloudfront -exec rm -rf {} + \
+    && find . -mindepth 1 -maxdepth 1 -type d ! -name s3 ! -name sts ! -name cloudfront ! -name ssm ! -name ec2 ! -name logs ! -name ecr -exec rm -rf {} + \
     && find /opt/jwall-engineering-sites/venv -type d -name __pycache__ -prune -exec rm -rf {} +
 
 COPY --from=terraform /tmp/terraform/terraform /usr/local/bin/terraform
 COPY stacks/site /opt/jwall-engineering-sites/stacks/site
+COPY stacks/bot /opt/jwall-engineering-sites/stacks/bot
 # Fetch the library modules and mirror the providers so run-time init is offline.
-# The mirror holds the providers as packed archives; the unpacked copies that
-# `init` leaves under .terraform/providers are the single largest thing in the
-# image and run time never reads them, so they go. The modules stay.
-RUN cd /opt/jwall-engineering-sites/stacks/site \
-    && terraform init -backend=false -input=false \
-    && terraform providers mirror /opt/jwall-engineering-sites/plugins \
-    && rm -rf .terraform/providers \
-    && find /opt/jwall-engineering-sites/stacks/site/.terraform/modules -type d \( -name .git -o -name examples -o -name tests -o -name docs \) -prune -exec rm -rf {} +
+# Both stacks share one provider mirror (their lock files pin the same
+# provider). The unpacked copies that `init` leaves under
+# .terraform/providers are the single largest thing in the image and run time
+# never reads them, so they go. The modules stay.
+RUN for stack in site bot; do \
+      cd "/opt/jwall-engineering-sites/stacks/$stack" \
+      && terraform init -backend=false -input=false \
+      && terraform providers mirror /opt/jwall-engineering-sites/plugins \
+      && rm -rf .terraform/providers \
+      && find .terraform/modules -type d \( -name .git -o -name examples -o -name tests -o -name docs \) -prune -exec rm -rf {} + \
+      || exit 1; \
+    done
 
 # --- stage 3: the runtime image --------------------------------------------------
 FROM python:${PYTHON_VERSION}-alpine

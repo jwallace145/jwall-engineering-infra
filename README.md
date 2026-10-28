@@ -8,6 +8,7 @@ The foundation stack for every [jwall.engineering](https://jwall.engineering) si
 - for each site in the `projects` registry, an S3 bucket and three CI roles
 - its own plan and apply CI roles
 - the `jwall-engineering-sites` CLI that every site repository's CI runs to plan, preview, apply and publish, its image in a private ECR repository, and the reusable workflows that run it
+- bot projects: for each entry in the `bots` registry, three CI roles, and the bot stack (`stacks/bot`) that runs a repository's GitHub releases as a permanent Lichess bot ([guide](docs/lichess-bot.md))
 
 Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. The shared building blocks are consumed from the public Terraform Registry, see [Shared modules](#shared-modules-from-the-terraform-registry). Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
 
@@ -34,6 +35,14 @@ reusable workflows this repository publishes. The design is in
 | `release --dist DIR` | `ci-apply` | `apply` then `publish` |
 | `outputs`, `config show` | `ci-plan` / none | Stack outputs as JSON; the effective tool configuration |
 | `report plan-comment --exit-code N --plan FILE --subject S` | none | Render the branded plan comment from a saved plan log (this repo's own CI uses it) |
+| `destroy --yes` | `ci-apply` | Bot projects only: destroy the stack (the records bucket and the secret are kept) |
+| `bot build --version vX.Y.Z` | none | Bot projects: download and verify the release asset, build and smoke-test the image (Docker) |
+| `bot push --version vX.Y.Z` | `ci-release` | Push the image under the release tag; refuses an existing tag |
+| `bot deploy --version vX.Y.Z [--restart]` | `ci-release` | Roll the bot to a pushed tag and follow the swap (waits for the game in progress) |
+| `bot reconcile [--version vX.Y.Z] [--dry-run]` | `ci-release` | Build, push and deploy as needed; idempotent; what the release workflow runs |
+| `bot status` | `ci-plan` or `ci-release` | Instance, versions and rollout status |
+| `bot logs [--since D] [--follow]` | `ci-plan` | The container's CloudWatch logs |
+| `bot secrets set\|check NAME` | the owner's shell | Write (no echo) or check a SecureString secret |
 
 Every command checks that the credentials are the role it expects, that the
 built site and bucket exist, and that the Terraform in the image is the
@@ -93,6 +102,25 @@ jobs:
       app-private-key: ${{ secrets.JES_APP_PRIVATE_KEY }}
     permissions: { contents: read, id-token: write, pull-requests: write }
 ```
+
+### Bot projects
+
+A repository whose `jwall-engineering-sites.yaml` has `components` (one
+`container-image` and one `lichess-bot`) instead of `domain` and `site` is a
+bot project. `validate`, `plan`, `apply` and `outputs` work on it with the
+bot stack, `stacks/bot`. That stack holds the image repository, a VPC with
+public subnets and no NAT, the records bucket and the bot instance, all from
+the library at the same pin. The `bot` commands build, push and roll out
+images.
+
+The bot's stack is planned on every pull request here (the `Bot plan` job)
+and applied by hand (the `Bot apply` workflow). An apply can replace the
+instance and end the game in progress, so it is never automatic. The bot
+repository's own release workflow calls `container-release.yml`, which runs
+`bot reconcile` with the bot's release role. The full guide, with every
+field, the rollout guarantees, the game-records layout, costs and a
+runbook, is [docs/lichess-bot.md](docs/lichess-bot.md). A note for the bot's
+own README is in [docs/consumer-note.md](docs/consumer-note.md).
 
 ### The pull request comments
 
@@ -154,13 +182,13 @@ Module sources look like this, with an exact `version` on every block:
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.9.1"
+  version  = "0.10.0"
 
   project = each.key
 }
 ```
 
-Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. The ten pins (`context.tf`, `state.tf`, `dns.tf`, `ecr.tf`, two in `ci-roles.tf`, and four in `projects.tf`) are always bumped together, and so is `library.version` in `config.yaml`.
+Versions are pinned exactly, not with `~>`, because Terraform records provider versions in `.terraform.lock.hcl` but not module versions; an exact pin is the only way two applies of the same commit resolve the same code. Every pin (in `foundation/` and both stacks under `stacks/`) is always bumped together, and so is `library.version` in `config.yaml`.
 
 **Upgrading.** When the library publishes a release, Dependabot's Terraform ecosystem opens a `chore(deps)` PR bumping the pins. The CI plan comment on that PR shows exactly what the new version changes in AWS. Read the library's [CHANGELOG](https://github.com/jwallace145/terraform-aws-jwall-engineering/blob/main/CHANGELOG.md) entry, check the plan, merge, and the change applies with the next release of this repo. While the library is on `0.x`, a breaking change bumps the minor version and is marked `!` in its changelog.
 
@@ -183,6 +211,10 @@ CLI and `config.yaml`, the tool configuration shared by the stack and the CLI
 | `config.yaml` (root) | Tool configuration for the sites CLI and the foundation stack: Terraform version, library pin, state bucket, DNS zone, ECR lifecycle, sync headers |
 | `src/jwall_engineering_sites/`, `tests/`, `pyproject.toml` | The sites CLI, its tests and its `uv` project |
 | `stacks/site/` | The site stack the CLI renders for each site, pinned to the library like any consumer |
+| `stacks/bot/` | The bot stack the CLI renders for each bot project: ECR repository, VPC, records bucket, bot instance |
+| `src/jwall_engineering_sites/kinds/lichess_bot/` | The harness Dockerfile and entrypoint of the bot image |
+| `bots.tf` | The `bots` map: one entry per bot project, each with plan, apply and release roles |
+| `docs/lichess-bot.md`, `docs/consumer-note.md` | The bot projects guide and the note a bot repository links to |
 | `Dockerfile` | The CLI image: a pinned Terraform, the stack with modules and providers vendored, `config.yaml` |
 | `.github/actions/terraform-init` | `terraform init` with a retry for the registry's lag after a library release |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` modules |
@@ -227,6 +259,28 @@ Each entry is passed to the `site-bucket`, `ci-plan-role`, `ci-preview-role` and
 | `jwall-engineering-<key>-ci-apply` | `environment:prod` | `tfstate/write`, `static-site/read`, `static-site/deploy`, `ecr/pull` |
 
 The zone itself is owned here; every other record is owned by the project repos. `terraform output projects` lists the bucket name and role ARNs per project.
+
+## Bot projects registry
+
+`local.bots` in `bots.tf` is the single list of bot projects:
+
+| Key | Repository |
+| --- | --- |
+| `rusty-chess` | `jwallace145/rusty-chess-v2` |
+
+Each entry gets three roles. Their state is `project=<key>/` in the shared
+bucket, readable by the plan role and writable by the apply role:
+
+| Role | Trusted for | Policies |
+| --- | --- | --- |
+| `jwall-engineering-<key>-ci-plan` | `pull_request` on this repository | `tfstate/read`, `container/read` |
+| `jwall-engineering-<key>-ci-apply` | `environment:prod` on this repository | `tfstate/write`, `container/read`, `container/manage` |
+| `jwall-engineering-<key>-ci-release` | the bot repository's `v*` tags | `container/release` |
+
+The bot's infrastructure is planned and applied here; the bot repository
+holds only the project file and a release workflow, and its release role can
+ship images and roll them out, nothing else. It cannot read the Lichess
+token. `terraform output bots` lists the role ARNs.
 
 ## CI roles for this repository
 
@@ -293,6 +347,8 @@ The state bucket does not exist before the first apply, so the first apply uses 
 - `Terraform plan`: assumes the plan role through OIDC and posts the foundation plan as the branded sticky PR comment (rendered by `jwall-engineering-sites report plan-comment`), updated on every push
 - `Python lint, types, tests`: ruff, mypy and pytest for the sites CLI
 - `Image build and smoke test`: builds the CLI image, runs `validate` inside it offline, checks its Terraform version and enforces the compressed-size budget
+- `Bot stack validate, tflint` (`stacks/bot/`)
+- `Bot plan (<project>)`: for each bot in `bots.tf`, assumes the bot's plan role and posts its plan as a sticky comment. It runs once the `AWS_ACCOUNT_ID` repository variable is set.
 
 Every `terraform init` goes through `.github/actions/terraform-init`, which retries the registry's few-minute lag after a library release.
 
@@ -300,7 +356,9 @@ Every `terraform init` goes through `.github/actions/terraform-init`, which retr
 
 Merges to `main` accumulate in a Release Please PR. Merging that PR creates a tag; the `apply` job checks out the tag, assumes the apply role in the `prod` GitHub environment and runs `terraform apply`; then the `image` job, also in `prod`, builds the CLI image and pushes it to ECR as `jwall-engineering-sites:<tag>`. Nothing is applied to AWS without that human merge. The release bumps the package version in `src/jwall_engineering_sites/__init__.py` and the image tag the composite action runs (`.github/actions/jwall-engineering-sites/action.yml`); the reusable workflows carry no version, since they use the action from their own commit. `workflow_dispatch` with a `tag` re-publishes the image for an existing release.
 
-Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN`.
+Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN`. Bot roles are built from `AWS_ACCOUNT_ID` and the bot's name.
+
+**Bot projects** (`.github/workflows/bot-apply.yml`, by hand): applies or destroys one bot's stack in the `prod` environment with its apply role. `.github/workflows/container-release.yml` is the reusable workflow a bot repository calls on each release ([guide](docs/lichess-bot.md#the-caller-workflow)).
 
 ## Local development
 
@@ -332,6 +390,13 @@ Not automated; these need the owner's credentials or the GitHub UI.
 - Set repository variables from `terraform output`: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN` here, and each project's role ARNs and bucket name (from `terraform output projects`) in that project's repo.
 - Optional, for comments authored by the product rather than `github-actions[bot]`: create a GitHub App named **JWall Engineering Sites** (no webhook; permissions *Pull requests: read and write*; upload an avatar), generate a private key, and install it on this repo and every site repo. In each of those repos set the variable `JES_APP_CLIENT_ID` to the app's client ID and the secret `JES_APP_PRIVATE_KEY` to the full `.pem` contents, and pass them to the reusable workflows as shown above.
 - Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`.
+- For bot projects, after the release that creates their roles:
+  - set the repository variable `AWS_ACCOUNT_ID` here;
+  - set `AWS_RELEASE_ROLE_ARN` (from `terraform output bots`) in each bot repository;
+  - run the **Bot apply** workflow;
+  - set the token with `jwall-engineering-sites bot secrets set LICHESS_TOKEN`.
+
+  The [guide](docs/lichess-bot.md#owner-setup-once) has the full list.
 - Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
 
 ## License

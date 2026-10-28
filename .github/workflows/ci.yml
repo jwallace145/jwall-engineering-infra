@@ -158,6 +158,37 @@ jobs:
           tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl"
 
+
+  bot-stack:
+    name: Bot stack validate, tflint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: stacks/bot
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.14"
+      - name: terraform init (no backend)
+        uses: ./.github/actions/terraform-init
+        with:
+          args: -backend=false
+          working-directory: stacks/bot
+      - name: terraform validate
+        run: terraform validate -no-color
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: latest
+      - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin downloads hit the unauthenticated API limit on shared runners
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --config "$GITHUB_WORKSPACE/.tflint.hcl"
+
   image:
     name: Image build and smoke test
     runs-on: ubuntu-latest
@@ -192,7 +223,7 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint python jwall-engineering-sites:ci -c '
           import boto3
-          for service in ("s3", "sts", "cloudfront"):
+          for service in ("s3", "sts", "cloudfront", "ssm", "ec2", "logs", "ecr"):
               boto3.session.Session(region_name="us-east-1").client(service)
           print("boto3 clients ok")'
       - name: Image size budget
@@ -277,3 +308,74 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           header: terraform-plan
           path: foundation/plan-comment.md
+
+  bot-plan:
+    name: Bot plan (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    # The bot CI roles are created by the foundation apply; set the
+    # AWS_ACCOUNT_ID repository variable once they exist (see README, owner
+    # hand-off). Until then bot plans are skipped, not failed.
+    if: vars.AWS_ACCOUNT_ID != ''
+    needs: [terraform-static]
+    permissions:
+      contents: read
+      id-token: write # assume the bot's plan role through GitHub OIDC
+      pull-requests: write # post and update the plan comment
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per bot in foundation/bots.tf (a test keeps them in sync).
+        include:
+          - { project: rusty-chess, repository: jwallace145/rusty-chess-v2 }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check out the bot's project file (its default branch)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ matrix.repository }}
+          path: .consumer
+          sparse-checkout: |
+            jwall-engineering-sites.yaml
+            lichess
+          sparse-checkout-cone-mode: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.7" # exact: the CLI refuses any other version
+          terraform_wrapper: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/jwall-engineering-${{ matrix.project }}-ci-plan
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-bot-plan-${{ matrix.project }}-pr-${{ github.event.pull_request.number }}
+      - name: jwall-engineering-sites plan
+        env:
+          JES_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          JES_STACKS_ROOT: ${{ github.workspace }}/stacks
+        run: uv run jwall-engineering-sites --file .consumer/jwall-engineering-sites.yaml plan
+      - name: Mint a comment token for the JWall Engineering Sites app
+        id: app-token
+        if: always() && vars.JES_APP_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JES_APP_PRIVATE_KEY }}
+      - name: Post plan comment (updated on each push)
+        if: always() && hashFiles('.jwall-engineering-sites/plan-comment.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          header: bot-plan-${{ matrix.project }}
+          path: .jwall-engineering-sites/plan-comment.md
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bot-plan-${{ matrix.project }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore
