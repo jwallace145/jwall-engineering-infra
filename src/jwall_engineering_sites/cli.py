@@ -21,7 +21,7 @@ from typing import Annotated
 import boto3
 import typer
 
-from . import aws, github, report, stack, sync
+from . import aws, github, image, releases, report, rollout, stack, sync
 from . import bot as botlib
 from .errors import ConfigError, PreflightError, SitesError
 from .log import annotate_error, artifacts_dir, phase, setup_logging
@@ -654,6 +654,190 @@ def bot_logs(
             session.client("logs"), project.log_group, seconds, follow, run.logger
         ):
             print(line, flush=True)
+
+    _command(body)(ctx)
+
+
+# -- images and rollouts ------------------------------------------------------------
+
+
+def _version(value: str) -> str:
+    if not releases.RELEASE_TAG.match(value):
+        raise typer.BadParameter("must be a release tag like v1.2.3")
+    return value
+
+
+VersionOption = Annotated[
+    str, typer.Option("--version", help="Release tag, e.g. v0.14.0.", callback=_version)
+]
+
+
+def _build(run: Run, project: Project, tag: str) -> str:
+    """Download, verify, extract, build and smoke-test; returns the local image name."""
+    work = run.artifacts / "build" / tag
+    with phase("release"):
+        found = releases.list_releases(project.config.repository)
+        release = releases.find(found, tag)
+        asset, checksum = releases.asset_names(project.image, tag)
+        archive = releases.download(releases.asset_url(release, asset), work / "download" / asset)
+        check = releases.download(
+            releases.asset_url(release, checksum), work / "download" / checksum
+        )
+        digest = releases.verify_sha256(archive, check)
+        run.logger.info("%s: sha256 %s verified", asset, digest)
+        binary = releases.extract_binary(archive, project.image.artifact.binary, work / "engine")
+    with phase("build"):
+        context = image.prepare_context(project, tag, binary, work / "context", Path.cwd())
+        name = image.build(context, project, tag, run.logger)
+    with phase("smoke test"):
+        nodes = image.smoke_test(name, project, run.logger)
+    (run.artifacts / "build.json").write_text(
+        json.dumps({"tag": tag, "image": name, "sha256": digest, "nodes": nodes}, indent=2) + "\n"
+    )
+    github.append_summary(
+        report.run_summary(
+            f"Built {name}",
+            {"release asset": asset, "sha256": digest, "bench nodes (depth 6)": nodes},
+        )
+    )
+    return name
+
+
+def _push(run: Run, project: Project, session: boto3.session.Session, tag: str) -> str:
+    ecr = session.client("ecr")
+    if image.tag_exists(ecr, project.image_repository, tag):
+        raise PreflightError(f"{project.image_repository}:{tag} already exists; tags are immutable")
+    with phase("push"):
+        registry = image.login(ecr, run.logger)
+        return image.push(project, registry, tag, run.logger)
+
+
+def _deploy(
+    run: Run, project: Project, session: boto3.session.Session, tag: str, restart: bool
+) -> None:
+    ssm = session.client("ssm")
+    if not image.tag_exists(session.client("ecr"), project.image_repository, tag):
+        raise PreflightError(
+            f"{project.image_repository}:{tag} is not in the repository; push it first"
+        )
+    instance = botlib.find_instance(session.client("ec2"), project.project)
+    if instance is None or instance.state not in ("running", "pending"):
+        raise PreflightError(
+            f"no running instance tagged tag:Project={project.project}, "
+            f"tag:Component={botlib.INSTANCE_COMPONENT}"
+            + (f" ({instance.id} is {instance.state})" if instance else "")
+            + "; run `apply` first"
+        )
+    before = botlib.get_parameters(ssm, [project.parameter("running-version")])[
+        project.parameter("running-version")
+    ]
+    with phase("deploy"):
+        botlib.put_parameter(ssm, project.parameter("desired-version"), tag)
+        # Not finished until the reconciler writes ok or failed: a stale `ok`
+        # from the previous run must never end this deploy early.
+        botlib.put_parameter(ssm, project.parameter("status"), f"{rollout.PENDING}{tag}")
+        command_id = rollout.send_reconcile(ssm, instance.id, restart=restart)
+        run.logger.info(
+            "asked %s to reconcile to %s; it waits for the game in progress", instance.id, tag
+        )
+        rollout.follow(ssm, command_id, instance.id, project, tag, run.logger)
+    run.logger.info("deployed %s (was %s)", tag, before or "nothing")
+    github.write_output("version", tag)
+    github.append_summary(
+        report.run_summary(
+            f"Deployed {tag}",
+            {"instance": instance.id, "previous": before or "nothing", "now": tag},
+        )
+    )
+
+
+@bot_app.command("build")
+def bot_build(
+    ctx: typer.Context,
+    version: VersionOption,
+    from_source: Annotated[
+        bool, typer.Option("--from-source", help="Reserved: rebuild the engine from source.")
+    ] = False,
+) -> None:
+    """Build the image for a release from its verified Linux asset; smoke-test it. Docker only."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        if from_source:
+            raise PreflightError(
+                "--from-source is not implemented in v1; build from the release asset"
+            )
+        _build(run, project, version)
+
+    _command(body)(ctx)
+
+
+@bot_app.command("push")
+def bot_push(ctx: typer.Context, version: VersionOption) -> None:
+    """Push a built image to ECR under its release tag. Refuses an existing tag."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        session = _bot_session(run, roles=["release"])
+        _push(run, project, session, version)
+
+    _command(body)(ctx)
+
+
+@bot_app.command("deploy")
+def bot_deploy(
+    ctx: typer.Context,
+    version: VersionOption,
+    restart: Annotated[
+        bool,
+        typer.Option("--restart", help="Swap even if this version runs (e.g. a rotated secret)."),
+    ] = False,
+) -> None:
+    """Roll the bot to a pushed version and follow the swap to its end."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        session = _bot_session(run, roles=["release"])
+        _deploy(run, project, session, version, restart)
+
+    _command(body)(ctx)
+
+
+@bot_app.command("reconcile")
+def bot_reconcile(
+    ctx: typer.Context,
+    version: Annotated[
+        str | None,
+        typer.Option("--version", help="Release tag; default: the newest release."),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the plan as JSON and change nothing.")
+    ] = False,
+) -> None:
+    """Build and push the release if it is missing, then deploy it if it is the newest.
+    Safe to repeat. The release workflow runs this."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        if version is not None:
+            _version(version)
+        session = _bot_session(run, roles=None if dry_run else ["release"])
+        found = releases.list_releases(project.config.repository)
+        present = image.present_tags(session.client("ecr"), project.image_repository)
+        running = botlib.get_parameters(
+            session.client("ssm"), [project.parameter("running-version")]
+        )[project.parameter("running-version")]
+        plan = rollout.decide(version, found, present, running, project.bot.track)
+        run.logger.info("plan: %s", plan.reason)
+        if dry_run:
+            print(json.dumps(plan.as_dict(), sort_keys=True))
+            return
+        if plan.build:
+            _build(run, project, plan.version)
+        if plan.push:
+            _push(run, project, session, plan.version)
+        if plan.deploy:
+            _deploy(run, project, session, plan.version, restart=False)
 
     _command(body)(ctx)
 

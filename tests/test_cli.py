@@ -346,3 +346,293 @@ def test_bot_logs_prints_events(bot_workspace: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "awaiting challenges" in result.output
     assert "app-v0.14.0" in result.output
+
+
+# -- bot build / push / deploy / reconcile ---------------------------------------
+
+import hashlib  # noqa: E402
+import io  # noqa: E402
+import tarfile  # noqa: E402
+
+from jwall_engineering_sites import image as image_module  # noqa: E402
+from jwall_engineering_sites import releases as releases_module  # noqa: E402
+from jwall_engineering_sites import rollout as rollout_module  # noqa: E402
+
+REPO = "jwall-engineering-rusty-chess"
+LINUX = "rusty-chess-{v}-x86_64-unknown-linux-gnu.tar.gz"
+
+
+def _tarball(version: str) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        data = b"\x7fELF fake engine"
+        info = tarfile.TarInfo(f"rusty-chess-{version}-x86_64-unknown-linux-gnu/rusty-chess")
+        info.size, info.mode = len(data), 0o755
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+@pytest.fixture
+def fake_github(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
+    """Releases v0.13.0 and v0.14.0 with their Linux tarball and checksum."""
+    files: dict[str, bytes] = {}
+    listing = []
+    for version in ("v0.14.0", "v0.13.0"):
+        name = LINUX.format(v=version)
+        tarball = _tarball(version)
+        files[f"https://dl/{name}"] = tarball
+        files[f"https://dl/{name}.sha256"] = (
+            f"{hashlib.sha256(tarball).hexdigest()}  {name}\n".encode()
+        )
+        listing.append(
+            {
+                "tag_name": version,
+                "draft": False,
+                "prerelease": False,
+                "assets": [
+                    {"name": name, "browser_download_url": f"https://dl/{name}"},
+                    {"name": name + ".sha256", "browser_download_url": f"https://dl/{name}.sha256"},
+                ],
+            }
+        )
+    api = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases?per_page=100"
+    files[api] = json.dumps(listing).encode()
+
+    def fetch(url: str, headers: dict[str, str]) -> bytes:
+        return files[url]
+
+    monkeypatch.setattr(releases_module, "_http_get", fetch)
+    return files
+
+
+def _ecr_with(*tags: str) -> None:
+    ecr = boto3.client("ecr", region_name="us-east-1")
+    ecr.create_repository(repositoryName=REPO)
+    for tag in tags:
+        ecr.put_image(
+            repositoryName=REPO,
+            imageManifest=json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                    "config": {"digest": f"sha256:{tag}", "size": 1, "mediaType": "x"},
+                    "layers": [],
+                }
+            ),
+            imageTag=tag,
+        )
+
+
+def _bot_instance() -> str:
+    ec2 = boto3.client("ec2", region_name="us-east-1")
+    image_id = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
+    instance = ec2.run_instances(
+        ImageId=image_id,
+        MinCount=1,
+        MaxCount=1,
+        TagSpecifications=[
+            {
+                "ResourceType": "instance",
+                "Tags": [
+                    {"Key": "Project", "Value": "rusty-chess"},
+                    {"Key": "Component", "Value": "container-instance"},
+                ],
+            }
+        ],
+    )["Instances"][0]
+    instance_id: str = instance["InstanceId"]
+    return instance_id
+
+
+def _param(name: str) -> str | None:
+    try:
+        value: str = boto3.client("ssm", region_name="us-east-1").get_parameter(
+            Name=f"/jwall-engineering/rusty-chess/bot/{name}"
+        )["Parameter"]["Value"]
+    except Exception:
+        return None
+    return value
+
+
+def _put_param(name: str, value: str) -> None:
+    boto3.client("ssm", region_name="us-east-1").put_parameter(
+        Name=f"/jwall-engineering/rusty-chess/bot/{name}",
+        Value=value,
+        Type="String",
+        Overwrite=True,
+    )
+
+
+def test_bot_build_verifies_and_smoke_tests(
+    bot_workspace: Path, fake_github: dict[str, bytes], fake_docker: Path
+) -> None:
+    result = runner.invoke(cli.app, ["bot", "build", "--version", "v0.14.0"])
+    assert result.exit_code == 0, result.output
+    record = json.loads((bot_workspace / ".jwall-engineering-sites" / "build.json").read_text())
+    assert record["tag"] == "v0.14.0"
+    assert record["image"] == f"{REPO}:v0.14.0"
+    assert record["nodes"] == "123456"
+    assert len(record["sha256"]) == 64
+    verbs = [line.split()[0] for line in fake_docker.read_text().splitlines()]
+    assert verbs == ["build", "run"]
+
+
+def test_bot_build_rejects_bad_checksum(
+    bot_workspace: Path, fake_github: dict[str, bytes], fake_docker: Path
+) -> None:
+    name = LINUX.format(v="v0.14.0")
+    fake_github[f"https://dl/{name}.sha256"] = f"{'0' * 64}  {name}\n".encode()
+    result = runner.invoke(cli.app, ["bot", "build", "--version", "v0.14.0"])
+    assert result.exit_code == 1
+    assert "checksum mismatch" in result.output
+    assert fake_docker.read_text() == ""
+
+
+def test_bot_build_rejects_a_bad_version(bot_workspace: Path) -> None:
+    result = runner.invoke(cli.app, ["bot", "build", "--version", "latest"])
+    assert result.exit_code == 2
+
+
+def test_bot_build_from_source_is_reserved(bot_workspace: Path) -> None:
+    result = runner.invoke(cli.app, ["bot", "build", "--version", "v0.14.0", "--from-source"])
+    assert result.exit_code == 3
+    assert "not implemented" in result.output
+
+
+def test_bot_push_refuses_existing_tag(bot_workspace: Path, fake_docker: Path) -> None:
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with("v0.14.0")
+        result = runner.invoke(cli.app, ["bot", "push", "--version", "v0.14.0"])
+    assert result.exit_code == 3
+    assert "immutable" in result.output
+    assert fake_docker.read_text() == ""
+
+
+def test_bot_push_pushes_a_new_tag(bot_workspace: Path, fake_docker: Path) -> None:
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with()
+        result = runner.invoke(cli.app, ["bot", "push", "--version", "v0.14.0"])
+    assert result.exit_code == 0, result.output
+    verbs = [line.split()[0] for line in fake_docker.read_text().splitlines()]
+    assert verbs == ["login", "tag", "push"]
+
+
+def test_bot_push_needs_the_release_role(bot_workspace: Path, fake_docker: Path) -> None:
+    with mock_aws(), _as_role(BOT_APPLY_ROLE):
+        _ecr_with()
+        result = runner.invoke(cli.app, ["bot", "push", "--version", "v0.14.0"])
+    assert result.exit_code == 3
+
+
+def test_bot_deploy_without_instance_exits_3(bot_workspace: Path) -> None:
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with("v0.14.0")
+        result = runner.invoke(cli.app, ["bot", "deploy", "--version", "v0.14.0"])
+    assert result.exit_code == 3
+    assert "tag:Project=rusty-chess" in result.output
+
+
+def test_bot_deploy_refuses_a_tag_not_in_ecr(bot_workspace: Path) -> None:
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with()
+        _bot_instance()
+        result = runner.invoke(cli.app, ["bot", "deploy", "--version", "v0.14.0"])
+    assert result.exit_code == 3
+    assert "push it first" in result.output
+
+
+def test_bot_deploy_success(bot_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[str, bool]] = []
+    seen: dict[str, str | None] = {}
+
+    def fake_send(ssm: object, instance_id: str, restart: bool = False) -> str:
+        sent.append((instance_id, restart))
+        seen["desired"], seen["status"] = _param("desired-version"), _param("status")
+        return "cmd-1"
+
+    def fake_follow(*args: object, **kwargs: object) -> str:
+        _put_param("running-version", "v0.14.0")
+        _put_param("status", "ok")
+        return "ok"
+
+    monkeypatch.setattr(rollout_module, "send_reconcile", fake_send)
+    monkeypatch.setattr(rollout_module, "follow", fake_follow)
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with("v0.14.0")
+        instance_id = _bot_instance()
+        _put_param("running-version", "v0.13.0")
+        result = runner.invoke(cli.app, ["bot", "deploy", "--version", "v0.14.0", "--restart"])
+    assert result.exit_code == 0, result.output
+    assert sent == [(instance_id, True)]
+    assert seen == {"desired": "v0.14.0", "status": "pending:v0.14.0"}
+    assert "v0.13.0" in result.output and "v0.14.0" in result.output
+
+
+def test_bot_reconcile_dry_run_prints_plan(
+    bot_workspace: Path, fake_github: dict[str, bytes]
+) -> None:
+    with mock_aws():
+        _ecr_with("v0.13.0")
+        _put_param("running-version", "v0.13.0")
+        result = runner.invoke(cli.app, ["bot", "reconcile", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    plan = json.loads(result.stdout.strip().splitlines()[-1])
+    assert plan["version"] == "v0.14.0"
+    assert (plan["build"], plan["push"], plan["deploy"]) == (True, True, True)
+
+
+def test_reconcile_is_idempotent(
+    bot_workspace: Path, fake_github: dict[str, bytes], fake_docker: Path
+) -> None:
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with("v0.14.0")
+        _put_param("running-version", "v0.14.0")
+        result = runner.invoke(cli.app, ["bot", "reconcile", "--version", "v0.14.0"])
+    assert result.exit_code == 0, result.output
+    assert "already running" in result.output
+    assert fake_docker.read_text() == ""
+
+
+def test_reconcile_builds_pushes_and_deploys_the_newest(
+    bot_workspace: Path,
+    fake_github: dict[str, bytes],
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rollout_module, "send_reconcile", lambda *a, **k: "cmd-1")
+
+    def fake_follow(*args: object, **kwargs: object) -> str:
+        _put_param("running-version", "v0.14.0")
+        _put_param("status", "ok")
+        return "ok"
+
+    monkeypatch.setattr(rollout_module, "follow", fake_follow)
+    real_push = image_module.push
+
+    def push_and_register(project: object, registry: str, tag: str, *a: object) -> str:
+        remote: str = real_push(project, registry, tag, *a)  # type: ignore[arg-type]
+        boto3.client("ecr", region_name="us-east-1").put_image(
+            repositoryName=REPO,
+            imageManifest=json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                    "config": {"digest": f"sha256:{tag}", "size": 1, "mediaType": "x"},
+                    "layers": [],
+                }
+            ),
+            imageTag=tag,
+        )
+        return remote
+
+    monkeypatch.setattr(image_module, "push", push_and_register)
+    with mock_aws(), _as_role(BOT_RELEASE_ROLE):
+        _ecr_with("v0.13.0")
+        _bot_instance()
+        _put_param("running-version", "v0.13.0")
+        result = runner.invoke(cli.app, ["bot", "reconcile"])
+        running = _param("running-version")
+    assert result.exit_code == 0, result.output
+    verbs = [line.split()[0] for line in fake_docker.read_text().splitlines()]
+    assert verbs == ["build", "run", "login", "tag", "push"]
+    assert running == "v0.14.0"

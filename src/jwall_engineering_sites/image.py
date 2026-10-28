@@ -152,6 +152,19 @@ def tag_exists(ecr: ECRClient, repository: str, tag: str) -> bool:
     return True
 
 
+def present_tags(ecr: ECRClient, repository: str) -> set[str]:
+    """Every tag in the repository (ECR API only; no docker login)."""
+    tags: set[str] = set()
+    try:
+        for page in ecr.get_paginator("list_images").paginate(
+            repositoryName=repository, filter={"tagStatus": "TAGGED"}
+        ):
+            tags.update(i["imageTag"] for i in page.get("imageIds", []) if "imageTag" in i)
+    except ClientError as exc:
+        raise RunError(f"cannot list the tags of {repository}: {exc}") from exc
+    return tags
+
+
 def login(ecr: ECRClient, logger: Logger, docker: str = "docker") -> str:
     """docker login to the account's registry; returns the registry host."""
     data = ecr.get_authorization_token()["authorizationData"][0]

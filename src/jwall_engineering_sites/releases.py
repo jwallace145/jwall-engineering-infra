@@ -64,9 +64,10 @@ def _version_key(tag: str) -> tuple[int, int, int]:
     return major, minor, patch
 
 
-def list_releases(repository: str, fetch: Fetch = _http_get) -> list[Release]:
+def list_releases(repository: str, fetch: Fetch | None = None) -> list[Release]:
     """Published vX.Y.Z releases of `owner/repo`, newest first. Drafts,
     prereleases and other tags are left out."""
+    fetch = fetch or _http_get
     raw = json.loads(fetch(f"{API}/repos/{repository}/releases?per_page=100", _api_headers()))
     found = [
         Release(
@@ -105,7 +106,8 @@ def asset_url(release: Release, name: str) -> str:
         raise PreflightError(f"release {release.tag} has no asset {name}") from None
 
 
-def download(url: str, target: Path, fetch: Fetch = _http_get) -> Path:
+def download(url: str, target: Path, fetch: Fetch | None = None) -> Path:
+    fetch = fetch or _http_get
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(fetch(url, {"Accept": "application/octet-stream"}))
     return target
