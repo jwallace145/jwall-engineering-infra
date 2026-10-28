@@ -42,6 +42,12 @@ locals {
         write = [module.site_ci_apply[key].role_arn]
       }
     },
+    {
+      for key, bot in local.bots : "project=${key}/" => {
+        read  = [module.bot_ci_plan[key].role_arn]
+        write = [module.bot_ci_apply[key].role_arn]
+      }
+    },
   )
 }
 

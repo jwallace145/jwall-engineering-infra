@@ -53,3 +53,16 @@ output "sites_image_repository_url" {
   description = "ECR repository URL for the jwall-engineering-sites CLI image, for `docker push` and `docker pull`."
   value       = module.sites_image.url
 }
+
+output "bots" {
+  description = "Per-bot repository, CI role ARNs and state key. Set AWS_RELEASE_ROLE_ARN in the bot repository from release_role_arn."
+  value = {
+    for key, bot in local.bots : key => {
+      repository       = bot.repository
+      plan_role_arn    = module.bot_ci_plan[key].role_arn
+      apply_role_arn   = module.bot_ci_apply[key].role_arn
+      release_role_arn = module.bot_ci_release[key].role_arn
+      state_key        = "project=${key}/env=prod/${key}-prod.tfstate"
+    }
+  }
+}
