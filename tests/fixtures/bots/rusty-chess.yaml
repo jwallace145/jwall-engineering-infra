@@ -1,0 +1,37 @@
+version: 1
+project: rusty-chess
+repository: jwallace145/rusty-chess-v2
+
+# The six tags every resource carries (through the provider's default_tags).
+# Project, Repository, Environment=prod and ManagedBy=terraform are cross-checked.
+tags:
+  Organization: jwall-engineering
+  Project: rusty-chess
+  Environment: prod
+  Repository: jwallace145/rusty-chess-v2
+  ManagedBy: terraform
+  Owner: jwallace145
+
+components:
+  - kind: container-image
+    architecture: x86_64            # x86_64 | arm64; must match the release asset
+    artifact:                       # the release asset the image ships (never a rebuild)
+      asset: rusty-chess-{version}-x86_64-unknown-linux-gnu.tar.gz
+      checksum: rusty-chess-{version}-x86_64-unknown-linux-gnu.tar.gz.sha256
+      binary: rusty-chess
+    # dockerfile: docker/Dockerfile # optional: replace the harness-owned Dockerfile
+
+  - kind: lichess-bot
+    track: latest-release           # every published vX.Y.Z release is rolled out
+    instance_type: t3.micro
+    config: lichess/config.yml      # lichess-bot config with LICHESS_TOKEN_PLACEHOLDER
+    lichess_user: rusty-chess-bot   # optional: for the profile URL in `bot status`
+    secrets:
+      LICHESS_TOKEN: /jwall-engineering/rusty-chess/lichess-token
+    engine:
+      hash_mb: 128                  # UCI Hash
+      move_overhead_ms: 500         # UCI Move Overhead (lichess-bot's own move_overhead stays in config.yml)
+    records:
+      s3: true                      # sync game_records/ to s3://jwall-engineering-rusty-chess-records/records/
+    logs:
+      retention_days: 30

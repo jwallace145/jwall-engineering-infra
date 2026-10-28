@@ -44,7 +44,7 @@ def render_tfvars(site: Site) -> dict[str, Any]:
     return {
         "project": site.project,
         "repository": site.config.repository,
-        "domain_name": site.config.domain,
+        "domain_name": site.domain,
         "dev_domain_name": site.config.dev.domain if site.config.dev else None,
         "enable_preview": site.config.preview.enabled,
         "zone_id": site.zone_id,

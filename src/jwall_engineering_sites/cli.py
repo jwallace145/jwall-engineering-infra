@@ -142,7 +142,7 @@ def _check_site_bucket(session: boto3.session.Session, site: Site, prefix: str, 
 
 
 def _dist_path(run: Run, dist: Path | None) -> Path:
-    path = dist if dist is not None else Path(run.site.config.site.output_dir)
+    path = dist if dist is not None else Path(run.site.site_section.output_dir)
     if not path.is_dir():
         raise PreflightError(f"built site not found at {path}; pass --dist or build first")
     return path
@@ -157,7 +157,7 @@ def _sync_to(
         dist,
         cache_control=cache_control,
         immutable_cache_control=run.settings.sync.immutable_cache_control,
-        immutable_paths=site.config.site.immutable_paths,
+        immutable_paths=site.site_section.immutable_paths,
         html_cache_control=run.settings.sync.html_cache_control,
     )
     remote = sync.list_remote(client, site.bucket, prefix)
@@ -194,7 +194,7 @@ def validate(ctx: typer.Context) -> None:
     def body(run: Run) -> None:
         site = run.site
         with phase("validate"):
-            run.logger.info("site file ok: project %s, domain %s", site.project, site.config.domain)
+            run.logger.info("site file ok: project %s, domain %s", site.project, site.domain)
             run.logger.info("derived: bucket %s, state key %s", site.bucket, site.state_key)
 
             def tf(terraform: stack.Terraform) -> None:
@@ -232,7 +232,7 @@ def plan(ctx: typer.Context) -> None:
                 exit_code,
                 plan_text,
                 run.settings.plan.comment_max_bytes,
-                run.site.config.domain,
+                run.site.domain,
                 github.provenance(tool_version()),
             )
             (run.artifacts / "plan-comment.md").write_text(comment)
@@ -268,7 +268,7 @@ def preview_deploy(
             result = _sync_to(run, session, prefix, path, run.settings.sync.preview_cache_control)
         url = site.preview_url(pr)
         (run.artifacts / "preview-comment.md").write_text(
-            report.preview_comment(url, pr, site.config.domain, github.provenance(tool_version()))
+            report.preview_comment(url, pr, site.domain, github.provenance(tool_version()))
         )
         github.write_output("preview_url", url)
         github.append_summary(report.sync_summary(f"Preview for #{pr}", url, result, None))
@@ -292,9 +292,7 @@ def preview_remove(
         with phase("remove"):
             count = sync.delete_prefix(session.client("s3"), site.bucket, prefix, run.logger)
         (run.artifacts / "preview-comment.md").write_text(
-            report.preview_removed_comment(
-                pr, site.config.domain, github.provenance(tool_version())
-            )
+            report.preview_removed_comment(pr, site.domain, github.provenance(tool_version()))
         )
         github.append_summary(
             report.run_summary(f"Preview for #{pr} removed", {"objects deleted": str(count)})

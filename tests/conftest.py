@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from jwall_engineering_sites.project import Project
 from jwall_engineering_sites.settings import Settings, load_settings
 from jwall_engineering_sites.site import Site, load_site_config
 
@@ -32,6 +33,11 @@ def guitar(settings: Settings) -> Site:
     return Site.from_config(
         load_site_config(FIXTURES / "sites" / "guitar-knowledge-base.yaml"), settings
     )
+
+
+@pytest.fixture
+def bot(settings: Settings) -> Project:
+    return Project.from_config(load_site_config(FIXTURES / "bots" / "rusty-chess.yaml"), settings)
 
 
 @pytest.fixture

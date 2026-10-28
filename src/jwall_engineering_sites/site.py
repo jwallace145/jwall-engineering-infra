@@ -13,6 +13,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from .components import Component, ContainerImage, LichessBot
 from .errors import ConfigError
 from .settings import Settings
 
@@ -67,18 +68,55 @@ class DevSection(_Model):
 class SiteConfig(_Model):
     """jwall-engineering-sites.yaml, validated on its own.
 
-    Rules that need config.yaml (the DNS zone, the organisation) live in
-    `Site.from_config`, so that this model can be checked without it.
+    A file describes either a site (`domain` and `site`) or a bot project
+    (`components`: one container image and one Lichess bot). Rules that need
+    config.yaml (the DNS zone, the organisation) live in `Site.from_config`
+    and `Project.from_config`, so that this model can be checked without it.
     """
 
     version: Literal[1]
     project: str = Field(pattern=_KEBAB.pattern, max_length=30)
     repository: str = Field(pattern=_REPOSITORY.pattern)
-    domain: str = Field(pattern=_FQDN.pattern)
+    domain: str | None = Field(default=None, pattern=_FQDN.pattern)
     tags: dict[str, str]
-    site: SiteSection
+    site: SiteSection | None = None
     preview: PreviewSection = PreviewSection()
     dev: DevSection | None = None
+    components: tuple[Component, ...] = ()
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> SiteConfig:
+        is_site = self.domain is not None and self.site is not None and not self.components
+        is_bot = (
+            bool(self.components)
+            and self.domain is None
+            and self.site is None
+            and self.dev is None
+            and "preview" not in self.model_fields_set
+        )
+        if not (is_site or is_bot):
+            raise ValueError(
+                "a file describes either a site (domain and site, no components) or a bot "
+                "project (components, without domain, site, dev or preview)"
+            )
+        if is_bot:
+            for kind in ("container-image", "lichess-bot"):
+                count = sum(1 for c in self.components if c.kind == kind)
+                if count != 1:
+                    raise ValueError(f"components must hold exactly one {kind}, got {count}")
+        return self
+
+    @property
+    def kind(self) -> Literal["site", "bot"]:
+        return "bot" if self.components else "site"
+
+    @property
+    def image(self) -> ContainerImage:
+        return next(c for c in self.components if isinstance(c, ContainerImage))
+
+    @property
+    def bot(self) -> LichessBot:
+        return next(c for c in self.components if isinstance(c, LichessBot))
 
     @model_validator(mode="after")
     def _required_tags(self) -> SiteConfig:
@@ -149,6 +187,10 @@ class Site(_Model):
 
     @classmethod
     def from_config(cls, config: SiteConfig, settings: Settings) -> Site:
+        if config.kind != "site":
+            raise ConfigError(
+                f"{config.project} is a bot project, not a site; this command works on sites only"
+            )
         problems = []
         if config.tags["Organization"] != settings.context.organization:
             problems.append(
@@ -185,8 +227,18 @@ class Site(_Model):
         return f"{self.organization}-{self.project}-ci-{role}"
 
     @property
+    def domain(self) -> str:
+        assert self.config.domain is not None  # from_config admits sites only
+        return self.config.domain
+
+    @property
+    def site_section(self) -> SiteSection:
+        assert self.config.site is not None  # from_config admits sites only
+        return self.config.site
+
+    @property
     def prod_url(self) -> str:
-        return f"https://{self.config.domain}/"
+        return f"https://{self.domain}/"
 
     @property
     def dev_url(self) -> str | None:
@@ -197,4 +249,4 @@ class Site(_Model):
         return f"{PREVIEWS_PREFIX}pr-{pr}/"
 
     def preview_url(self, pr: int) -> str:
-        return f"https://pr-{pr}.preview.{self.config.domain}/"
+        return f"https://pr-{pr}.preview.{self.domain}/"
