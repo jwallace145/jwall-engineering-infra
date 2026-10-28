@@ -68,7 +68,9 @@ def fake_terraform(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("PATH", f"{FIXTURES / 'bin'}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_TF_LOG", str(log))
     monkeypatch.setenv("FAKE_TF_OUTPUTS", str(outputs))
-    monkeypatch.setenv("JES_STACK_DIR", str(REPO_ROOT / "stacks" / "site"))
+    monkeypatch.delenv("JES_STACK_DIR", raising=False)
+    monkeypatch.setenv("JES_STACKS_ROOT", str(REPO_ROOT / "stacks"))
+    monkeypatch.setenv("FAKE_TF_TFVARS", str(tmp_path / "rendered.tfvars.json"))
     monkeypatch.setenv("JES_PLUGIN_DIR", "")
     return log
 
@@ -83,6 +85,23 @@ def dist(tmp_path: Path) -> Path:
     (root / "_astro" / "app.abc123.js").write_text("console.log(1)")
     (root / "robots.txt").write_text("User-agent: *")
     return root
+
+
+@pytest.fixture
+def bot_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A working directory holding the rusty-chess bot file, its lichess config and config.yaml."""
+    root = tmp_path / "bot-workspace"
+    (root / "lichess").mkdir(parents=True)
+    shutil.copy(FIXTURES / "bots" / "rusty-chess.yaml", root / "jwall-engineering-sites.yaml")
+    shutil.copy(FIXTURES / "config.yaml", root / "config.yaml")
+    (root / "lichess" / "config.yml").write_text(
+        "token: LICHESS_TOKEN_PLACEHOLDER\nurl: https://lichess.org/\n"
+        "engine:\n  dir: ./engines/\n  name: rusty-chess\n  protocol: uci\n"
+        "  uci_options:\n    Hash: 16\n"
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    yield root
 
 
 @pytest.fixture

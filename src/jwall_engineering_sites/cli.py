@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import boto3
 import typer
@@ -24,6 +24,7 @@ import typer
 from . import aws, github, report, stack, sync
 from .errors import PreflightError, SitesError
 from .log import annotate_error, artifacts_dir, phase, setup_logging
+from .project import Project, Role
 from .settings import Settings, default_config_path, load_settings
 from .site import DEV_PREFIX, PROD_PREFIX, SITE_FILE, Site, load_site_config
 
@@ -63,6 +64,20 @@ class Run:
     artifacts: Path
     logger: logging.Logger
     _site: Site | None = None
+    _project: Project | None = None
+
+    @property
+    def project(self) -> Project:
+        """The project file of either kind. Kind-aware commands use this."""
+        if self._project is None:
+            self._project = Project.from_config(load_site_config(self.site_file), self.settings)
+            self.logger.debug(
+                "project %s (%s), state key %s",
+                self._project.project,
+                self._project.kind,
+                self._project.state_key,
+            )
+        return self._project
 
     @property
     def site(self) -> Site:
@@ -118,14 +133,21 @@ def _command(body: Callable[[Run], None]) -> Callable[[typer.Context], None]:
 
 
 def _terraform(run: Run) -> stack.Terraform:
-    return stack.Terraform(run.site, run.settings, run.logger)
+    """Terraform for the project's stack: the site stack for a site (exactly as
+    before) or the bot stack for a bot project."""
+    target: stack.Target = run.site if run.project.kind == "site" else run.project
+    return stack.Terraform(target, run.settings, run.logger)
 
 
-def _preflight(run: Run, role: Literal["plan", "preview", "apply"], prefix: str | None) -> None:
+def _preflight(run: Run, role: Role, prefix: str | None) -> None:
     with phase("preflight"):
+        project = run.project
+        session = boto3.session.Session(region_name=project.region)
+        aws.check_role(session.client("sts"), project.role_name(role), run.logger)
+        if project.kind == "bot":
+            run.logger.info("bot %s: state %s", project.project, project.state_key)
+            return
         site = run.site
-        session = boto3.session.Session(region_name=site.region)
-        aws.check_role(session.client("sts"), site.role_name(role), run.logger)
         if prefix is not None:
             _check_site_bucket(session, site, prefix, run)
         run.logger.info("site %s: bucket %s, state %s", site.project, site.bucket, site.state_key)
@@ -189,13 +211,23 @@ def _with_terraform(run: Run, body: Callable[[stack.Terraform], None]) -> None:
 
 @app.command()
 def validate(ctx: typer.Context) -> None:
-    """Validate config.yaml and the site file, then `terraform validate` offline."""
+    """Validate config.yaml and the project file, then `terraform validate` offline."""
 
     def body(run: Run) -> None:
-        site = run.site
+        project = run.project
         with phase("validate"):
-            run.logger.info("site file ok: project %s, domain %s", site.project, site.domain)
-            run.logger.info("derived: bucket %s, state key %s", site.bucket, site.state_key)
+            if project.kind == "site":
+                site = run.site
+                run.logger.info("site file ok: project %s, domain %s", site.project, site.domain)
+                run.logger.info("derived: bucket %s, state key %s", site.bucket, site.state_key)
+            else:
+                run.logger.info(
+                    "project file ok: project %s, kind bot, image %s, instance %s",
+                    project.project,
+                    project.image_repository,
+                    project.bot_name,
+                )
+                run.logger.info("derived: state key %s", project.state_key)
 
             def tf(terraform: stack.Terraform) -> None:
                 terraform.init(backend=False)
@@ -232,7 +264,7 @@ def plan(ctx: typer.Context) -> None:
                 exit_code,
                 plan_text,
                 run.settings.plan.comment_max_bytes,
-                run.site.domain,
+                run.project.config.domain or run.project.project,
                 github.provenance(tool_version()),
             )
             (run.artifacts / "plan-comment.md").write_text(comment)
@@ -241,7 +273,7 @@ def plan(ctx: typer.Context) -> None:
         github.append_summary(
             report.run_summary(
                 f"Terraform plan: {report.plan_result_name(exit_code)}",
-                {"site": run.site.project, "tool": tool_version()},
+                {"project": run.project.project, "tool": tool_version()},
             )
         )
 
@@ -388,7 +420,7 @@ def apply(ctx: typer.Context) -> None:
             github.append_summary(
                 report.run_summary(
                     "Terraform apply",
-                    {"site": run.site.project, "outputs": ", ".join(sorted(outputs))},
+                    {"project": run.project.project, "outputs": ", ".join(sorted(outputs))},
                 )
             )
 
@@ -439,6 +471,41 @@ def release(
             _publish(run, outputs, "prod", path)
 
         _with_terraform(run, tf)
+
+    _command(body)(ctx)
+
+
+@app.command()
+def destroy(
+    ctx: typer.Context,
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm: destroy the stack.")] = False,
+) -> None:
+    """Destroy a bot project's stack. The records bucket and the secret are kept."""
+
+    def body(run: Run) -> None:
+        project = run.project
+        if project.kind != "bot":
+            raise PreflightError("destroy is not supported for sites")
+        if not yes:
+            raise PreflightError(
+                f"pass --yes to destroy {project.project}: its instance, VPC and image "
+                "repository are deleted"
+            )
+        _preflight(run, "apply", prefix=None)
+
+        def tf(terraform: stack.Terraform) -> None:
+            with phase("init"):
+                terraform.init()
+            with phase("destroy"):
+                terraform.destroy()
+
+        _with_terraform(run, tf)
+        run.logger.info(
+            "destroyed %s; kept: the records bucket %s (prevent_destroy) and the secret "
+            "parameters, which Terraform never owned",
+            project.project,
+            project.records_bucket,
+        )
 
     _command(body)(ctx)
 

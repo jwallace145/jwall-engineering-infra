@@ -22,15 +22,24 @@ from pathlib import Path
 from typing import Any
 
 from .errors import RunError
+from .project import Project
 from .settings import Settings
 from .site import Site
 
+#: What a stack is rendered for: a site (site commands) or a project of either kind.
+Target = Site | Project
+
+#: Directory inside the bot image where lichess-bot writes one PGN per game.
+#: The harness Dockerfile and entrypoint fix it; the instance mounts it per tag.
+RECORDS_CONTAINER_PATH = "/opt/lichess-bot/game_records"
+
 ENV_STACK_DIR = "JES_STACK_DIR"
+ENV_STACKS_ROOT = "JES_STACKS_ROOT"
 ENV_PLUGIN_DIR = "JES_PLUGIN_DIR"
 ENV_KEEP_WORKDIR = "JES_KEEP_WORKDIR"
-IMAGE_STACK_DIR = Path("/opt/jwall-engineering-sites/stacks/site")
+IMAGE_STACKS_ROOT = Path("/opt/jwall-engineering-sites/stacks")
 IMAGE_PLUGIN_DIR = Path("/opt/jwall-engineering-sites/plugins")
-LOCAL_STACK_DIR = Path("stacks/site")
+LOCAL_STACKS_ROOT = Path("stacks")
 
 PLAN_NO_CHANGES = 0
 PLAN_ERROR = 1
@@ -39,8 +48,22 @@ PLAN_CHANGES = 2
 _LOCK_INFO = re.compile(r"Lock Info:\n((?:\s{2,}\S.*\n?)+)")
 
 
-def render_tfvars(site: Site) -> dict[str, Any]:
-    """The stack's input variables for a site. Pure, so it can be tested."""
+def render_tfvars(target: Target, settings: Settings | None = None) -> dict[str, Any]:
+    """The stack's input variables. Pure, so it can be tested.
+
+    A bot project needs `settings` (health check, records prefix, zones and the
+    ECR lifecycle come from config.yaml).
+    """
+    if isinstance(target, Project):
+        if target.kind == "bot":
+            if settings is None:
+                raise ValueError("render_tfvars needs settings for a bot project")
+            return _bot_tfvars(target, settings)
+        return _site_tfvars_from_project(target)
+    return _site_tfvars(target)
+
+
+def _site_tfvars(site: Site) -> dict[str, Any]:
     return {
         "project": site.project,
         "repository": site.config.repository,
@@ -52,7 +75,46 @@ def render_tfvars(site: Site) -> dict[str, Any]:
     }
 
 
-def render_backend(site: Site) -> str:
+def _site_tfvars_from_project(project: Project) -> dict[str, Any]:
+    config = project.config
+    return {
+        "project": project.project,
+        "repository": config.repository,
+        "domain_name": config.domain,
+        "dev_domain_name": config.dev.domain if config.dev else None,
+        "enable_preview": config.preview.enabled,
+        "zone_id": project.zone_id,
+        "tags": dict(config.tags),
+    }
+
+
+def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
+    bot, image = project.bot, project.image
+    return {
+        "project": project.project,
+        "repository": project.config.repository,
+        "tags": dict(project.config.tags),
+        "instance_type": bot.instance_type,
+        "architecture": image.architecture,
+        "secret_parameters": dict(bot.secrets),
+        "container_environment": {
+            "ENGINE_HASH_MB": str(bot.engine.hash_mb),
+            "ENGINE_MOVE_OVERHEAD_MS": str(bot.engine.move_overhead_ms),
+        },
+        "bot_name": bot.lichess_user or "",
+        "records_enabled": bot.records.s3,
+        "records_prefix": settings.bot.records_prefix,
+        "records_container_path": RECORDS_CONTAINER_PATH,
+        "log_retention_days": bot.logs.retention_days,
+        "health_log_pattern": settings.bot.health_log_pattern,
+        "health_seconds": settings.bot.health_seconds,
+        "availability_zones": list(settings.bot.availability_zones),
+        "keep_release_images": settings.ecr.keep_release_images,
+        "expire_untagged_after_days": settings.ecr.expire_untagged_after_days,
+    }
+
+
+def render_backend(site: Target) -> str:
     """backend.hcl for `terraform init -backend-config=`."""
     return (
         f'bucket       = "{site.state_bucket}"\n'
@@ -63,10 +125,14 @@ def render_backend(site: Site) -> str:
     )
 
 
-def default_stack_dir() -> Path:
+def default_stack_dir(kind: str = "site") -> Path:
+    """JES_STACK_DIR, else <JES_STACKS_ROOT>/<kind>, else the image's copy, else ./stacks/<kind>."""
     if ENV_STACK_DIR in os.environ:
         return Path(os.environ[ENV_STACK_DIR])
-    return IMAGE_STACK_DIR if IMAGE_STACK_DIR.is_dir() else LOCAL_STACK_DIR
+    if ENV_STACKS_ROOT in os.environ:
+        return Path(os.environ[ENV_STACKS_ROOT]) / kind
+    image = IMAGE_STACKS_ROOT / kind
+    return image if image.is_dir() else LOCAL_STACKS_ROOT / kind
 
 
 def default_plugin_dir() -> Path | None:
@@ -88,7 +154,7 @@ class Terraform:
 
     def __init__(
         self,
-        site: Site,
+        site: Target,
         settings: Settings,
         logger: Logger,
         stack_dir: Path | None = None,
@@ -98,7 +164,8 @@ class Terraform:
         self.site = site
         self.settings = settings
         self.logger = logger
-        self.stack_dir = stack_dir or default_stack_dir()
+        self.kind = site.kind if isinstance(site, Project) else "site"
+        self.stack_dir = stack_dir or default_stack_dir(self.kind)
         self.plugin_dir = default_plugin_dir() if plugin_dir is None else plugin_dir
         self.binary = binary
         self.workdir: Path | None = None
@@ -131,11 +198,11 @@ class Terraform:
 
     def prepare(self) -> Path:
         if not self.stack_dir.is_dir():
-            raise RunError(f"site stack not found at {self.stack_dir}")
+            raise RunError(f"{self.kind} stack not found at {self.stack_dir}")
         self.check_version()
         self.workdir = Path(tempfile.mkdtemp(prefix="jwall-engineering-sites-"))
         shutil.copytree(self.stack_dir, self.workdir, dirs_exist_ok=True, symlinks=True)
-        tfvars = render_tfvars(self.site)
+        tfvars = render_tfvars(self.site, self.settings)
         backend = render_backend(self.site)
         (self.workdir / "terraform.tfvars.json").write_text(json.dumps(tfvars, indent=2) + "\n")
         (self.workdir / "backend.hcl").write_text(backend)
@@ -195,6 +262,18 @@ class Terraform:
             "-no-color",
             f"-lock-timeout={self.settings.terraform.lock_timeout}",
             str(planfile),
+        ]
+        return self._run(
+            args, allowed=(0,), timeout=self.settings.terraform.plan_timeout_seconds * 2
+        )
+
+    def destroy(self) -> CommandResult:
+        args = [
+            "destroy",
+            "-input=false",
+            "-no-color",
+            "-auto-approve",
+            f"-lock-timeout={self.settings.terraform.lock_timeout}",
         ]
         return self._run(
             args, allowed=(0,), timeout=self.settings.terraform.plan_timeout_seconds * 2

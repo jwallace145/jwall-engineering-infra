@@ -25,6 +25,8 @@ APPLY_ROLE = (
     "arn:aws:sts::650503560686:assumed-role/jwall-engineering-guitar-knowledge-base-ci-apply/s"
 )
 BUCKET = "jwall-engineering-guitar-knowledge-base"
+BOT_PLAN_ROLE = "arn:aws:sts::650503560686:assumed-role/jwall-engineering-rusty-chess-ci-plan/s"
+BOT_APPLY_ROLE = "arn:aws:sts::650503560686:assumed-role/jwall-engineering-rusty-chess-ci-apply/s"
 
 
 def _as_role(arn: str) -> AbstractContextManager[Any]:
@@ -207,3 +209,59 @@ def test_unwritable_workspace_exits_2(workspace: Path) -> None:
     result = runner.invoke(cli.app, ["config", "show"])
     assert result.exit_code == 2
     assert "must be writable" in result.output
+
+
+# -- bot projects -----------------------------------------------------------------
+
+
+def test_validate_bot_file(bot_workspace: Path, fake_terraform: Path, tmp_path: Path) -> None:
+    result = runner.invoke(cli.app, ["validate"])
+    assert result.exit_code == 0, result.output
+    assert "kind bot" in result.output
+    tfvars = json.loads((tmp_path / "rendered.tfvars.json").read_text())
+    assert tfvars["records_container_path"] == "/opt/lichess-bot/game_records"
+
+
+def test_plan_bot_uses_the_bot_stack(
+    bot_workspace: Path, fake_terraform: Path, tmp_path: Path
+) -> None:
+    with _as_role(BOT_PLAN_ROLE):
+        result = runner.invoke(cli.app, ["plan"])
+    assert result.exit_code == 0, result.output
+    calls = fake_terraform.read_text()
+    assert "init -input=false -no-color -backend-config=backend.hcl -reconfigure" in calls
+    tfvars = json.loads((tmp_path / "rendered.tfvars.json").read_text())
+    assert tfvars["project"] == "rusty-chess"
+    assert "records_enabled" in tfvars
+    comment = (bot_workspace / ".jwall-engineering-sites" / "plan-comment.md").read_text()
+    assert "rusty-chess" in comment
+
+
+def test_plan_bot_refuses_the_site_role(bot_workspace: Path, fake_terraform: Path) -> None:
+    with _as_role(PLAN_ROLE):
+        result = runner.invoke(cli.app, ["plan"])
+    assert result.exit_code == 3
+
+
+def test_destroy_requires_yes(bot_workspace: Path, fake_terraform: Path) -> None:
+    with _as_role(BOT_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy"])
+    assert result.exit_code == 3
+    assert "--yes" in result.output
+
+
+def test_destroy_bot_calls_terraform_destroy(bot_workspace: Path, fake_terraform: Path) -> None:
+    with _as_role(BOT_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "destroy -input=false -no-color -auto-approve -lock-timeout=120s" in (
+        fake_terraform.read_text()
+    )
+    assert "records bucket" in result.output and "secret" in result.output
+
+
+def test_destroy_refuses_sites(workspace: Path, fake_terraform: Path) -> None:
+    with _as_role(APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 3
+    assert "not supported for sites" in result.output
