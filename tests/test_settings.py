@@ -94,3 +94,17 @@ def test_bot_health_seconds_bounds(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(raw))
     with pytest.raises(ConfigError, match="health_seconds"):
         load_settings(path, environ={})
+
+
+def test_aws_account_is_configured(settings: Settings) -> None:
+    """The one place the account ID lives: workflows build role ARNs from it."""
+    assert settings.aws.account_id == "650503560686"
+
+
+def test_aws_account_must_be_twelve_digits(tmp_path: Path) -> None:
+    raw = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    raw["aws"]["account_id"] = "65050356068"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="account_id"):
+        load_settings(path, environ={})

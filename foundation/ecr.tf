@@ -35,3 +35,12 @@ check "sites_image_repository_arn_matches" {
     error_message = "local.sites_image_repository_arn differs from module.sites_image's arn; the roles' ECR policies would point at the wrong repository."
   }
 }
+
+# config.yaml names the account the workflows build role ARNs for; a plan
+# against any other account is a mistake worth flagging.
+check "configured_account_matches" {
+  assert {
+    condition     = data.aws_caller_identity.current.account_id == local.account_id
+    error_message = "config.yaml aws.account_id (${local.account_id}) is not the account these credentials belong to (${data.aws_caller_identity.current.account_id})."
+  }
+}

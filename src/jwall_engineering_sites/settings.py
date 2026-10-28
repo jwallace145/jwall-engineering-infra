@@ -79,6 +79,10 @@ class StateSection(_Section):
         return value
 
 
+class AwsSection(_Section):
+    account_id: str = Field(pattern=r"^\d{12}$")
+
+
 class ContextSection(_Section):
     organization: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
     owner: str = Field(pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$")
@@ -122,6 +126,7 @@ class Settings(_Section):
     terraform: TerraformSection
     library: LibrarySection
     state: StateSection
+    aws: AwsSection
     context: ContextSection
     dns: DnsSection
     ecr: EcrSection

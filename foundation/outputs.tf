@@ -55,7 +55,7 @@ output "sites_image_repository_url" {
 }
 
 output "bots" {
-  description = "Per-bot repository, CI role ARNs and state key. Set AWS_RELEASE_ROLE_ARN in the bot repository from release_role_arn."
+  description = "Per-bot repository, CI role ARNs and state key. The workflows derive these ARNs from config.yaml; this output is for reference."
   value = {
     for key, bot in local.bots : key => {
       repository       = bot.repository

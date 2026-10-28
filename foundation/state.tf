@@ -22,8 +22,8 @@ locals {
   # applies those policies. The root user is here so the owner can browse the
   # buckets in the console. Being exempt grants nothing by itself.
   bucket_admin_principal_arns = [
-    "arn:aws:iam::650503560686:root",
-    "arn:aws:iam::650503560686:user/prog-strength-admin",
+    "arn:aws:iam::${local.account_id}:root",
+    "arn:aws:iam::${local.account_id}:user/prog-strength-admin",
     module.infra_ci_apply.role_arn,
   ]
 

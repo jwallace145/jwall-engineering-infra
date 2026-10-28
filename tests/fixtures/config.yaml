@@ -23,6 +23,11 @@ state:
   region: us-east-1
   key_template: project={project}/env={environment}/{project}-{environment}.tfstate
 
+aws:
+  # The one account everything runs in. Workflows build role ARNs from it and
+  # the project name, so no repository needs an account or role variable.
+  account_id: "650503560686" # quoted: an account ID is a 12-digit string
+
 context:
   organization: jwall-engineering
   owner: jwallace145

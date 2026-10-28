@@ -312,10 +312,9 @@ jobs:
   bot-plan:
     name: Bot plan (${{ matrix.project }})
     runs-on: ubuntu-latest
-    # The bot CI roles are created by the foundation apply; set the
-    # AWS_ACCOUNT_ID repository variable once they exist (see README, owner
-    # hand-off). Until then bot plans are skipped, not failed.
-    if: vars.AWS_ACCOUNT_ID != ''
+    # The bot's CI roles are created by the foundation apply that follows the
+    # PR registering the bot. Until they exist, the role cannot be assumed and
+    # the plan is skipped with a notice instead of failing.
     needs: [terraform-static]
     permissions:
       contents: read
@@ -346,12 +345,35 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
+      - name: Build the plan role ARN from config.yaml
+        id: role
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          account=$(yq -r .aws.account_id config.yaml)
+          organization=$(yq -r .context.organization config.yaml)
+          [[ "$account" =~ ^[0-9]{12}$ && -n "$organization" && "$organization" != null ]] || { echo "::error::config.yaml has no aws.account_id or context.organization"; exit 1; }
+          echo "arn=arn:aws:iam::${account}:role/${organization}-${PROJECT}-ci-plan" >> "$GITHUB_OUTPUT"
       - uses: aws-actions/configure-aws-credentials@v6
+        id: assume
+        continue-on-error: true # the role does not exist until the foundation apply
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/jwall-engineering-${{ matrix.project }}-ci-plan
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-bot-plan-${{ matrix.project }}-pr-${{ github.event.pull_request.number }}
+      - name: Skip the plan until the bot's roles exist
+        if: steps.assume.outcome != 'success'
+        env:
+          ROLE: ${{ steps.role.outputs.arn }}
+        run: |
+          echo "::warning::could not assume $ROLE; the bot plan runs after the release that creates the bot's roles"
+          {
+            echo "## Bot plan skipped"
+            echo
+            echo "$ROLE cannot be assumed yet. It is created by the foundation apply of the release that registers the bot."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: jwall-engineering-sites plan
+        if: steps.assume.outcome == 'success'
         env:
           JES_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           JES_STACKS_ROOT: ${{ github.workspace }}/stacks
