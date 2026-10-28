@@ -247,15 +247,17 @@ jobs:
     uses: jwallace145/jwall-engineering-infra/.github/workflows/container-release.yml@vX.Y.Z
     with:
       project: rusty-chess
-      release-role-arn: ${{ vars.AWS_RELEASE_ROLE_ARN }}
     permissions:
       contents: read
       id-token: write
 ```
 
 Pin the tool release that ships the workflow, and let Dependabot bump it.
-Set the repository variable `AWS_RELEASE_ROLE_ARN` from `terraform output
-bots` in this repository's foundation stack.
+The bot repository sets no variables or secrets. The workflow builds the
+release role's ARN from this tool's `config.yaml` (`aws.account_id`,
+`context.organization`) and `project`, and the role's trust policy accepts
+only that repository's `v*` tags. A `release-role-arn` input can override the
+derived role.
 
 ## Costs
 
@@ -331,19 +333,25 @@ games are kept, along with the secret parameter.
 
 ## Owner setup, once
 
-1. **Register the bot.** Add it to `foundation/bots.tf` (repository and
-   `repository_id`), to the `Bot plan` matrix in `ci.yml`, and to the
-   `Bot apply` choices. A test keeps the three in sync. Merge, then release
-   this repository: the foundation apply creates the three CI roles.
-2. **Set `AWS_ACCOUNT_ID`.** Make it a repository variable here; bot plans
-   start running.
+No repository variables or secrets are needed: every role ARN is derived
+from `aws.account_id` and `context.organization` in this tool's
+`config.yaml` and the project name.
+
+1. **Register the bot.**
+   - Add it to `foundation/bots.tf` (repository and `repository_id`), to the
+     `Bot plan` matrix in `ci.yml`, and to the `Bot apply` choices. A test
+     keeps the three in sync.
+   - Merge, then release this repository. The foundation apply creates the
+     three CI roles; until then, bot plans are skipped with a notice.
+2. **Prepare the bot repository.** On its default branch, commit the project
+   file, the caller workflow and any config changes
+   (`matchmaking.allow_matchmaking: true` if wanted). Bot apply reads the
+   project file from there.
 3. **Apply the stack.** Run **Bot apply** for the project.
-4. **Set the token.** Run `bot secrets set LICHESS_TOKEN` from your shell.
-5. **Prepare the bot repository.**
-   - Set the variable `AWS_RELEASE_ROLE_ARN` from
-     `terraform output bots`.
-   - Commit the caller workflow, the project file and the config changes:
-     `matchmaking.allow_matchmaking: true` if wanted.
-6. **Ship the newest release.** Run `bot reconcile` with the release role, or
-   re-run the newest release's workflow.
-7. **Stop the laptop bot.** Exactly one process may hold the token.
+4. **Set the token.** Run `bot secrets set LICHESS_TOKEN` from your shell
+   with admin credentials.
+5. **Stop the laptop bot.** Exactly one process may hold the token.
+6. **Ship the newest release.** Publish a new release, which runs the caller
+   workflow. Or, for a release published before the workflow existed, run
+   `bot reconcile --version <tag>` from your shell with admin credentials
+   and `JES_SKIP_ROLE_CHECK=1`; this needs Docker.

@@ -348,7 +348,7 @@ The state bucket does not exist before the first apply, so the first apply uses 
 - `Python lint, types, tests`: ruff, mypy and pytest for the sites CLI
 - `Image build and smoke test`: builds the CLI image, runs `validate` inside it offline, checks its Terraform version and enforces the compressed-size budget
 - `Bot stack validate, tflint` (`stacks/bot/`)
-- `Bot plan (<project>)`: for each bot in `bots.tf`, assumes the bot's plan role and posts its plan as a sticky comment. It runs once the `AWS_ACCOUNT_ID` repository variable is set.
+- `Bot plan (<project>)`: for each bot in `bots.tf`, assumes the bot's plan role and posts its plan as a sticky comment. Until the release that creates the bot's roles, it skips with a notice instead of failing.
 
 Every `terraform init` goes through `.github/actions/terraform-init`, which retries the registry's few-minute lag after a library release.
 
@@ -356,7 +356,7 @@ Every `terraform init` goes through `.github/actions/terraform-init`, which retr
 
 Merges to `main` accumulate in a Release Please PR. Merging that PR creates a tag; the `apply` job checks out the tag, assumes the apply role in the `prod` GitHub environment and runs `terraform apply`; then the `image` job, also in `prod`, builds the CLI image and pushes it to ECR as `jwall-engineering-sites:<tag>`. Nothing is applied to AWS without that human merge. The release bumps the package version in `src/jwall_engineering_sites/__init__.py` and the image tag the composite action runs (`.github/actions/jwall-engineering-sites/action.yml`); the reusable workflows carry no version, since they use the action from their own commit. `workflow_dispatch` with a `tag` re-publishes the image for an existing release.
 
-Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN`. Bot roles are built from `AWS_ACCOUNT_ID` and the bot's name.
+Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN`. Bot role ARNs need no variable: the workflows build them from `aws.account_id` and `context.organization` in `config.yaml` and the bot's name.
 
 **Bot projects** (`.github/workflows/bot-apply.yml`, by hand): applies or destroys one bot's stack in the `prod` environment with its apply role. `.github/workflows/container-release.yml` is the reusable workflow a bot repository calls on each release ([guide](docs/lichess-bot.md#the-caller-workflow)).
 
@@ -391,8 +391,7 @@ Not automated; these need the owner's credentials or the GitHub UI.
 - Optional, for comments authored by the product rather than `github-actions[bot]`: create a GitHub App named **JWall Engineering Sites** (no webhook; permissions *Pull requests: read and write*; upload an avatar), generate a private key, and install it on this repo and every site repo. In each of those repos set the variable `JES_APP_CLIENT_ID` to the app's client ID and the secret `JES_APP_PRIVATE_KEY` to the full `.pem` contents, and pass them to the reusable workflows as shown above.
 - Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`.
 - For bot projects, after the release that creates their roles:
-  - set the repository variable `AWS_ACCOUNT_ID` here;
-  - set `AWS_RELEASE_ROLE_ARN` (from `terraform output bots`) in each bot repository;
+  - commit the project file and the caller workflow in the bot repository;
   - run the **Bot apply** workflow;
   - set the token with `jwall-engineering-sites bot secrets set LICHESS_TOKEN`.
 

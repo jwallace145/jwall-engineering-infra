@@ -21,7 +21,6 @@ name: Container release
 #       uses: jwallace145/jwall-engineering-infra/.github/workflows/container-release.yml@vX.Y.Z
 #       with:
 #         project: rusty-chess
-#         release-role-arn: ${{ vars.AWS_RELEASE_ROLE_ARN }}
 #       permissions:
 #         contents: read
 #         id-token: write
@@ -30,7 +29,7 @@ on:
   workflow_call:
     inputs:
       project:
-        description: The project name in jwall-engineering-sites.yaml (for the concurrency group).
+        description: The project name in jwall-engineering-sites.yaml. The release role is derived from it.
         required: true
         type: string
       version:
@@ -39,9 +38,10 @@ on:
         type: string
         default: ""
       release-role-arn:
-        description: ARN of the bot's ci-release role (usually vars.AWS_RELEASE_ROLE_ARN).
-        required: true
+        description: Override the release role. Default, derived from this tool's config.yaml and `project`, `arn:aws:iam::<account>:role/<organization>-<project>-ci-release`.
+        required: false
         type: string
+        default: ""
       debug:
         description: Console log at debug level.
         required: false
@@ -77,9 +77,25 @@ jobs:
           path: .jwall-engineering-infra
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --no-dev --project .jwall-engineering-infra
+      - name: Resolve the release role
+        id: role
+        env:
+          OVERRIDE: ${{ inputs.release-role-arn }}
+          PROJECT: ${{ inputs.project }}
+          CONFIG: .jwall-engineering-infra/config.yaml
+        run: |
+          if [ -n "$OVERRIDE" ]; then
+            arn="$OVERRIDE"
+          else
+            account=$(yq -r .aws.account_id "$CONFIG")
+            organization=$(yq -r .context.organization "$CONFIG")
+            [[ "$account" =~ ^[0-9]{12}$ && -n "$organization" && "$organization" != null ]] || { echo "::error::$CONFIG has no aws.account_id or context.organization"; exit 1; }
+            arn="arn:aws:iam::${account}:role/${organization}-${PROJECT}-ci-release"
+          fi
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ inputs.release-role-arn }}
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: us-east-1
           role-session-name: container-release-${{ github.run_id }}-${{ github.run_attempt }}
       - name: jwall-engineering-sites bot reconcile

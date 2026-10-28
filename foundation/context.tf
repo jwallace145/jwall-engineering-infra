@@ -5,6 +5,9 @@
 locals {
   region = "us-east-1"
 
+  # From config.yaml (read in ecr.tf), the tool's single source for the account.
+  account_id = local.tool_config.aws.account_id
+
   context = {
     organization = "jwall-engineering"
     project      = "jwall-engineering-infra" # Project tag value

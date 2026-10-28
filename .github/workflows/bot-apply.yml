@@ -66,9 +66,18 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
+      - name: Build the apply role ARN from config.yaml
+        id: role
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          account=$(yq -r .aws.account_id config.yaml)
+          organization=$(yq -r .context.organization config.yaml)
+          [[ "$account" =~ ^[0-9]{12}$ && -n "$organization" && "$organization" != null ]] || { echo "::error::config.yaml has no aws.account_id or context.organization"; exit 1; }
+          echo "arn=arn:aws:iam::${account}:role/${organization}-${PROJECT}-ci-apply" >> "$GITHUB_OUTPUT"
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/jwall-engineering-${{ inputs.project }}-ci-apply
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-bot-apply-${{ inputs.project }}-${{ github.run_id }}
       - name: jwall-engineering-sites ${{ inputs.destroy && 'destroy' || 'apply' }}
