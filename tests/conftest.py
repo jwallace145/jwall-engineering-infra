@@ -76,6 +76,16 @@ def fake_terraform(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
+def fake_docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Put the fake docker first on PATH; returns its invocation log."""
+    log = tmp_path / "docker.log"
+    log.write_text("")
+    monkeypatch.setenv("PATH", f"{FIXTURES / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_DOCKER_LOG", str(log))
+    return log
+
+
+@pytest.fixture
 def dist(tmp_path: Path) -> Path:
     """A small built site."""
     root = tmp_path / "dist"

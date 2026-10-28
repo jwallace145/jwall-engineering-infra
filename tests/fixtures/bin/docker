@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# A fake docker for tests: records every invocation, emits canned output.
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_DOCKER_LOG:?}"
+case "$1" in
+  build) echo "built" ;;
+  run)
+    if [ "${FAKE_DOCKER_BENCH_FAIL:-0}" = "1" ]; then echo "panic: illegal instruction" >&2; exit 132; fi
+    # The real `rusty-chess bench` summary (v0.14.0): aligned, space before the colon.
+    echo "==========================="
+    echo "Positions       : 50"
+    echo "Depth           : 6"
+    echo "Nodes searched  : 123456"
+    echo "Nodes/second    : 4246369" ;;
+  login) cat >/dev/null; echo "Login Succeeded" ;;
+  tag|push) echo "ok" ;;
+  image)
+    if [ "${FAKE_DOCKER_IMAGE_MISSING:-0}" = "1" ]; then exit 1; fi
+    echo "[]" ;;
+  *) echo "fake docker: unknown command $1" >&2; exit 64 ;;
+esac
