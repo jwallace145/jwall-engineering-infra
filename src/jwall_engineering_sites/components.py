@@ -130,7 +130,9 @@ class TaskRunner(_Model):
     kind: Literal["task-runner"]
     instance_types: tuple[str, ...] = ("c8a.xlarge", "c8a.2xlarge")
     default_instance_type: str = "c8a.xlarge"
-    max_hours: int = Field(default=6, ge=1, le=24)
+    #: At most 6: GitHub-hosted jobs stop at six hours, and the launch role's
+    #: sessions last seven (the task plus an hour for launch and setup).
+    max_hours: int = Field(default=6, ge=1, le=6)
     max_concurrent: int = Field(default=4, ge=1, le=16)
     results_days: int = Field(default=7, ge=1, le=30)
     log_retention_days: RetentionDays = 14

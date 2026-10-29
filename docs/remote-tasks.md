@@ -28,7 +28,7 @@ components:
   - kind: task-runner
     instance_types: [c8a.xlarge, c8a.2xlarge]  # the launch role's allow-list
     default_instance_type: c8a.xlarge
-    max_hours: 6         # 1-24; the instance shuts itself down (and terminates) after this
+    max_hours: 6         # 1-6; the instance shuts itself down (and terminates) after this
     max_concurrent: 4    # 1-16; `task run` refuses beyond this many running tasks
     results_days: 7      # 1-30; task outputs expire from S3 after this
     log_retention_days: 14
@@ -64,7 +64,7 @@ jobs:
       script: scripts/sprt.sh
       args: '["--games", "2000", "--tc", "10+0.1"]'  # a JSON array of strings
       instance-type: c8a.2xlarge                     # optional; the project default otherwise
-      artifact: sprt-results                         # the uploaded $OUT_DIR
+      artifact: sprt-results                         # the uploaded $OUT_DIR; also names the task
     permissions:
       contents: read
       id-token: write
@@ -72,11 +72,14 @@ jobs:
 
 Inputs: `project` and `script` are required. `args` defaults to `[]`, and
 `instance-type` to empty, meaning the project default. `max-hours` defaults
-to 0, meaning the project's `max_hours`. `task-id` defaults to `task`;
-`artifact` to `task-output`; `artifact-path` to `out`; `debug` to false.
+to 0, meaning the project's `max_hours`. `task-id` defaults to the
+`artifact` name; `artifact` to `task-output`; `artifact-path` to `out`;
+`debug` to false.
 
-In a matrix, give each leg its own `task-id` and `artifact`: the task ID tags
-the instance, names its results prefix and scopes the cleanup step.
+In a matrix, give each leg its own `artifact`; the upload refuses duplicate
+names anyway. The task ID, which defaults to it, tags the instance, names its
+results prefix and scopes the cleanup step. `task run` refuses (exit 3) to
+start a task whose run and task ID are already running.
 
 Pin the tool release and let Dependabot bump it. The bot repository sets no
 variables or secrets. The workflow builds the role ARN from this tool's
@@ -94,7 +97,9 @@ variables or secrets. The workflow builds the role ARN from this tool's
   are installed. Anything else the script installs itself.
 - The script's exit code is the job's exit code.
 - Output appears in the job log a few seconds after it is printed (Run
-  Command uploads it to CloudWatch in batches). Print progress lines.
+  Command uploads it to CloudWatch in batches). Print progress lines. The
+  CLI reads until the script's end marker arrives, so the last lines are
+  never cut off.
 
 The output starts with the environment block, so every result records what
 it ran on:
@@ -139,6 +144,11 @@ physical_cores=4
   repository anonymously at the commit SHA. The workflow forwards no token,
   and its checkouts do not persist credentials. Private repositories are
   not supported.
+- **Shared results prefix.** Every task instance of the project can write
+  anywhere under `tasks/` in the results bucket and to any stream of the
+  task log group. Pull request code could overwrite another running task's
+  outputs before that task's CLI copies them. Keep this in mind when a
+  result decides something; per-instance scoping needs a library change.
 - **Inputs.** The script path must be relative, the ref must be a full
   commit SHA, and the arguments travel base64-encoded to the instance and
   reach the script verbatim.
@@ -149,17 +159,21 @@ An instance that outlives its task costs money. Four things end it:
 
 1. **The CLI terminates it on every exit path.** That covers success, task
    failure, AWS errors and timeouts. It also covers SIGINT and SIGTERM, which
-   GitHub sends when a job is cancelled or times out. Later signals cannot
-   interrupt the termination.
+   GitHub sends to the step's process when a job is cancelled or times out.
+   The workflow `exec`s the CLI so that process is the CLI itself. Later
+   signals cannot interrupt the termination. A not-yet-visible instance
+   right after launch is retried for a minute before it counts as gone.
 2. **The workflow's cleanup step.** It runs `if: always()` and terminates
    anything tagged with the run and task.
-3. **The instance stops itself.** It shuts down `max_hours` after the task
-   starts, and a shutdown terminates it.
-4. **`task sweep` by hand.** It terminates anything past its lifetime. There
-   is no scheduled sweeper.
+3. **The instance stops itself.** It shuts down a minute after its task
+   ends, and at the latest `max_hours` after the task starts. A shutdown
+   terminates it.
+4. **`task sweep` by hand.** It terminates anything older than its lifetime
+   plus an hour of setup headroom. There is no scheduled sweeper.
 
 Concurrency is capped per project: `task run` refuses (exit 3) when
-`max_concurrent` task instances already run.
+`max_concurrent` task instances already run. The check happens before the
+launch, so matrix legs that start at the same moment can briefly exceed it.
 
 ## Limits
 
@@ -169,7 +183,7 @@ Concurrency is capped per project: `task run` refuses (exit 3) when
   asynchronous `task start` and `task collect` pair, which will be built when
   a task needs it.
 - **Role session.** The launch role allows sessions of up to 7 hours. The
-  workflow requests the task's hours plus one, at most 12.
+  workflow requests the task's hours plus one, so `max_hours` is at most 6.
 - **On-demand only.** There is never a spot instance, so a task is never
   interrupted. When a zone has no capacity for the type, the CLI tries the
   project's next zone. When all fail, it exits 3 with "no on-demand <type>

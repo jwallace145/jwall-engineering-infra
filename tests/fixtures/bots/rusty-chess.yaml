@@ -39,7 +39,7 @@ components:
   - kind: task-runner               # optional: ephemeral on-demand EC2 instances for CI tasks
     instance_types: [c8a.xlarge, c8a.2xlarge]  # the launch role's allow-list
     default_instance_type: c8a.xlarge
-    max_hours: 6                    # an instance shuts itself down (and terminates) after this
+    max_hours: 6                    # 1-6; an instance shuts itself down (and terminates) after this
     max_concurrent: 4               # `task run` refuses beyond this many running tasks
     results_days: 7                 # task outputs expire from S3 after this
     log_retention_days: 14

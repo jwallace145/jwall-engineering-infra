@@ -25,12 +25,12 @@ name: Remote task
 #         project: rusty-chess
 #         script: scripts/sprt.sh
 #         args: '["--games", "2000"]'   # a JSON array of strings
-#         artifact: sprt-results
+#         artifact: sprt-results     # also the task id; keep it distinct per matrix leg
 #       permissions:
 #         contents: read
 #         id-token: write
 #
-# In a matrix, give each leg its own task-id and artifact.
+# In a matrix, give each leg its own artifact (it names the task too).
 
 on:
   workflow_call:
@@ -59,10 +59,10 @@ on:
         type: number
         default: 0
       task-id:
-        description: Names this task within the run (tags, results prefix, cleanup). Set a distinct one per matrix leg.
+        description: Names this task within the run (tags, results prefix, cleanup); empty for the artifact name, which matrix legs already keep distinct.
         required: false
         type: string
-        default: task
+        default: ""
       artifact:
         description: Name of the artifact the task's outputs are uploaded as.
         required: false
@@ -83,7 +83,7 @@ permissions: {}
 
 jobs:
   task:
-    name: ${{ inputs.task-id }} (${{ inputs.script }}) on a dedicated instance
+    name: ${{ inputs.task-id || inputs.artifact }} (${{ inputs.script }}) on a dedicated instance
     runs-on: ubuntu-latest
     timeout-minutes: 360 # GitHub-hosted jobs stop at six hours; the CLI terminates on SIGTERM
     permissions:
@@ -91,7 +91,7 @@ jobs:
       id-token: write # the task role, through OIDC
     env:
       RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-      TASK_ID: ${{ inputs.task-id }}
+      TASK_ID: ${{ inputs.task-id || inputs.artifact }}
       CLI: uv run --no-dev --project .jwall-engineering-infra jwall-engineering-sites --config .jwall-engineering-infra/config.yaml
     steps:
       - name: Refuse fork pull requests and other events
@@ -178,8 +178,11 @@ jobs:
           flags=()
           if [ -n "$INSTANCE_TYPE" ]; then flags+=(--instance-type "$INSTANCE_TYPE"); fi
           if [ "$MAX_HOURS" != "0" ]; then flags+=(--max-hours "$MAX_HOURS"); fi
-          # shellcheck disable=SC2086
-          $CLI "${options[@]}" task run --script "$SCRIPT" --ref "$REF" --out "$OUT" \
+          # exec: on cancel GitHub signals this step's process, which must be the
+          # CLI itself (not bash or uv) so its handlers terminate the instance.
+          exec .jwall-engineering-infra/.venv/bin/jwall-engineering-sites \
+            --config .jwall-engineering-infra/config.yaml "${options[@]}" \
+            task run --script "$SCRIPT" --ref "$REF" --out "$OUT" \
             --run-id "$RUN_ID" --task-id "$TASK_ID" "${flags[@]}" -- "${argv[@]}"
       - name: Upload the task's outputs
         if: always()
@@ -192,7 +195,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: remote-task-log-${{ inputs.task-id }}-${{ github.run_attempt }}
+          name: remote-task-log-${{ inputs.task-id || inputs.artifact }}-${{ github.run_attempt }}
           path: .jwall-engineering-sites/
           retention-days: 14
           if-no-files-found: ignore

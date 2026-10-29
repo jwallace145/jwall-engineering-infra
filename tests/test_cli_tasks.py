@@ -105,7 +105,8 @@ def _task(id_: str, run: str | None, task: str | None, age: int, hours: int | No
 
 def _instances() -> list[tasks.TaskInstance]:
     return [
-        _task("i-old", "1-1", "a", 7, 6),
+        _task("i-old", "1-1", "a", 8, 6),
+        _task("i-finishing", "3-1", "a", 7, 6),  # in its last hour, counting setup
         _task("i-run", "2-1", "a", 1, 6),
         _task("i-run2", "2-1", "b", 1, 6),
         _task("i-untagged", None, None, 8, None),
@@ -155,7 +156,8 @@ def test_terminate_one_instance_only_if_it_is_a_task(fleet: list[str]) -> None:
 def test_terminate_all(fleet: list[str]) -> None:
     with _as_role(TASK_ROLE):
         result = runner.invoke(cli.app, ["task", "terminate", "--all"])
-    assert result.exit_code == 0 and fleet == ["i-old", "i-run", "i-run2", "i-untagged"]
+    assert result.exit_code == 0
+    assert fleet == ["i-old", "i-finishing", "i-run", "i-run2", "i-untagged"]
 
 
 @pytest.mark.parametrize("args", [[], ["--all", "--run-id", "1"], ["--task-id", "a"]])
@@ -176,7 +178,8 @@ def test_sweep_terminates_instances_past_their_lifetime(fleet: list[str]) -> Non
     with _as_role(TASK_ROLE):
         result = runner.invoke(cli.app, ["task", "sweep"])
     assert result.exit_code == 0, result.output
-    # i-untagged falls back to the project's max_hours (6).
+    # i-untagged falls back to the project's max_hours (6); the lifetime guard
+    # counts from the task's start, so an hour of setup headroom spares i-finishing.
     assert fleet == ["i-old", "i-untagged"]
 
 

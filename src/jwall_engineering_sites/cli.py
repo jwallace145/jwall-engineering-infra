@@ -522,7 +522,7 @@ def destroy(
             raise PreflightError(
                 f"task instances are running ({ids}); destroying would remove their network "
                 "and role under them. Wait for them, or stop them with `task terminate --all` "
-                "(as the task role)"
+                "(as the task role, or with admin credentials outside CI)"
             )
         if tags:
             raise PreflightError(
@@ -912,6 +912,11 @@ def bot_reconcile(
 # -- remote tasks -----------------------------------------------------------------
 
 
+#: The lifetime guard counts from the task's start, after setup: sweep only
+#: instances older than their lifetime plus this headroom.
+SWEEP_SETUP_HOURS = 1
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -1090,7 +1095,8 @@ def task_sweep(
         expired = [
             t
             for t in tasks.running_tasks(ec2, project.project)
-            if now - t.launched_at > timedelta(hours=t.max_hours or runner.max_hours)
+            if now - t.launched_at
+            > timedelta(hours=(t.max_hours or runner.max_hours) + SWEEP_SETUP_HOURS)
         ]
         if not expired:
             run.logger.info("no task instance is past its lifetime")

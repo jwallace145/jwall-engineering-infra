@@ -24,7 +24,7 @@ from types import FrameType
 from typing import TYPE_CHECKING, Any
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .errors import ConfigError, PreflightError, RunError, SitesError
 from .project import Project
@@ -73,6 +73,16 @@ class TaskInstance:
     task_id: str | None
     launched_at: datetime
     max_hours: int | None
+
+
+@dataclass(frozen=True)
+class Launched:
+    """A just-launched instance, from the RunInstances response itself: EC2 is
+    eventually consistent, so a describe right after launch may not find it."""
+
+    id: str
+    zone: str
+    image: str
 
 
 @dataclass(frozen=True)
@@ -162,7 +172,7 @@ def check_capacity_cap(running: list[TaskInstance], max_concurrent: int) -> None
 
 def launch(
     ec2: EC2Client, spec: TaskSpec, template: str, subnets: list[Subnet], logger: Logger
-) -> str:
+) -> Launched:
     """Launch one on-demand instance from the template's default version,
     trying each subnet's zone in turn when one has no capacity."""
     if not subnets:
@@ -195,8 +205,12 @@ def launch(
                 code,
             )
             continue
-        instance_id: str = response["Instances"][0]["InstanceId"]
-        return instance_id
+        instance = response["Instances"][0]
+        return Launched(
+            id=instance["InstanceId"],
+            zone=instance.get("Placement", {}).get("AvailabilityZone", subnet.zone),
+            image=instance.get("ImageId", "unknown"),
+        )
     zones = ", ".join(s.zone for s in subnets)
     raise PreflightError(f"no on-demand {spec.instance_type} capacity in {zones}; re-run later")
 
@@ -207,6 +221,20 @@ def launch(
 #: argument can break out of it.
 SCRIPT_PATH = "/root/task-runner.sh"
 AGENT_TIMEOUT_SECONDS = 600
+#: The script's last line. `stream` keeps reading until it sees it, because
+#: the agent uploads output on its own schedule, after reporting the status.
+END_MARKER = "== task-runner: end of output"
+#: How long `stream` waits for the end marker after the command finished.
+END_WAIT_SECONDS = 90
+#: How long a just-launched instance may stay invisible to TerminateInstances.
+NOT_FOUND_GRACE_SECONDS = 60
+#: Consecutive transient errors `stream` rides out before giving up.
+STREAM_RETRIES = 10
+#: Errors that mean the credentials are gone or denied: retrying cannot help.
+_FATAL = frozenset({
+    "AccessDenied", "AccessDeniedException", "ExpiredToken", "ExpiredTokenException",
+    "UnrecognizedClientException", "InvalidClientTokenId", "UnauthorizedOperation",
+})  # fmt: skip
 #: Run Command statuses after which nothing more happens.
 _TERMINAL = frozenset({"Success", "Failed", "TimedOut", "Cancelled", "Terminated", "Undeliverable"})
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -256,7 +284,10 @@ exec 2>&1
 export HOME=/root
 export PATH=/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 
-if ! cloud-init status --wait >/dev/null || [ ! -f /etc/task-runner/ready ]; then
+# cloud-init exits 2 on mere warnings; the ready file, written last by the
+# setup script under set -e, is what says setup finished.
+cloud-init status --wait >/dev/null 2>&1 || true
+if [ ! -f /etc/task-runner/ready ]; then
   echo "task-runner: instance setup failed; the end of /var/log/task-runner-setup.log:"
   tail -n 40 /var/log/task-runner-setup.log || true
   exit 1
@@ -286,6 +317,10 @@ OUT_DIR=/work/out bash {task} || status=$?
 echo "== task-runner: the task exited with $status; uploading its outputs"
 aws s3 cp --recursive --only-show-errors --region {q(region)} /work/out {q(destination)} \
   || echo "task-runner: uploading the outputs failed"
+# The instance ends itself a minute from now (a shutdown terminates it), in
+# case nothing else does; the minute lets the agent report and flush.
+shutdown -h +1 2>/dev/null
+echo "{END_MARKER}"
 exit "$status"
 """
 
@@ -294,13 +329,6 @@ def task_commands(spec: TaskSpec, bucket: str, prefix: str) -> list[str]:
     """AWS-RunShellScript commands that write the task script and run it with bash."""
     encoded = base64.b64encode(task_script(spec, bucket, prefix).encode()).decode()
     return [f"echo {encoded} | base64 -d > {SCRIPT_PATH}", f"exec bash {SCRIPT_PATH}"]
-
-
-def describe(ec2: EC2Client, instance_id: str) -> dict[str, str]:
-    """The instance's zone and image, for the launch log line."""
-    reservations = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"]
-    instance = reservations[0]["Instances"][0]
-    return {"zone": instance["Placement"]["AvailabilityZone"], "image": instance["ImageId"]}
 
 
 def wait_for_agent(
@@ -352,6 +380,14 @@ def _outcome(status: str, code: int) -> int:
     return 1
 
 
+def _transient(exc: Exception) -> bool:
+    if isinstance(exc, BotoCoreError):
+        return True
+    if isinstance(exc, ClientError):
+        return exc.response["Error"]["Code"] not in _FATAL
+    return False
+
+
 def stream(
     logs: CloudWatchLogsClient,
     ssm: SSMClient,
@@ -363,13 +399,16 @@ def stream(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """Print the task's output as it arrives, once per line, until the command
-    finishes; return the task's exit code (124 timed out, 130 cancelled)."""
+    finishes and its end marker arrives; return the task's exit code (124 timed
+    out, 130 cancelled). Transient AWS errors are ridden out: a multi-hour task
+    is not killed by one throttled poll."""
     seen: set[str] = set()
     since = 0
+    ended = False
+    failures = 0
 
-    def drain() -> int:
-        nonlocal since
-        printed = 0
+    def drain() -> None:
+        nonlocal since, ended
         kwargs: dict[str, Any] = {
             "logGroupName": log_group,
             "logStreamNamePrefix": f"{command_id}/{instance_id}/",
@@ -379,41 +418,71 @@ def stream(
             try:
                 page = logs.filter_log_events(**kwargs)
             except ClientError as exc:
-                if exc.response["Error"]["Code"] != "ResourceNotFoundException":
-                    raise
-                return printed
+                if exc.response["Error"]["Code"] == "ResourceNotFoundException":
+                    return
+                raise
             for event in sorted(page.get("events", []), key=lambda e: e.get("timestamp", 0)):
                 if event["eventId"] in seen:
                     continue
+                if event.get("timestamp", 0) > since:
+                    # Only events at the newest timestamp can come back.
+                    seen.clear()
+                    since = event.get("timestamp", 0)
                 seen.add(event["eventId"])
-                since = max(since, event.get("timestamp", 0))
                 for line in event.get("message", "").rstrip("\n").split("\n"):
-                    write(line)
-                printed += 1
+                    if line == END_MARKER:
+                        ended = True
+                    else:
+                        write(line)
             token = page.get("nextToken")
             if not token:
-                return printed
+                return
             kwargs["nextToken"] = token
 
-    while True:
-        drain()
+    def attempt(step: Callable[[], Any]) -> tuple[bool, Any]:
+        """Run one poll; on a transient error, count it and report no result."""
+        nonlocal failures
         try:
-            invocation = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "InvocationDoesNotExist":
+            result = step()
+        except (ClientError, BotoCoreError) as exc:
+            if not _transient(exc):
                 raise
-            sleep(poll)
+            failures += 1
+            if failures > STREAM_RETRIES:
+                raise
+            sleep(poll * min(failures, 6))
+            return False, None
+        failures = 0
+        return True, result
+
+    def invocation() -> dict[str, Any] | None:
+        try:
+            response: dict[str, Any] = dict(
+                ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+            )
+            return response
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "InvocationDoesNotExist":
+                return None
+            raise
+
+    while True:
+        ok, _ = attempt(drain)
+        if not ok:
             continue
-        status = invocation["Status"]
-        if status in _TERMINAL:
+        ok, found = attempt(invocation)
+        if not ok:
+            continue
+        if found is not None and found["Status"] in _TERMINAL:
             break
         sleep(poll)
-    # The agent uploads output in batches: drain until a poll brings nothing.
-    for _ in range(6):
-        if drain() == 0:
-            break
+    # The output may still be on its way: read until the end marker arrives.
+    waited = 0.0
+    while not ended and waited < END_WAIT_SECONDS:
         sleep(poll)
-    return _outcome(status, invocation.get("ResponseCode", -1))
+        waited += poll
+        attempt(drain)
+    return _outcome(found["Status"], found.get("ResponseCode", -1))
 
 
 def collect(s3: S3Client, bucket: str, key_prefix: str, out_dir: Path) -> list[Path]:
@@ -436,19 +505,34 @@ def collect(s3: S3Client, bucket: str, key_prefix: str, out_dir: Path) -> list[P
     return sorted(paths)
 
 
-def terminate(ec2: EC2Client, instance_id: str, logger: Logger) -> None:
-    """Terminate the instance; an instance that is already gone is fine."""
-    try:
-        ec2.terminate_instances(InstanceIds=[instance_id])
-    except ClientError as exc:
-        code = exc.response["Error"]["Code"]
-        if code == "InvalidInstanceID.NotFound":
-            return
-        raise RunError(
-            f"could not terminate {instance_id} ({code}); it shuts itself down within its "
-            "maximum lifetime, or run `task terminate --instance` / `task sweep`"
-        ) from exc
-    logger.info("terminated %s", instance_id)
+def terminate(
+    ec2: EC2Client,
+    instance_id: str,
+    logger: Logger,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Terminate the instance. InvalidInstanceID.NotFound is retried for a
+    minute (a just-launched instance can be invisible for seconds) before it
+    is believed; returns whether the instance was found."""
+    deadline = clock() + NOT_FOUND_GRACE_SECONDS
+    while True:
+        try:
+            ec2.terminate_instances(InstanceIds=[instance_id])
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code == "InvalidInstanceID.NotFound":
+                if clock() < deadline:
+                    sleep(5)
+                    continue
+                logger.warning("%s was not found; it is already gone", instance_id)
+                return False
+            raise RunError(
+                f"could not terminate {instance_id} ({code}); it shuts itself down within its "
+                "maximum lifetime, or run `task terminate --instance` / `task sweep`"
+            ) from exc
+        logger.info("terminated %s", instance_id)
+        return True
 
 
 @contextmanager
@@ -513,14 +597,21 @@ def run_task(
     launching = False
     with _interruptible() as shield:
         try:
-            check_capacity_cap(running_tasks(ec2, project.project), runner.max_concurrent)
+            running = running_tasks(ec2, project.project)
+            twins = [t.id for t in running if (t.run_id, t.task_id) == (spec.run_id, spec.task_id)]
+            if twins:
+                raise PreflightError(
+                    f"task {spec.task_id} of run {spec.run_id} is already running on "
+                    f"{', '.join(twins)}; give each matrix leg its own task id"
+                )
+            check_capacity_cap(running, runner.max_concurrent)
             subnets = public_subnets(ec2, project.project)
             launching = True
-            instance_id = launch(ec2, spec, project.task_template, subnets, logger)
-            where = describe(ec2, instance_id)
+            launched = launch(ec2, spec, project.task_template, subnets, logger)
+            instance_id = launched.id
             logger.info(
                 "launched %s: %s on-demand in %s, image %s; output follows",
-                instance_id, spec.instance_type, where["zone"], where["image"],
+                instance_id, spec.instance_type, launched.zone, launched.image,
             )  # fmt: skip
             wait_for_agent(ssm, instance_id, sleep=sleep)
             command_id = send(ssm, instance_id, script, project.task_log_group, spec.max_hours)
@@ -533,7 +624,7 @@ def run_task(
                     s3, project.task_bucket, results_prefix(spec, project.task_prefix), out_dir
                 )
                 logger.info("copied %d output file(s) to %s", len(paths), out_dir)
-            except (SitesError, ClientError) as exc:
+            except (SitesError, ClientError, BotoCoreError) as exc:
                 logger.error("could not copy the task's outputs: %s", exc)
                 return code or 1
             return code
@@ -543,7 +634,7 @@ def run_task(
         except SitesError as exc:
             logger.error("%s", exc)
             return exc.exit_code
-        except ClientError as exc:
+        except (ClientError, BotoCoreError) as exc:
             logger.error("AWS call failed: %s", exc)
             return 1
         finally:

@@ -74,8 +74,14 @@ def test_the_task_step_runs_the_pr_head_and_gets_no_github_token() -> None:
     assert step["env"]["REF"] == "${{ github.event.pull_request.head.sha || github.sha }}"
     assert '--run-id "$RUN_ID"' in step["run"] and '--task-id "$TASK_ID"' in step["run"]
     assert '-- "${argv[@]}"' in step["run"]
+    # GitHub signals the step's own process on cancel: exec the CLI so that is
+    # the CLI itself, not bash or uv, and its handlers terminate the instance.
+    assert "exec .jwall-engineering-infra/.venv/bin/jwall-engineering-sites" in step["run"]
     env = _workflow()["jobs"]["task"]["env"]
     assert env["RUN_ID"] == "${{ github.run_id }}-${{ github.run_attempt }}"
+    # Matrix legs already need distinct artifact names: they name the task too.
+    assert env["TASK_ID"] == "${{ inputs.task-id || inputs.artifact }}"
+    assert _workflow()[True]["workflow_call"]["inputs"]["task-id"]["default"] == ""
 
 
 def test_no_step_hands_out_the_github_token() -> None:

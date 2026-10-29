@@ -56,7 +56,16 @@ class FakeEC2:
         code = self.failures.get(kwargs["SubnetId"])
         if code:
             raise ClientError({"Error": {"Code": code, "Message": "no"}}, "RunInstances")
-        return {"Instances": [{"InstanceId": f"i-{kwargs['SubnetId']}"}]}
+        zone = {"subnet-a": "us-east-1a", "subnet-b": "us-east-1b"}[kwargs["SubnetId"]]
+        return {
+            "Instances": [
+                {
+                    "InstanceId": f"i-{kwargs['SubnetId']}",
+                    "ImageId": "ami-1",
+                    "Placement": {"AvailabilityZone": zone},
+                }
+            ]
+        }
 
 
 def test_task_tags(bot: Project) -> None:
@@ -80,8 +89,10 @@ def test_task_tags_sanitize_values(bot: Project) -> None:
 
 def test_launch_request(bot: Project) -> None:
     ec2: Any = FakeEC2()
-    instance_id = tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)
-    assert instance_id == "i-subnet-a"
+    launched = tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)
+    # Taken from the RunInstances response: a describe right after launch can
+    # still say InvalidInstanceID.NotFound.
+    assert launched == tasks.Launched("i-subnet-a", "us-east-1a", "ami-1")
     (call,) = ec2.calls
     assert call["LaunchTemplate"] == {"LaunchTemplateName": "tmpl", "Version": "$Default"}
     assert call["InstanceType"] == "c8a.xlarge"
@@ -102,7 +113,7 @@ def test_launch_falls_back_to_the_next_zone(
 ) -> None:
     ec2: Any = FakeEC2({"subnet-a": code})
     with caplog.at_level(logging.WARNING):
-        assert tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG) == "i-subnet-b"
+        assert tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG).id == "i-subnet-b"
     assert [c["SubnetId"] for c in ec2.calls] == ["subnet-a", "subnet-b"]
     assert all("InstanceMarketOptions" not in c for c in ec2.calls)
     assert "us-east-1a" in caplog.text and "c8a.xlarge" in caplog.text

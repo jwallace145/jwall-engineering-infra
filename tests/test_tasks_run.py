@@ -14,7 +14,7 @@ from typing import Any
 
 import boto3
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from jwall_engineering_sites import tasks
@@ -59,7 +59,8 @@ def _run_tail(script: str, task_code: int, cwd: Path) -> subprocess.CompletedPro
     tail = script[script.index("status=0") :]
     probe = (
         f"bash() {{ printf 'task<%s>\\n' \"$@\"; return {task_code}; }}\n"
-        "aws() { printf 'aws<%s>\\n' \"$@\"; }\n" + tail
+        "aws() { printf 'aws<%s>\\n' \"$@\"; }\n"
+        "shutdown() { printf 'shutdown<%s>\\n' \"$@\"; }\n" + tail
     )
     return subprocess.run(["/bin/bash", "-c", probe], capture_output=True, text=True, cwd=cwd)
 
@@ -80,6 +81,16 @@ def test_script_uploads_and_exits_with_the_task_code(bot: Project, tmp_path: Pat
     assert result.returncode == 7
     assert "aws<s3>\naws<cp>" in result.stdout
     assert "aws<s3://jwall-engineering-rusty-chess-tasks/tasks/123-1/sprt-0/>" in result.stdout
+
+
+def test_script_ends_with_the_marker_and_shuts_the_instance_down(
+    bot: Project, tmp_path: Path
+) -> None:
+    out = _run_tail(_script(bot), 3, tmp_path).stdout
+    # The instance ends itself a minute after the task: the agent still reports
+    # the status and flushes the output; a shutdown terminates it.
+    assert out.index("aws<cp>") < out.index("shutdown<-h>\nshutdown<+1>")
+    assert out.rstrip("\n").endswith(tasks.END_MARKER)
 
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
@@ -108,6 +119,12 @@ def test_script_steps_in_order(bot: Project) -> None:
     ]
     positions = [script.index(step) for step in steps]
     assert positions == sorted(positions)
+
+
+def test_setup_is_judged_by_the_ready_file(bot: Project) -> None:
+    script = _script(bot)
+    assert "cloud-init status --wait >/dev/null 2>&1 || true" in script
+    assert "if [ ! -f /etc/task-runner/ready ]; then" in script
 
 
 def test_script_environment_and_no_credentials(bot: Project) -> None:
@@ -221,6 +238,66 @@ def test_stream_prints_each_line_once_in_order() -> None:
     assert all(c["logGroupName"] == "/g" for c in logs.calls)
 
 
+def test_stream_waits_for_the_end_marker() -> None:
+    """The agent uploads output on its own schedule: the verdict may land after the status."""
+    logs = FakeLogs([
+        [("e1", 1, "running\n")],
+        [],
+        [],
+        [("e2", 2, "verdict: H1 accepted\n"), ("e3", 3, tasks.END_MARKER + "\n")],
+    ])  # fmt: skip
+    ssm: Any = FakeSSM([("Success", 0)])
+    lines: list[str] = []
+    code = tasks.stream(logs, ssm, "/g", "c", "i", lines.append, poll=5, sleep=lambda _: None)  # type: ignore[arg-type]
+    assert code == 0
+    assert lines == ["running", "verdict: H1 accepted"]
+
+
+def test_stream_gives_up_on_the_marker_after_a_bound() -> None:
+    logs: Any = FakeLogs([[("e1", 1, "x\n")]])
+    ssm: Any = FakeSSM([("Failed", 2)])
+    sleeps: list[float] = []
+    code = tasks.stream(logs, ssm, "/g", "c", "i", lambda _: None, poll=5, sleep=sleeps.append)
+    assert code == 2
+    assert sum(sleeps) <= 120 and len(logs.calls) > 3
+
+
+class FlakyLogs(FakeLogs):
+    def __init__(self, error: Exception, batches: list[list[tuple[str, int, str]]]) -> None:
+        super().__init__(batches)
+        self.error: Exception | None = error
+
+    def filter_log_events(self, **kwargs: Any) -> dict[str, Any]:
+        if self.error is not None:
+            error, self.error = self.error, None
+            raise error
+        return super().filter_log_events(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ClientError({"Error": {"Code": "ThrottlingException"}}, "FilterLogEvents"),
+     ClientError({"Error": {"Code": "ServiceUnavailableException"}}, "FilterLogEvents"),
+     EndpointConnectionError(endpoint_url="https://logs")],
+)  # fmt: skip
+def test_stream_survives_transient_errors(error: Exception) -> None:
+    logs: Any = FlakyLogs(error, [[("e1", 1, "one\n"), ("e2", 2, tasks.END_MARKER)]])
+    ssm: Any = FakeSSM([("Success", 0)])
+    lines: list[str] = []
+    assert tasks.stream(logs, ssm, "/g", "c", "i", lines.append, poll=5, sleep=lambda _: None) == 0
+    assert lines == ["one"]
+
+
+def test_stream_stops_on_lost_credentials() -> None:
+    error = ClientError({"Error": {"Code": "ExpiredTokenException"}}, "FilterLogEvents")
+    logs: Any = FlakyLogs(error, [])
+    with pytest.raises(ClientError):
+        tasks.stream(
+            logs, _any(FakeSSM([("Success", 0)])), "/g", "c", "i", print, poll=5,
+            sleep=lambda _: None,
+        )  # fmt: skip
+
+
 @pytest.mark.parametrize(
     ("status", "code", "expected"),
     [("Failed", 7, 7), ("TimedOut", -1, 124), ("Cancelled", -1, 130), ("Terminated", -1, 1),
@@ -266,10 +343,35 @@ class FakeEC2:
         return {}
 
 
-def test_terminate_ignores_a_missing_instance() -> None:
-    ec2: Any = FakeEC2("InvalidInstanceID.NotFound")
-    tasks.terminate(ec2, "i-1", LOG)
-    assert ec2.terminated == ["i-1"]
+class EventuallyEC2(FakeEC2):
+    """InvalidInstanceID.NotFound for the first `misses` calls: EC2's eventual consistency."""
+
+    def __init__(self, misses: int) -> None:
+        super().__init__()
+        self.misses = misses
+
+    def terminate_instances(self, InstanceIds: list[str]) -> dict[str, Any]:  # noqa: N803
+        self.terminated.extend(InstanceIds)
+        if self.misses:
+            self.misses -= 1
+            raise ClientError(
+                {"Error": {"Code": "InvalidInstanceID.NotFound"}}, "TerminateInstances"
+            )
+        return {}
+
+
+def test_terminate_retries_a_not_yet_visible_instance() -> None:
+    ec2: Any = EventuallyEC2(misses=2)
+    sleeps: list[float] = []
+    assert tasks.terminate(ec2, "i-1", LOG, sleep=sleeps.append, clock=lambda: 0.0)
+    assert ec2.terminated == ["i-1", "i-1", "i-1"] and len(sleeps) == 2
+
+
+def test_terminate_gives_up_on_a_missing_instance_after_a_minute() -> None:
+    ec2: Any = EventuallyEC2(misses=10**6)
+    ticks = iter(range(0, 10_000, 10))
+    found = tasks.terminate(ec2, "i-1", LOG, sleep=lambda _: None, clock=lambda: float(next(ticks)))
+    assert found is False and 3 < len(ec2.terminated) < 10
 
 
 def test_terminate_reports_other_failures() -> None:
@@ -287,7 +389,7 @@ class Recorder:
         self.calls: list[str] = []
         self.behaviour = behaviour
         self.terminated: list[str] = []
-        for name in ("running_tasks", "public_subnets", "launch", "describe", "wait_for_agent",
+        for name in ("running_tasks", "public_subnets", "launch", "wait_for_agent",
                      "send", "stream", "collect", "terminate"):  # fmt: skip
             monkeypatch.setattr(tasks, name, self._step(name))
 
@@ -304,8 +406,7 @@ class Recorder:
             defaults: dict[str, Any] = {
                 "running_tasks": [],
                 "public_subnets": [tasks.Subnet("subnet-a", "us-east-1a")],
-                "launch": "i-1",
-                "describe": {"zone": "us-east-1a", "image": "ami-1"},
+                "launch": tasks.Launched("i-1", "us-east-1a", "ami-1"),
                 "send": "cmd-1",
                 "stream": 0,
                 "collect": [],
@@ -330,7 +431,7 @@ def _run(bot: Project, tmp_path: Path) -> int:
 def test_run_task_success(bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rec = Recorder(monkeypatch)
     assert _run(bot, tmp_path) == 0
-    assert rec.calls == ["running_tasks", "public_subnets", "launch", "describe",
+    assert rec.calls == ["running_tasks", "public_subnets", "launch",
                          "wait_for_agent", "send", "stream", "collect", "terminate"]  # fmt: skip
     assert rec.terminated == ["i-1"]
 
@@ -446,3 +547,21 @@ def test_run_task_needs_a_task_runner(bot: Project, tmp_path: Path) -> None:
     spec = _spec(plain)
     session: Any = FakeSession()
     assert tasks.run_task(session, spec, tmp_path, LOG, write=lambda _: None) == 2
+
+
+def test_run_task_refuses_a_duplicate_run_and_task(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two matrix legs with one task id would kill and read each other's work."""
+    twin = [tasks.TaskInstance("i-7", "c8a.xlarge", "running", "123-1", "sprt-0", LAUNCHED, 6)]
+    rec = Recorder(monkeypatch, running_tasks=twin)
+    assert _run(bot, tmp_path) == 3
+    assert "launch" not in rec.calls and rec.terminated == []
+
+
+def test_run_task_connection_error_terminates(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = Recorder(monkeypatch, wait_for_agent=EndpointConnectionError(endpoint_url="https://ssm"))
+    assert _run(bot, tmp_path) == 1
+    assert rec.terminated == ["i-1"]
