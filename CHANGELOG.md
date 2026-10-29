@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.11.1...v0.12.0) (2026-10-29)
+
+
+### Features
+
+* **bot:** pin the bot image by name and bump the library to 0.11.0 ([#69](https://github.com/jwallace145/jwall-engineering-infra/issues/69)) ([a21047f](https://github.com/jwallace145/jwall-engineering-infra/commit/a21047fc8786c79e3dc1b68d67e1d22706d42786))
+
+
+### Bug Fixes
+
+* **bot:** wait for a release's assets before building its image ([#71](https://github.com/jwallace145/jwall-engineering-infra/issues/71)) ([f545357](https://github.com/jwallace145/jwall-engineering-infra/commit/f545357f8428aae9bb5087a31c825da330448d21))
+
 ## [0.11.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.11.0...v0.11.1) (2026-10-29)
 
 
