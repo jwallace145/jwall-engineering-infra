@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.11.0...v0.11.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **bot:** resolve project paths from the project file, not the working directory ([#64](https://github.com/jwallace145/jwall-engineering-infra/issues/64)) ([cdf1e5d](https://github.com/jwallace145/jwall-engineering-infra/commit/cdf1e5d1ecbd4f38044f806d121504f3f478b368))
+
 ## [0.11.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.10.1...v0.11.0) (2026-10-28)
 
 
