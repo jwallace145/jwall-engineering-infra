@@ -700,8 +700,15 @@ def _build(run: Run, project: Project, tag: str) -> str:
     work = run.artifacts / "build" / tag
     with phase("release"):
         found = releases.list_releases(project.config.repository)
-        release = releases.find(found, tag)
+        releases.find(found, tag)  # a published vX.Y.Z release, not a draft or prerelease
         asset, checksum = releases.asset_names(project.image, tag)
+        release = releases.wait_for_assets(
+            project.config.repository,
+            tag,
+            (asset, checksum),
+            run.settings.bot.asset_wait_seconds,
+            run.logger,
+        )
         archive = releases.download(releases.asset_url(release, asset), work / "download" / asset)
         check = releases.download(
             releases.asset_url(release, checksum), work / "download" / checksum
