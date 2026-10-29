@@ -19,6 +19,11 @@ REGION = "us-east-1"
 LOG = logging.getLogger("test")
 
 
+def _any(fake: object) -> Any:
+    """A fake passed where a boto3 client is typed."""
+    return fake
+
+
 def _spec(bot: Project, **overrides: Any) -> tasks.TaskSpec:
     values: dict[str, Any] = {
         "project": bot,
@@ -74,8 +79,8 @@ def test_task_tags_sanitize_values(bot: Project) -> None:
 
 
 def test_launch_request(bot: Project) -> None:
-    ec2 = FakeEC2()
-    instance_id = tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)  # type: ignore[arg-type]
+    ec2: Any = FakeEC2()
+    instance_id = tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)
     assert instance_id == "i-subnet-a"
     (call,) = ec2.calls
     assert call["LaunchTemplate"] == {"LaunchTemplateName": "tmpl", "Version": "$Default"}
@@ -95,33 +100,33 @@ def test_launch_request(bot: Project) -> None:
 def test_launch_falls_back_to_the_next_zone(
     bot: Project, code: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    ec2 = FakeEC2({"subnet-a": code})
+    ec2: Any = FakeEC2({"subnet-a": code})
     with caplog.at_level(logging.WARNING):
-        assert tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG) == "i-subnet-b"  # type: ignore[arg-type]
+        assert tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG) == "i-subnet-b"
     assert [c["SubnetId"] for c in ec2.calls] == ["subnet-a", "subnet-b"]
     assert all("InstanceMarketOptions" not in c for c in ec2.calls)
     assert "us-east-1a" in caplog.text and "c8a.xlarge" in caplog.text
 
 
 def test_launch_exhausted(bot: Project) -> None:
-    ec2 = FakeEC2({"subnet-a": "InsufficientInstanceCapacity", "subnet-b": "Unsupported"})
+    ec2: Any = FakeEC2({"subnet-a": "InsufficientInstanceCapacity", "subnet-b": "Unsupported"})
     with pytest.raises(PreflightError) as error:
-        tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)  # type: ignore[arg-type]
+        tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)
     assert str(error.value) == (
         "no on-demand c8a.xlarge capacity in us-east-1a, us-east-1b; re-run later"
     )
 
 
 def test_launch_other_errors_are_not_retried(bot: Project) -> None:
-    ec2 = FakeEC2({"subnet-a": "UnauthorizedOperation"})
+    ec2: Any = FakeEC2({"subnet-a": "UnauthorizedOperation"})
     with pytest.raises(ClientError):
-        tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)  # type: ignore[arg-type]
+        tasks.launch(ec2, _spec(bot), "tmpl", SUBNETS, LOG)
     assert len(ec2.calls) == 1
 
 
 def test_launch_needs_a_subnet(bot: Project) -> None:
     with pytest.raises(PreflightError, match="no public subnet"):
-        tasks.launch(FakeEC2(), _spec(bot), "tmpl", [], LOG)  # type: ignore[arg-type]
+        tasks.launch(_any(FakeEC2()), _spec(bot), "tmpl", [], LOG)
 
 
 def _running(n: int) -> list[tasks.TaskInstance]:
