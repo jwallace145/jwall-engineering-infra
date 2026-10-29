@@ -35,7 +35,7 @@ reusable workflows this repository publishes. The design is in
 | `release --dist DIR` | `ci-apply` | `apply` then `publish` |
 | `outputs`, `config show` | `ci-plan` / none | Stack outputs as JSON; the effective tool configuration |
 | `report plan-comment --exit-code N --plan FILE --subject S` | none | Render the branded plan comment from a saved plan log (this repo's own CI uses it) |
-| `destroy --yes` | `ci-apply` | Bot projects only: destroy the stack (the records bucket and the secret are kept) |
+| `destroy --yes` | `ci-apply` | Bot projects only: destroy the stack (the records and task results buckets and the secret are kept; refuses while tasks run) |
 | `bot build --version vX.Y.Z` | none | Bot projects: download and verify the release asset, build and smoke-test the image (Docker) |
 | `bot push --version vX.Y.Z` | `ci-release` | Push the image under the release tag; refuses an existing tag |
 | `bot deploy --version vX.Y.Z [--restart]` | `ci-release` | Roll the bot to a pushed tag and follow the swap (waits for the game in progress) |
@@ -43,6 +43,9 @@ reusable workflows this repository publishes. The design is in
 | `bot status` | `ci-plan` or `ci-release` | Instance, versions and rollout status |
 | `bot logs [--since D] [--follow]` | `ci-plan` | The container's CloudWatch logs |
 | `bot secrets set\|check NAME` | the owner's shell | Write (no echo) or check a SecureString secret |
+| `task run --script P --ref SHA [--instance-type T] [--max-hours N] [--out DIR] -- ARGS...` | `ci-task` | Bot projects with a `task-runner`: run one script on a fresh on-demand instance, stream it, copy its outputs, always terminate; exits with the script's code |
+| `task list` | `ci-plan` or `ci-task` | The project's running task instances (read-only) |
+| `task terminate (--instance ID \| --run-id ID [--task-id ID] \| --all)`, `task sweep [--dry-run]` | `ci-task` | Terminate task instances; sweep those past their lifetime (by hand: there is no scheduled sweeper) |
 
 Every command checks that the credentials are the role it expects, that the
 built site and bucket exist, and that the Terraform in the image is the
@@ -119,7 +122,14 @@ instance and end the game in progress, so it is never automatic. The bot
 repository's own release workflow calls `container-release.yml`, which runs
 `bot reconcile` with the bot's release role. The full guide, with every
 field, the rollout guarantees, the game-records layout, costs and a
-runbook, is [docs/lichess-bot.md](docs/lichess-bot.md). A note for the bot's
+runbook, is [docs/lichess-bot.md](docs/lichess-bot.md).
+
+A bot project can also add a `task-runner` component: its CI jobs then run
+long, CPU-bound scripts (an engine SPRT, a match series) on dedicated,
+ephemeral, on-demand EC2 instances through the reusable `remote-task.yml`
+workflow. The guide, with the caller, the task script contract, the
+security model, the leak guards, costs and a runbook, is
+[docs/remote-tasks.md](docs/remote-tasks.md). A note for the bot's
 own README is in [docs/consumer-note.md](docs/consumer-note.md).
 
 ### The pull request comments
@@ -268,14 +278,16 @@ The zone itself is owned here; every other record is owned by the project repos.
 | --- | --- |
 | `rusty-chess` | `jwallace145/rusty-chess-v2` |
 
-Each entry gets three roles. Their state is `project=<key>/` in the shared
+Each entry gets three roles, and a fourth when the project is in
+`local.bot_task_types` (a `task-runner` component). Their state is `project=<key>/` in the shared
 bucket, readable by the plan role and writable by the apply role:
 
 | Role | Trusted for | Policies |
 | --- | --- | --- |
-| `jwall-engineering-<key>-ci-plan` | `pull_request` on this repository | `tfstate/read`, `container/read` |
-| `jwall-engineering-<key>-ci-apply` | `environment:prod` on this repository | `tfstate/write`, `container/read`, `container/manage` |
+| `jwall-engineering-<key>-ci-plan` | `pull_request` on this repository | `tfstate/read`, `container/read`, `task/read` |
+| `jwall-engineering-<key>-ci-apply` | `environment:prod` on this repository | `tfstate/write`, `container/read`, `container/manage`, `task/read`, `task/manage` |
 | `jwall-engineering-<key>-ci-release` | the bot repository's `v*` tags | `container/release` |
+| `jwall-engineering-<key>-ci-task` | the bot repository's `pull_request` and `main` (never forks) | `task/launch`: launch from the project's task template, run commands on and terminate its `Purpose=ci-task` instances |
 
 The bot's infrastructure is planned and applied here; the bot repository
 holds only the project file and a release workflow, and its release role can
@@ -389,13 +401,16 @@ Not automated; these need the owner's credentials or the GitHub UI.
 - Create the GitHub `prod` environment with a deployment branch restriction to `main`.
 - Set repository variables from `terraform output`: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN` here, and each project's role ARNs and bucket name (from `terraform output projects`) in that project's repo.
 - Optional, for comments authored by the product rather than `github-actions[bot]`: create a GitHub App named **JWall Engineering Sites** (no webhook; permissions *Pull requests: read and write*; upload an avatar), generate a private key, and install it on this repo and every site repo. In each of those repos set the variable `JES_APP_CLIENT_ID` to the app's client ID and the secret `JES_APP_PRIVATE_KEY` to the full `.pem` contents, and pass them to the reusable workflows as shown above.
-- Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`.
+- Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`, and `Purpose` (task instances carry `Purpose=ci-task`, for the later tag-based cost tooling).
 - For bot projects, after the release that creates their roles:
   - commit the project file and the caller workflow in the bot repository;
   - run the **Bot apply** workflow;
   - set the token with `jwall-engineering-sites bot secrets set LICHESS_TOKEN`.
 
   The [guide](docs/lichess-bot.md#owner-setup-once) has the full list.
+- For bot projects with a `task-runner`, after the release that creates the `ci-task` role:
+  - run the **Bot apply** workflow (it creates the launch template and the task results bucket);
+  - add the caller workflow to the bot repository ([docs/remote-tasks.md](docs/remote-tasks.md#the-caller)).
 - Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
 
 ## License
