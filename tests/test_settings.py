@@ -135,3 +135,8 @@ def test_bot_ami_name_must_match_its_architecture(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(raw))
     with pytest.raises(ConfigError, match="must end in -x86_64"):
         load_settings(path, environ={})
+
+
+def test_bot_asset_wait(settings: Settings) -> None:
+    """How long a build waits for a release's assets to be attached."""
+    assert settings.bot.asset_wait_seconds == 1800

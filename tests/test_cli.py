@@ -387,6 +387,7 @@ from jwall_engineering_sites import releases as releases_module  # noqa: E402
 from jwall_engineering_sites import rollout as rollout_module  # noqa: E402
 
 REPO = "jwall-engineering-rusty-chess"
+API_RELEASES = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases?per_page=100"
 LINUX = "rusty-chess-{v}-x86_64-unknown-linux-gnu.tar.gz"
 
 
@@ -423,8 +424,11 @@ def fake_github(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
                 ],
             }
         )
-    api = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases?per_page=100"
-    files[api] = json.dumps(listing).encode()
+    files[API_RELEASES] = json.dumps(listing).encode()
+    for item in listing:
+        files[
+            f"https://api.github.com/repos/jwallace145/rusty-chess-v2/releases/tags/{item['tag_name']}"
+        ] = json.dumps(item).encode()
 
     def fetch(url: str, headers: dict[str, str]) -> bytes:
         return files[url]
@@ -726,3 +730,32 @@ def test_plan_bot_comment_names_bot_apply(bot_workspace: Path, fake_terraform: P
     comment = (bot_workspace / ".jwall-engineering-sites" / "plan-comment.md").read_text()
     assert "Merging will not touch AWS" not in comment
     assert "**Bot apply**" in comment
+
+
+def test_bot_build_waits_for_assets_attached_after_publishing(
+    bot_workspace: Path,
+    fake_github: dict[str, bytes],
+    fake_docker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Release Please publishes the release; the assets arrive seconds later."""
+    tag_url = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases/tags/v0.14.0"
+    full = next(r for r in json.loads(fake_github[API_RELEASES]) if r["tag_name"] == "v0.14.0")
+    bare = dict(full, assets=[])
+    answers = [json.dumps(bare).encode(), json.dumps(full).encode()]
+    original = releases_module._http_get
+
+    def fetch(url: str, headers: dict[str, str]) -> bytes:
+        if url == tag_url:
+            return answers.pop(0) if len(answers) > 1 else answers[0]
+        return original(url, headers)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(releases_module, "_http_get", fetch)
+    import time
+
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    result = runner.invoke(cli.app, ["bot", "build", "--version", "v0.14.0"])
+    assert result.exit_code == 0, result.output
+    assert sleeps, "the build waited for the assets"
+    assert "waiting for" in result.output

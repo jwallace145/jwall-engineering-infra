@@ -55,6 +55,7 @@ bot:
   # must log this within health_seconds after a deploy, or it is rolled back.
   health_log_pattern: awaiting challenges
   health_seconds: 90
+  asset_wait: 30m # a release's Linux asset is attached after the release is published
   records_prefix: records/ # game records: <prefix>pgn|meta/schema=1/engine=<tag>/date=<day>/
   availability_zones: [us-east-1a, us-east-1b]
   # Pinned Amazon Linux 2023 image per architecture, by its Amazon image name.

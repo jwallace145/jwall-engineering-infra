@@ -12,9 +12,11 @@ import json
 import os
 import re
 import tarfile
+import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from logging import Logger
 from pathlib import Path, PurePosixPath
 
 from .components import ContainerImage
@@ -93,6 +95,60 @@ def find(found: list[Release], tag: str) -> Release:
     raise PreflightError(
         f"{tag} is not a published release (known: {', '.join(r.tag for r in found[:5]) or 'none'})"
     )
+
+
+def fetch_release(repository: str, tag: str, fetch: Fetch | None = None) -> Release:
+    """One release by tag, with its assets as they are right now."""
+    fetch = fetch or _http_get
+    item = json.loads(fetch(f"{API}/repos/{repository}/releases/tags/{tag}", _api_headers()))
+    return Release(
+        tag=item["tag_name"],
+        assets={a["name"]: a["browser_download_url"] for a in item.get("assets", [])},
+    )
+
+
+def wait_for_assets(
+    repository: str,
+    tag: str,
+    names: tuple[str, ...],
+    timeout_seconds: int,
+    logger: Logger,
+    poll_seconds: float = 15,
+    fetch: Fetch | None = None,
+    sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> Release:
+    """The release once every asset in `names` is attached.
+
+    Release workflows publish the release first and attach the build outputs a
+    little later, and the release event fires at publishing. Polls until the
+    assets are there, or raises PreflightError after `timeout_seconds`."""
+    sleep = sleep or time.sleep
+    started = clock()
+    while True:
+        release = fetch_release(repository, tag, fetch)
+        missing = [name for name in names if name not in release.assets]
+        if not missing:
+            return release
+        waited = clock() - started
+        if waited >= timeout_seconds:
+            raise PreflightError(
+                f"release {tag} still has no {', '.join(missing)} after "
+                f"{_duration(timeout_seconds)}; was the release build attached?"
+            )
+        logger.info(
+            "release %s: waiting for %s to be attached (%ds so far)", tag, ", ".join(missing),
+            int(waited),
+        )  # fmt: skip
+        sleep(poll_seconds)
+
+
+def _duration(seconds: int) -> str:
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
 
 
 def asset_names(image: ContainerImage, tag: str) -> tuple[str, str]:

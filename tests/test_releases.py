@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import tarfile
 from pathlib import Path
 
@@ -198,3 +199,67 @@ def test_download_writes_the_bytes(tmp_path: Path) -> None:
 
     target = releases.download("https://x/asset", tmp_path / "a", fetch=fetch)
     assert target.read_bytes() == b"bytes"
+
+
+# -- waiting for assets: releases are published before their assets are attached --
+
+TAG_URL = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases/tags/v0.17.0"
+NAMES = (
+    "rusty-chess-v0.17.0-x86_64-unknown-linux-gnu.tar.gz",
+    "rusty-chess-v0.17.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
+)
+
+
+def _tag_fetch(responses: list[list[str]]) -> tuple[releases.Fetch, list[str]]:
+    """Each call returns the next asset-name list (the last one repeats)."""
+    calls: list[str] = []
+
+    def fetch(url: str, headers: dict[str, str]) -> bytes:
+        calls.append(url)
+        names = responses[min(len(calls) - 1, len(responses) - 1)]
+        return json.dumps(
+            {
+                "tag_name": "v0.17.0",
+                "assets": [{"name": n, "browser_download_url": f"https://dl/{n}"} for n in names],
+            }
+        ).encode()
+
+    return fetch, calls
+
+
+def test_wait_for_assets_returns_at_once_when_attached() -> None:
+    fetch, calls = _tag_fetch([list(NAMES)])
+    sleeps: list[float] = []
+    release = releases.wait_for_assets(
+        "jwallace145/rusty-chess-v2", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
+        fetch=fetch, sleep=sleeps.append,
+    )  # fmt: skip
+    assert set(NAMES) <= set(release.assets)
+    assert calls == [TAG_URL]
+    assert sleeps == []
+
+
+def test_wait_for_assets_waits_until_they_are_attached() -> None:
+    fetch, calls = _tag_fetch([[], [NAMES[0]], list(NAMES)])
+    sleeps: list[float] = []
+    clock = iter(range(0, 10_000, 15))
+    release = releases.wait_for_assets(
+        "jwallace145/rusty-chess-v2", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
+        fetch=fetch, sleep=sleeps.append, clock=lambda: float(next(clock)), poll_seconds=15,
+    )  # fmt: skip
+    assert release.assets[NAMES[1]] == f"https://dl/{NAMES[1]}"
+    assert len(calls) == 3
+    assert sleeps == [15, 15]
+
+
+def test_wait_for_assets_gives_up_naming_what_is_missing() -> None:
+    fetch, _ = _tag_fetch([[NAMES[1]]])
+    clock = iter(range(0, 100_000, 60))
+    with pytest.raises(
+        PreflightError,
+        match=r"still has no rusty-chess-v0\.17\.0-x86_64-unknown-linux-gnu\.tar\.gz after 30m",
+    ):
+        releases.wait_for_assets(
+            "jwallace145/rusty-chess-v2", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
+            fetch=fetch, sleep=lambda _: None, clock=lambda: float(next(clock)),
+        )  # fmt: skip

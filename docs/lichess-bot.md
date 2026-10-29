@@ -114,7 +114,11 @@ Everything else in the config, including matchmaking, stays yours.
    `container-release.yml`, which assumes your `ci-release` role. The role
    trusts only your repository's `v*` tags.
 2. `bot reconcile --version vX.Y.Z`:
-   - downloads the Linux asset and its `.sha256` and verifies them;
+   - waits for the Linux asset and its `.sha256` to be attached. Release
+     workflows publish the release first and upload the build afterwards, so
+     this usually takes under a minute; it gives up after `bot.asset_wait`
+     in `config.yaml`, 30 minutes by default;
+   - downloads them and verifies the checksum;
    - builds the image and runs `rusty-chess bench --depth 6` inside it;
    - pushes the image under the tag;
    - writes the desired version and the status `pending:vX.Y.Z`;
@@ -331,9 +335,16 @@ accept losing that game.
 release role, or re-run the older release's workflow. Note that the next
 published release rolls forward again.
 
-**A release fails to build.** The release's check shows why: a missing
-asset, a checksum mismatch, or a failed bench. Nothing was pushed or
-deployed. Fix and publish a new release.
+**A release fails to build.** The release's check shows why, and nothing was
+pushed or deployed. The causes are:
+
+- an asset still missing after the wait (`release vX.Y.Z still has no ...`),
+  which usually means the release's own build failed;
+- a checksum mismatch;
+- a failed bench.
+
+Fix it and publish a new release. If the assets were only late, re-run the
+failed run once they are attached.
 
 **Rotate the token.**
 
