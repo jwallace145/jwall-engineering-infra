@@ -516,6 +516,14 @@ def destroy(
             tags = image.present_tags(session.client("ecr"), project.image_repository)
         except RunError:
             tags = set()  # no repository (never applied, or already destroyed)
+        running = tasks.running_tasks(session.client("ec2"), project.project)
+        if running:
+            ids = ", ".join(t.id for t in running)
+            raise PreflightError(
+                f"task instances are running ({ids}); destroying would remove their network "
+                "and role under them. Wait for them, or stop them with `task terminate --all` "
+                "(as the task role)"
+            )
         if tags:
             raise PreflightError(
                 f"{project.image_repository} still holds {len(tags)} image tag(s); the repository "
@@ -536,6 +544,14 @@ def destroy(
                     run.logger.info(
                         "released %s from Terraform state; the bucket and its games are kept",
                         project.records_bucket,
+                    )
+            # The task results bucket too; it expires its own contents.
+            if any(a.startswith("module.task_results") for a in terraform.state_list()):
+                with phase("keep task results"):
+                    terraform.state_rm("module.task_results")
+                    run.logger.info(
+                        "released %s from Terraform state; it expires its contents on its own",
+                        project.task_bucket,
                     )
             with phase("destroy"):
                 terraform.destroy()
@@ -893,10 +909,6 @@ def bot_reconcile(
     _command(body)(ctx)
 
 
-if __name__ == "__main__":  # pragma: no cover
-    app()
-
-
 # -- remote tasks -----------------------------------------------------------------
 
 
@@ -1091,3 +1103,7 @@ def task_sweep(
                 tasks.terminate(ec2, t.id, run.logger)
 
     _command(body)(ctx)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    app()
