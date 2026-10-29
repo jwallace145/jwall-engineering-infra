@@ -276,6 +276,7 @@ def plan(ctx: typer.Context) -> None:
                 run.settings.plan.comment_max_bytes,
                 run.project.config.domain or run.project.project,
                 github.provenance(tool_version()),
+                applied_by="Bot apply" if run.project.kind == "bot" else None,
             )
             (run.artifacts / "plan-comment.md").write_text(comment)
             github.write_output("result", report.plan_result_name(exit_code))
