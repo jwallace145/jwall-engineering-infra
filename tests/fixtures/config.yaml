@@ -16,7 +16,7 @@ terraform:
 
 library:
   source: jwallace145/jwall-engineering/aws
-  version: 0.11.0 # the one module pin the whole fleet shares (sites and bots)
+  version: 0.12.0 # the one module pin the whole fleet shares (sites and bots)
 
 state:
   bucket: jwall-engineering-tfstate
@@ -66,3 +66,10 @@ bot:
   #   --query Parameter.Value --output text)" --query 'Images[0].Name' --output text
   amis:
     x86_64: al2023-ami-2023.12.20261026.1-kernel-6.18-x86_64 # ami-04b938437b69a2c9c in us-east-1
+
+tasks:
+  # Remote CI tasks (component task-runner, `task run`). The toolchain every
+  # task instance installs; the current stable is the [pkg.rust] version in
+  # https://static.rust-lang.org/dist/channel-rust-stable.toml
+  rust_toolchain: 1.99.1
+  poll_seconds: 5 # how often `task run` polls a task's output and status

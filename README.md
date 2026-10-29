@@ -182,7 +182,7 @@ Module sources look like this, with an exact `version` on every block:
 module "site_bucket" {
   for_each = local.projects
   source   = "jwallace145/jwall-engineering/aws//modules/site-bucket"
-  version  = "0.11.0"
+  version  = "0.12.0"
 
   project = each.key
 }

@@ -102,8 +102,9 @@ _MODULE_PIN = re.compile(
 def test_bot_stack_pins_the_configured_library_version() -> None:
     config = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
     pins = _MODULE_PIN.findall((REPO_ROOT / "stacks" / "bot" / "main.tf").read_text())
-    assert len(pins) == 4, (
-        "stacks/bot composes ecr-repository, vpc, private-bucket, container-instance"
+    assert len(pins) == 6, (
+        "stacks/bot composes ecr-repository, vpc, private-bucket (records and task results), "
+        "container-instance and task-runner"
     )
     assert set(pins) == {config["library"]["version"]}
 

@@ -128,3 +128,33 @@ variable "ami_name" {
   type        = string
   default     = null
 }
+
+variable "task_runner_enabled" {
+  description = "Whether the project has a task-runner component: the task launch template, its instance role and the task results bucket."
+  type        = bool
+}
+
+variable "task_instance_type" {
+  description = "Default instance type of task instances (task-runner.default_instance_type); `task run` passes the type per launch."
+  type        = string
+}
+
+variable "task_max_lifetime_hours" {
+  description = "Hours after boot at which a task instance shuts itself down and terminates (task-runner.max_hours)."
+  type        = number
+}
+
+variable "task_results_days" {
+  description = "Days task outputs stay in the task results bucket (task-runner.results_days)."
+  type        = number
+}
+
+variable "task_log_retention_days" {
+  description = "Retention of the task log group (task-runner.log_retention_days)."
+  type        = number
+}
+
+variable "task_rust_toolchain" {
+  description = "Rust toolchain task instances install (tasks.rust_toolchain in config.yaml)."
+  type        = string
+}
