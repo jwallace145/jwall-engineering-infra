@@ -13,7 +13,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from .components import Component, ContainerImage, LichessBot
+from .components import Component, ContainerImage, LichessBot, TaskRunner
 from .errors import ConfigError
 from .settings import Settings
 
@@ -104,6 +104,9 @@ class SiteConfig(_Model):
                 count = sum(1 for c in self.components if c.kind == kind)
                 if count != 1:
                     raise ValueError(f"components must hold exactly one {kind}, got {count}")
+            runners = sum(1 for c in self.components if c.kind == "task-runner")
+            if runners > 1:
+                raise ValueError(f"components may hold at most one task-runner, got {runners}")
         return self
 
     @property
@@ -117,6 +120,10 @@ class SiteConfig(_Model):
     @property
     def bot(self) -> LichessBot:
         return next(c for c in self.components if isinstance(c, LichessBot))
+
+    @property
+    def task_runner(self) -> TaskRunner | None:
+        return next((c for c in self.components if isinstance(c, TaskRunner)), None)
 
     @model_validator(mode="after")
     def _required_tags(self) -> SiteConfig:

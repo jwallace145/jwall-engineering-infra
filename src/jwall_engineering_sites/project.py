@@ -12,12 +12,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from .components import ContainerImage, LichessBot
+from .components import ContainerImage, LichessBot, TaskRunner
 from .errors import ConfigError
 from .settings import Settings
 from .site import ENVIRONMENT, Site, SiteConfig
 
-Role = Literal["plan", "preview", "apply", "release"]
+Role = Literal["plan", "preview", "apply", "release", "task"]
 
 
 class Project(BaseModel):
@@ -114,6 +114,32 @@ class Project(BaseModel):
     @property
     def log_group(self) -> str:
         return self.parameter_prefix
+
+    @property
+    def task_runner(self) -> TaskRunner | None:
+        self._require("bot")
+        return self.config.task_runner
+
+    @property
+    def task_name(self) -> str:
+        """The task launch template, instance role, profile and security group."""
+        return f"{self.organization}-{self.project}-task"
+
+    @property
+    def task_template(self) -> str:
+        return self.task_name
+
+    @property
+    def task_log_group(self) -> str:
+        return f"/{self.organization}/{self.project}/tasks"
+
+    @property
+    def task_bucket(self) -> str:
+        return f"{self.organization}-{self.project}-tasks"
+
+    @property
+    def task_prefix(self) -> str:
+        return "tasks/"
 
     def parameter(self, name: str) -> str:
         return f"{self.parameter_prefix}/{name}"

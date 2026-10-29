@@ -172,3 +172,93 @@ def test_bot_organization_tag_is_checked(tmp_path: Path, settings: Settings) -> 
     raw["tags"]["Organization"] = "someone-else"
     with pytest.raises(ConfigError, match=r"tags\.Organization"):
         _load(tmp_path, raw, settings)
+
+
+def _without_task_runner(raw: dict[str, Any]) -> dict[str, Any]:
+    raw["components"] = [c for c in raw["components"] if c["kind"] != "task-runner"]
+    return raw
+
+
+def _task_runner(raw: dict[str, Any]) -> dict[str, Any]:
+    component: dict[str, Any] = next(c for c in raw["components"] if c["kind"] == "task-runner")
+    return component
+
+
+def test_task_runner_loads_and_names_derive(bot: Project) -> None:
+    runner = bot.task_runner
+    assert runner is not None
+    assert runner.instance_types == ("c8a.xlarge", "c8a.2xlarge")
+    assert runner.default_instance_type == "c8a.xlarge"
+    assert (runner.max_hours, runner.max_concurrent, runner.results_days) == (6, 4, 7)
+    assert runner.log_retention_days == 14
+    assert bot.task_name == "jwall-engineering-rusty-chess-task"
+    assert bot.task_template == "jwall-engineering-rusty-chess-task"
+    assert bot.task_log_group == "/jwall-engineering/rusty-chess/tasks"
+    assert bot.task_bucket == "jwall-engineering-rusty-chess-tasks"
+    assert bot.task_prefix == "tasks/"
+    assert bot.role_name("task") == "jwall-engineering-rusty-chess-ci-task"
+
+
+def test_task_runner_defaults(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"] = [c for c in raw["components"] if c["kind"] != "task-runner"]
+    raw["components"].append({"kind": "task-runner"})
+    runner = _load(tmp_path, raw, settings).task_runner
+    assert runner is not None
+    assert runner.instance_types == ("c8a.xlarge", "c8a.2xlarge")
+    assert runner.default_instance_type == "c8a.xlarge"
+    assert (runner.max_hours, runner.max_concurrent, runner.results_days) == (6, 4, 7)
+
+
+def test_project_without_task_runner_loads(tmp_path: Path, settings: Settings) -> None:
+    assert _load(tmp_path, _without_task_runner(_raw()), settings).task_runner is None
+
+
+@pytest.mark.parametrize("bad", ["t3.large", "t4g.xlarge", "c8a xlarge", "C8A.xlarge"])
+def test_task_runner_rejects_burstable_or_malformed_types(
+    tmp_path: Path, settings: Settings, bad: str
+) -> None:
+    raw = _raw()
+    _task_runner(raw)["instance_types"] = ["c8a.xlarge", bad]
+    with pytest.raises(ConfigError, match="instance_types"):
+        _load(tmp_path, raw, settings)
+
+
+def test_task_runner_rejects_empty_types(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _task_runner(raw)["instance_types"] = []
+    with pytest.raises(ConfigError, match="instance_types"):
+        _load(tmp_path, raw, settings)
+
+
+def test_task_runner_default_must_be_allowed(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _task_runner(raw)["default_instance_type"] = "c8a.4xlarge"
+    with pytest.raises(ConfigError, match="default_instance_type"):
+        _load(tmp_path, raw, settings)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("max_hours", 0), ("max_hours", 25), ("max_concurrent", 0), ("max_concurrent", 17),
+     ("results_days", 0), ("results_days", 31), ("log_retention_days", 10)],
+)  # fmt: skip
+def test_task_runner_bounds(tmp_path: Path, settings: Settings, field: str, value: int) -> None:
+    raw = _raw()
+    _task_runner(raw)[field] = value
+    with pytest.raises(ConfigError, match=field):
+        _load(tmp_path, raw, settings)
+
+
+def test_two_task_runners_fail(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"].append(dict(_task_runner(raw)))
+    with pytest.raises(ConfigError, match="at most one task-runner"):
+        _load(tmp_path, raw, settings)
+
+
+def test_task_runner_alone_is_not_a_bot_project(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"] = [_task_runner(raw)]
+    with pytest.raises(ConfigError, match="exactly one container-image"):
+        _load(tmp_path, raw, settings)
