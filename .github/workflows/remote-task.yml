@@ -1,0 +1,203 @@
+name: Remote task
+
+# Reusable: a bot repository with a task-runner component calls this to run
+# one script on a fresh, dedicated, on-demand EC2 instance. The CLI launches
+# the instance, streams the script's output into this job's log, copies the
+# files the script wrote to $OUT_DIR back, terminates the instance on every
+# exit path and exits with the script's code.
+#
+# Who can run it: same-repository pull requests, pushes, manual dispatches
+# and schedules. Fork pull requests get no OIDC token from GitHub, and the
+# first step refuses them and every other event before any AWS call. No
+# GitHub credential reaches the instance: it fetches the public repository
+# anonymously at the commit under test.
+#
+# The CLI runs from this workflow's own commit (github.job_workflow_sha), so
+# the tag the caller pins selects the tool version.
+#
+# Caller (in the bot repository):
+#
+#   permissions: {}
+#   jobs:
+#     sprt:
+#       uses: jwallace145/jwall-engineering-infra/.github/workflows/remote-task.yml@vX.Y.Z
+#       with:
+#         project: rusty-chess
+#         script: scripts/sprt.sh
+#         args: '["--games", "2000"]'   # a JSON array of strings
+#         artifact: sprt-results
+#       permissions:
+#         contents: read
+#         id-token: write
+#
+# In a matrix, give each leg its own task-id and artifact.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: The project name in jwall-engineering-sites.yaml. The task role is derived from it.
+        required: true
+        type: string
+      script:
+        description: The task script, relative to the repository root. It runs with bash, in the repository root, with OUT_DIR set.
+        required: true
+        type: string
+      args:
+        description: Arguments for the script, as a JSON array of strings.
+        required: false
+        type: string
+        default: "[]"
+      instance-type:
+        description: One of the project's task-runner.instance_types; empty for its default_instance_type.
+        required: false
+        type: string
+        default: ""
+      max-hours:
+        description: Hard limit in hours; 0 for the project's task-runner.max_hours. GitHub stops the job after 6 hours either way.
+        required: false
+        type: number
+        default: 0
+      task-id:
+        description: Names this task within the run (tags, results prefix, cleanup). Set a distinct one per matrix leg.
+        required: false
+        type: string
+        default: task
+      artifact:
+        description: Name of the artifact the task's outputs are uploaded as.
+        required: false
+        type: string
+        default: task-output
+      artifact-path:
+        description: Where the task's outputs are copied on the runner.
+        required: false
+        type: string
+        default: out
+      debug:
+        description: Console log at debug level.
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  task:
+    name: ${{ inputs.task-id }} (${{ inputs.script }}) on a dedicated instance
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # GitHub-hosted jobs stop at six hours; the CLI terminates on SIGTERM
+    permissions:
+      contents: read
+      id-token: write # the task role, through OIDC
+    env:
+      RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      TASK_ID: ${{ inputs.task-id }}
+      CLI: uv run --no-dev --project .jwall-engineering-infra jwall-engineering-sites --config .jwall-engineering-infra/config.yaml
+    steps:
+      - name: Refuse fork pull requests and other events
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          case "$EVENT" in
+            pull_request)
+              if [ "$HEAD_REPO" != "$REPO" ]; then
+                echo "::error::fork pull requests cannot use the standardized task runners"
+                exit 1
+              fi
+              ;;
+            push|workflow_dispatch|schedule) ;;
+            *)
+              echo "::error::remote tasks run on pull_request, push, workflow_dispatch and schedule events, not $EVENT"
+              exit 1
+              ;;
+          esac
+      - name: Check out the project file
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: jwall-engineering-sites.yaml
+          sparse-checkout-cone-mode: false
+      - name: Check out jwall-engineering-infra at this workflow's own commit
+        uses: actions/checkout@v7
+        with:
+          repository: jwallace145/jwall-engineering-infra
+          ref: ${{ github.job_workflow_sha }}
+          path: .jwall-engineering-infra
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --no-dev --project .jwall-engineering-infra
+      - name: Resolve the task role and its session length
+        id: role
+        env:
+          PROJECT: ${{ inputs.project }}
+          MAX_HOURS: ${{ inputs.max-hours }}
+          CONFIG: .jwall-engineering-infra/config.yaml
+        run: |
+          account=$(yq -r .aws.account_id "$CONFIG")
+          organization=$(yq -r .context.organization "$CONFIG")
+          [[ "$account" =~ ^[0-9]{12}$ && -n "$organization" && "$organization" != null ]] || { echo "::error::$CONFIG has no aws.account_id or context.organization"; exit 1; }
+          hours="$MAX_HOURS"
+          if [ "$hours" = "0" ]; then
+            hours=$(yq -r '[.components[] | select(.kind == "task-runner") | .max_hours // 6][0] // 6' jwall-engineering-sites.yaml)
+          fi
+          [[ "$hours" =~ ^[0-9]+$ ]] || { echo "::error::max-hours must be a whole number, got $hours"; exit 1; }
+          # One session covers the whole task, plus an hour for launch, setup and collection.
+          duration=$(( (hours + 1) * 3600 ))
+          if [ "$duration" -gt 43200 ]; then duration=43200; fi
+          {
+            echo "arn=arn:aws:iam::${account}:role/${organization}-${PROJECT}-ci-task"
+            echo "duration=$duration"
+          } >> "$GITHUB_OUTPUT"
+      - name: Assume the task role
+        id: credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ steps.role.outputs.arn }}
+          role-duration-seconds: ${{ steps.role.outputs.duration }}
+          aws-region: us-east-1
+          role-session-name: remote-task-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: jwall-engineering-sites task run
+        env:
+          SCRIPT: ${{ inputs.script }}
+          ARGS: ${{ inputs.args }}
+          INSTANCE_TYPE: ${{ inputs.instance-type }}
+          MAX_HOURS: ${{ inputs.max-hours }}
+          OUT: ${{ inputs.artifact-path }}
+          DEBUG: ${{ inputs.debug }}
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ! jq -e 'type == "array" and all(.[]; type == "string" and (contains("\n") | not))' <<<"$ARGS" >/dev/null; then
+            echo "::error::args must be a JSON array of single-line strings, got: $ARGS"
+            exit 2
+          fi
+          mapfile -t argv < <(jq -r '.[]' <<<"$ARGS")
+          options=()
+          if [ "$DEBUG" = "true" ]; then options+=(--debug); fi
+          flags=()
+          if [ -n "$INSTANCE_TYPE" ]; then flags+=(--instance-type "$INSTANCE_TYPE"); fi
+          if [ "$MAX_HOURS" != "0" ]; then flags+=(--max-hours "$MAX_HOURS"); fi
+          # shellcheck disable=SC2086
+          $CLI "${options[@]}" task run --script "$SCRIPT" --ref "$REF" --out "$OUT" \
+            --run-id "$RUN_ID" --task-id "$TASK_ID" "${flags[@]}" -- "${argv[@]}"
+      - name: Upload the task's outputs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ inputs.artifact-path }}
+          if-no-files-found: warn
+      - name: Upload the run log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: remote-task-log-${{ inputs.task-id }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Terminate anything this task left running
+        if: always() && steps.credentials.outcome == 'success'
+        run: |
+          # shellcheck disable=SC2086
+          $CLI task terminate --run-id "$RUN_ID" --task-id "$TASK_ID"
