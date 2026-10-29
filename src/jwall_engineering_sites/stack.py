@@ -111,6 +111,7 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
         "availability_zones": list(settings.bot.availability_zones),
         "keep_release_images": settings.ecr.keep_release_images,
         "expire_untagged_after_days": settings.ecr.expire_untagged_after_days,
+        "ami_name": settings.bot.amis.get(image.architecture),
     }
 
 

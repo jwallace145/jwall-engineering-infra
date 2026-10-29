@@ -281,12 +281,35 @@ asset.
 ## Applying and replacing
 
 The bot's stack is planned on every pull request of this repository: the
-`Bot plan` job posts a comment. It is applied by hand with the
-**Bot apply** workflow (`workflow_dispatch`, `prod` environment). A change to
-the instance's AMI, instance type or user data, including a library bump
-that changes the on-instance scripts, **replaces the instance** and ends the
-game in progress. Read the plan comment and run the apply while the bot is
-idle. Games already finished are shipped at shutdown.
+`Bot plan` job posts a comment. Merging the pull request does not apply it.
+It is applied by hand with the **Bot apply** workflow (`workflow_dispatch`,
+`prod` environment), and its plan comment says what the next Bot apply would
+do.
+
+A change to the instance's image, instance type or user data **replaces the
+instance** and ends the game in progress. That includes a library bump that
+changes the on-instance scripts. Read the plan comment and run the apply
+while the bot is idle. Games already finished are shipped at shutdown.
+
+**The image is pinned by name.** `bot.amis` in `config.yaml` holds one
+Amazon Linux 2023 image per architecture, by its Amazon image name, such as
+`al2023-ami-2023.12.20261026.1-kernel-6.18-x86_64`. The bot stack resolves
+the name to the image ID among Amazon-owned images, including deprecated
+ones, so a pin keeps working after Amazon deprecates it. A new Amazon release
+never shows up as a replacement by itself. To upgrade the OS:
+
+1. Look up the name of the current latest image:
+   ```sh
+   aws ec2 describe-images --image-ids "$(aws ssm get-parameter \
+     --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+     --query Parameter.Value --output text)" --query 'Images[0].Name' --output text
+   ```
+2. Change `bot.amis.x86_64` to that name in a pull request. Its bot plan
+   shows the replacement.
+3. After merging, run Bot apply while the bot is idle.
+
+An architecture with no pin follows the latest image, and is replaced on
+every Amazon release.
 
 ## Runbook
 

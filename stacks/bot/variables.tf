@@ -122,3 +122,9 @@ variable "expire_untagged_after_days" {
   description = "Days after which untagged images expire (ecr.expire_untagged_after_days in config.yaml)."
   type        = number
 }
+
+variable "ami_name" {
+  description = "Name of the Amazon-owned image the bot instance is pinned to (bot.amis.<architecture> in config.yaml), e.g. al2023-ami-2023.9.20251027.0-kernel-6.1-x86_64. Changing it replaces the instance; null follows the latest Amazon Linux 2023 image."
+  type        = string
+  default     = null
+}

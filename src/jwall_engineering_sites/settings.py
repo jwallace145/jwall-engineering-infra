@@ -113,6 +113,24 @@ class BotSection(_Section):
     health_seconds: int = Field(ge=10, le=600)
     records_prefix: str = Field(pattern=r"^([a-z0-9][a-z0-9-]*/)+$")
     availability_zones: tuple[str, ...] = Field(min_length=1, max_length=4)
+    #: The pinned Amazon Linux 2023 image per architecture, by its Amazon-owned image
+    #: name (e.g. al2023-ami-2023.9.20251027.0-kernel-6.1-x86_64). A bot's instance
+    #: changes OS only when its pin changes; an architecture without a pin follows
+    #: the latest image, which replaces the instance on every Amazon release.
+    amis: dict[Literal["x86_64", "arm64"], str] = {}
+
+    @field_validator("amis")
+    @classmethod
+    def _ami_names(cls, value: dict[str, str]) -> dict[str, str]:
+        for architecture, name in value.items():
+            if name.startswith("ami-") or not re.fullmatch(r"[A-Za-z0-9._()/-]{3,128}", name):
+                raise ValueError(
+                    f"{architecture}: {name!r} must be an Amazon image name like "
+                    f"al2023-ami-2023.9.20251027.0-kernel-6.1-{architecture}, not an ID"
+                )
+            if not name.endswith(f"-{architecture}"):
+                raise ValueError(f"{architecture}: {name!r} must end in -{architecture}")
+        return value
 
 
 class PlanSection(_Section):
