@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
@@ -689,3 +690,30 @@ def test_bot_logs_refuses_the_release_role(bot_workspace: Path) -> None:
     with mock_aws(), _as_role(BOT_RELEASE_ROLE):
         result = runner.invoke(cli.app, ["bot", "logs"])
     assert result.exit_code == 3
+
+
+def test_bot_build_reads_the_config_next_to_the_project_file(
+    bot_workspace: Path,
+    fake_github: dict[str, bytes],
+    fake_docker: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--file` from another directory: lichess/config.yml is resolved beside the file."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    shutil.copy(bot_workspace / "config.yaml", elsewhere / "config.yaml")
+    monkeypatch.chdir(elsewhere)
+    result = runner.invoke(
+        cli.app,
+        [
+            "--file",
+            str(bot_workspace / "jwall-engineering-sites.yaml"),
+            "bot",
+            "build",
+            "--version",
+            "v0.14.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [line.split()[0] for line in fake_docker.read_text().splitlines()] == ["build", "run"]
