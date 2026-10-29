@@ -117,3 +117,59 @@ def test_foundation_takes_the_account_from_config() -> None:
     state = (REPO_ROOT / "foundation" / "state.tf").read_text()
     assert "650503560686" not in state
     assert "local.account_id" in state
+
+
+def _module(name: str) -> str:
+    """The text of one module block in foundation/bots.tf."""
+    text = BOTS_TF.read_text()
+    match = re.search(rf'^module "{name}" \{{\n(.*?)^\}}', text, re.MULTILINE | re.DOTALL)
+    assert match, f"module {name} not found in bots.tf"
+    return match.group(1)
+
+
+def _policies(block: str) -> list[str]:
+    match = re.search(r"^\s*policies\s*=\s*\[([^\]]*)\]", block, re.MULTILINE)
+    assert match, "no policies list"
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def _task_types() -> dict[str, list[str]]:
+    text = BOTS_TF.read_text()
+    match = re.search(r"bot_task_types\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
+    assert match, "local.bot_task_types not found"
+    return {
+        key: re.findall(r'"([^"]+)"', types)
+        for key, types in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
+    }
+
+
+def test_bot_plan_and_apply_carry_the_task_policies() -> None:
+    assert "task/read" in _policies(_module("bot_ci_plan"))
+    assert "task/manage" not in _policies(_module("bot_ci_plan"))
+    assert {"task/read", "task/manage"} <= set(_policies(_module("bot_ci_apply")))
+
+
+def test_task_role_is_the_launch_role_for_the_bot_repository() -> None:
+    block = _module("bot_ci_task")
+    assert 'source   = "jwallace145/jwall-engineering/aws//modules/ci-task-role"' in block
+    assert "for_each = local.bot_task_types" in block
+    assert "repository        = local.bots[each.key].repository" in block
+    assert "repository_id     = local.bots[each.key].repository_id" in block
+    assert _policies(block) == ["task/launch"]
+    assert "instance_types = each.value" in block
+    # No subjects override: the module's default trusts pull_request and main only.
+    assert "subjects" not in block
+
+
+def test_task_instance_types_match_the_project_file() -> None:
+    import yaml
+
+    fixture = yaml.safe_load((FIXTURES / "bots" / "rusty-chess.yaml").read_text())
+    runner = next(c for c in fixture["components"] if c["kind"] == "task-runner")
+    assert _task_types() == {"rusty-chess": runner["instance_types"]}
+    assert set(_task_types()) <= set(registry())
+
+
+def test_bots_output_names_the_task_role() -> None:
+    outputs = (REPO_ROOT / "foundation" / "outputs.tf").read_text()
+    assert "task_role_arn" in outputs and "module.bot_ci_task[key].role_arn" in outputs

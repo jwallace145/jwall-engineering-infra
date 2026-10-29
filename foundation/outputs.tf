@@ -62,6 +62,7 @@ output "bots" {
       plan_role_arn    = module.bot_ci_plan[key].role_arn
       apply_role_arn   = module.bot_ci_apply[key].role_arn
       release_role_arn = module.bot_ci_release[key].role_arn
+      task_role_arn    = contains(keys(local.bot_task_types), key) ? module.bot_ci_task[key].role_arn : null
       state_key        = "project=${key}/env=prod/${key}-prod.tfstate"
     }
   }
