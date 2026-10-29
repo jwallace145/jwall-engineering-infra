@@ -43,7 +43,7 @@ reusable workflows this repository publishes. The design is in
 | `bot status` | `ci-plan` or `ci-release` | Instance, versions and rollout status |
 | `bot logs [--since D] [--follow]` | `ci-plan` | The container's CloudWatch logs |
 | `bot secrets set\|check NAME` | the owner's shell | Write (no echo) or check a SecureString secret |
-| `task run --script P --ref SHA [--instance-type T] [--max-hours N] [--out DIR] -- ARGS...` | `ci-task` | Bot projects with a `task-runner`: run one script on a fresh on-demand instance, stream it, copy its outputs, always terminate; exits with the script's code |
+| `task run --script P --ref SHA [--instance-type T] [--market spot\|on-demand] [--max-hours N] [--out DIR] -- ARGS...` | `ci-task` | Bot projects with a `task-runner`: run one script on a fresh instance (spot under a price cap by default, on demand only as a launch fallback), stream it, copy its outputs, always terminate; exits with the script's code, or 75 on a spot interruption |
 | `task list` | `ci-plan` or `ci-task` | The project's running task instances (read-only) |
 | `task terminate (--instance ID \| --run-id ID [--task-id ID] \| --all)`, `task sweep [--dry-run]` | `ci-task` | Terminate task instances; sweep those past their lifetime (by hand: there is no scheduled sweeper) |
 
@@ -122,15 +122,16 @@ instance and end the game in progress, so it is never automatic. The bot
 repository's own release workflow calls `container-release.yml`, which runs
 `bot reconcile` with the bot's release role. The full guide, with every
 field, the rollout guarantees, the game-records layout, costs and a
-runbook, is [docs/lichess-bot.md](docs/lichess-bot.md).
+runbook, is [docs/lichess-bot.md](docs/lichess-bot.md). A note for the bot's
+own README is in [docs/consumer-note.md](docs/consumer-note.md).
 
 A bot project can also add a `task-runner` component: its CI jobs then run
 long, CPU-bound scripts (an engine SPRT, a match series) on dedicated,
-ephemeral, on-demand EC2 instances through the reusable `remote-task.yml`
-workflow. The guide, with the caller, the task script contract, the
-security model, the leak guards, costs and a runbook, is
-[docs/remote-tasks.md](docs/remote-tasks.md). A note for the bot's
-own README is in [docs/consumer-note.md](docs/consumer-note.md).
+ephemeral EC2 instances, a 64-core `c8a.16xlarge` on spot by default,
+through the reusable `remote-task.yml` workflow. The guide, with the caller,
+the task script contract, spot pricing and interruptions, the security
+model, the leak guards, costs and a runbook, is
+[docs/remote-tasks.md](docs/remote-tasks.md).
 
 ### The pull request comments
 
@@ -401,7 +402,7 @@ Not automated; these need the owner's credentials or the GitHub UI.
 - Create the GitHub `prod` environment with a deployment branch restriction to `main`.
 - Set repository variables from `terraform output`: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN` here, and each project's role ARNs and bucket name (from `terraform output projects`) in that project's repo.
 - Optional, for comments authored by the product rather than `github-actions[bot]`: create a GitHub App named **JWall Engineering Sites** (no webhook; permissions *Pull requests: read and write*; upload an avatar), generate a private key, and install it on this repo and every site repo. In each of those repos set the variable `JES_APP_CLIENT_ID` to the app's client ID and the secret `JES_APP_PRIVATE_KEY` to the full `.pem` contents, and pass them to the reusable workflows as shown above.
-- Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`, and `Purpose` (task instances carry `Purpose=ci-task`, for the later tag-based cost tooling).
+- Activate cost allocation tags in Billing: `Organization`, `Project`, `Environment`, `Repository`, `ManagedBy`, `Owner`, `Component`, `Purpose` and `Lifecycle` (task instances carry `Purpose=ci-task` and `Lifecycle=spot|on-demand`, for the later tag-based cost tooling).
 - For bot projects, after the release that creates their roles:
   - commit the project file and the caller workflow in the bot repository;
   - run the **Bot apply** workflow;
