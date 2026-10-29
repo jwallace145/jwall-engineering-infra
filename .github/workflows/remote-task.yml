@@ -53,6 +53,11 @@ on:
         required: false
         type: string
         default: ""
+      market:
+        description: spot or on-demand; empty for the project's task-runner.market. Spot falls back to on demand at launch only.
+        required: false
+        type: string
+        default: ""
       max-hours:
         description: Hard limit in hours; 0 for the project's task-runner.max_hours. GitHub stops the job after 6 hours either way.
         required: false
@@ -78,6 +83,13 @@ on:
         required: false
         type: boolean
         default: false
+    outputs:
+      outcome:
+        description: passed, failed, interrupted (spot reclaimed the instance; no result, re-run) or no-capacity.
+        value: ${{ jobs.task.outputs.outcome }}
+      interrupted-at:
+        description: When spot reclaimed the instance, if it did.
+        value: ${{ jobs.task.outputs.interrupted-at }}
 
 permissions: {}
 
@@ -89,6 +101,9 @@ jobs:
     permissions:
       contents: read
       id-token: write # the task role, through OIDC
+    outputs:
+      outcome: ${{ steps.task.outputs.outcome }}
+      interrupted-at: ${{ steps.task.outputs.interrupted-at }}
     env:
       RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       TASK_ID: ${{ inputs.task-id || inputs.artifact }}
@@ -159,10 +174,13 @@ jobs:
           aws-region: us-east-1
           role-session-name: remote-task-${{ github.run_id }}-${{ github.run_attempt }}
       - name: jwall-engineering-sites task run
+        id: task
         env:
           SCRIPT: ${{ inputs.script }}
           ARGS: ${{ inputs.args }}
           INSTANCE_TYPE: ${{ inputs.instance-type }}
+          MARKET: ${{ inputs.market }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
           MAX_HOURS: ${{ inputs.max-hours }}
           OUT: ${{ inputs.artifact-path }}
           DEBUG: ${{ inputs.debug }}
@@ -178,6 +196,8 @@ jobs:
           flags=()
           if [ -n "$INSTANCE_TYPE" ]; then flags+=(--instance-type "$INSTANCE_TYPE"); fi
           if [ "$MAX_HOURS" != "0" ]; then flags+=(--max-hours "$MAX_HOURS"); fi
+          if [ -n "$MARKET" ]; then flags+=(--market "$MARKET"); fi
+          if [ -n "$PULL_REQUEST" ]; then flags+=(--pull-request "$PULL_REQUEST"); fi
           # exec: on cancel GitHub signals this step's process, which must be the
           # CLI itself (not bash or uv) so its handlers terminate the instance.
           exec .jwall-engineering-infra/.venv/bin/jwall-engineering-sites \
@@ -188,7 +208,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ inputs.artifact }}
+          name: ${{ inputs.artifact }}${{ steps.task.outputs.outcome == 'interrupted' && '-interrupted' || '' }}
           path: ${{ inputs.artifact-path }}
           if-no-files-found: warn
       - name: Upload the run log

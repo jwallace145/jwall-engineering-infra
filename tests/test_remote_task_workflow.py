@@ -29,7 +29,7 @@ def _index(predicate: Any) -> int:
 def test_it_is_reusable_with_the_planned_inputs() -> None:
     call = _workflow()[True]["workflow_call"]
     assert set(call["inputs"]) == {
-        "project", "script", "args", "instance-type", "max-hours", "task-id",
+        "project", "script", "args", "instance-type", "market", "max-hours", "task-id",
         "artifact", "artifact-path", "debug",
     }  # fmt: skip
     assert call["inputs"]["project"]["required"] and call["inputs"]["script"]["required"]
@@ -93,8 +93,7 @@ def test_no_step_hands_out_the_github_token() -> None:
 
 
 def test_upload_and_cleanup_always_run() -> None:
-    upload = _steps()[_index(lambda s: s.get("uses", "").startswith("actions/upload-artifact")
-                             and s["with"]["name"] == "${{ inputs.artifact }}")]  # fmt: skip
+    upload = _steps()[_index(lambda s: s.get("name") == "Upload the task's outputs")]
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "${{ inputs.artifact-path }}"
     cleanup = _steps()[-1]
@@ -106,3 +105,33 @@ def test_runs_the_cli_from_this_workflow_commit() -> None:
     text = WORKFLOW.read_text()
     assert "ref: ${{ github.job_workflow_sha }}" in text
     assert "--config .jwall-engineering-infra/config.yaml" in text
+
+
+def test_outcome_and_interruption_are_outputs() -> None:
+    workflow = _workflow()
+    outputs = workflow[True]["workflow_call"]["outputs"]
+    assert outputs["outcome"]["value"] == "${{ jobs.task.outputs.outcome }}"
+    assert outputs["interrupted-at"]["value"] == "${{ jobs.task.outputs.interrupted-at }}"
+    job = workflow["jobs"]["task"]
+    assert job["outputs"] == {
+        "outcome": "${{ steps.task.outputs.outcome }}",
+        "interrupted-at": "${{ steps.task.outputs.interrupted-at }}",
+    }
+    assert (
+        _steps()[_index(lambda s: s.get("id") == "task")]["name"]
+        == "jwall-engineering-sites task run"
+    )
+
+
+def test_an_interrupted_tasks_artifact_says_so() -> None:
+    upload = _steps()[_index(lambda s: s.get("name") == "Upload the task's outputs")]
+    suffix = "${{ steps.task.outputs.outcome == 'interrupted' && '-interrupted' || '' }}"
+    assert upload["with"]["name"] == "${{ inputs.artifact }}" + suffix
+
+
+def test_the_task_step_passes_the_market_and_the_pull_request() -> None:
+    step = _steps()[_index(lambda s: s.get("id") == "task")]
+    assert step["env"]["MARKET"] == "${{ inputs.market }}"
+    assert step["env"]["PULL_REQUEST"] == "${{ github.event.pull_request.number }}"
+    assert 'flags+=(--market "$MARKET")' in step["run"]
+    assert 'flags+=(--pull-request "$PULL_REQUEST")' in step["run"]

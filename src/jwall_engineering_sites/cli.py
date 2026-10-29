@@ -958,12 +958,32 @@ def task_run(
         str | None, typer.Option("--run-id", help="Default: GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT.")
     ] = None,
     task_id: Annotated[str | None, typer.Option("--task-id", help="Default: GITHUB_JOB.")] = None,
+    market: Annotated[
+        str | None, typer.Option("--market", help="spot or on-demand; default task-runner.market.")
+    ] = None,
+    max_price_fraction: Annotated[
+        float | None,
+        typer.Option(
+            "--max-price-fraction",
+            help="Spot price cap, a fraction of on demand; default from the project file.",
+        ),
+    ] = None,
+    on_demand_fallback: Annotated[
+        bool | None,
+        typer.Option(
+            "--on-demand-fallback/--no-on-demand-fallback",
+            help="On demand at launch when spot has no capacity; default from the project file.",
+        ),
+    ] = None,
+    pull_request: Annotated[
+        str | None, typer.Option("--pull-request", help="Pull request number, for the tags.")
+    ] = None,
 ) -> None:
-    """Run one script on a fresh on-demand instance and exit with its code.
+    """Run one script on a fresh instance (spot by default) and exit with its code.
 
     The instance is terminated whatever happens. Exit codes: the task's own,
-    1 for a runtime failure, 2 configuration, 3 preflight, 124 timed out,
-    130 interrupted.
+    1 for a runtime failure, 2 configuration, 3 preflight or no capacity, 75 spot
+    interruption (never a result: re-run), 124 timed out, 130 cancelled.
     """
 
     def body(run: Run) -> None:
@@ -978,6 +998,14 @@ def task_run(
             raise ConfigError(
                 f"--max-hours must be 1 to task-runner.max_hours ({runner.max_hours})"
             )
+        chosen_market = market or runner.market
+        if chosen_market not in ("spot", "on-demand"):
+            raise ConfigError(f"--market must be spot or on-demand, got {chosen_market}")
+        fraction = runner.max_price_fraction if max_price_fraction is None else max_price_fraction
+        if not 0 < fraction <= 1:
+            raise ConfigError(f"--max-price-fraction must be above 0 and at most 1, got {fraction}")
+        if pull_request is not None and not pull_request.isdigit():
+            raise ConfigError(f"--pull-request must be a number, got {pull_request}")
         spec = tasks.TaskSpec(
             project=project,
             instance_type=chosen,
@@ -989,11 +1017,19 @@ def task_run(
             ref=ref,
             script=script,
             args=tuple(args or ()),
+            market=chosen_market,
+            max_price_fraction=fraction,
+            on_demand_fallback=(
+                runner.on_demand_fallback if on_demand_fallback is None else on_demand_fallback
+            ),
+            spot_wait_minutes=runner.spot_wait_minutes,
+            pull_request=pull_request,
         )
         session = _bot_session(run, roles=["task"])
         run.logger.info(
-            "task %s/%s: %s on %s (at most %dh)", spec.run_id, spec.task_id, script, chosen, hours
-        )
+            "task %s/%s: %s on %s %s (at most %dh)",
+            spec.run_id, spec.task_id, script, chosen, chosen_market, hours,
+        )  # fmt: skip
         code = tasks.run_task(
             session,
             spec,

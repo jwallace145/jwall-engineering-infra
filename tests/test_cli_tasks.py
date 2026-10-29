@@ -189,3 +189,33 @@ def test_sweep_dry_run_changes_nothing(fleet: list[str]) -> None:
     assert result.exit_code == 0 and fleet == []
     assert "i-old" in result.output and "i-untagged" in result.output
     assert "i-run" not in result.output  # neither i-run nor i-run2 is past its lifetime
+
+
+def test_run_takes_the_market_from_the_project(captured: dict[str, Any]) -> None:
+    assert _run().exit_code == 0
+    spec: tasks.TaskSpec = captured["spec"]
+    assert (spec.market, spec.max_price_fraction, spec.on_demand_fallback) == ("spot", 0.58, True)
+    assert spec.spot_wait_minutes == 5 and spec.pull_request is None
+
+
+def test_run_market_options(captured: dict[str, Any]) -> None:
+    result = _run("--market", "on-demand", "--max-price-fraction", "0.4",
+                  "--no-on-demand-fallback", "--pull-request", "84")  # fmt: skip
+    assert result.exit_code == 0, result.output
+    spec: tasks.TaskSpec = captured["spec"]
+    assert (spec.market, spec.max_price_fraction, spec.on_demand_fallback) == (
+        "on-demand",
+        0.4,
+        False,
+    )
+    assert spec.pull_request == "84"
+
+
+@pytest.mark.parametrize("fraction", ["0", "1.5", "-0.1"])
+def test_run_refuses_a_bad_price_fraction(captured: dict[str, Any], fraction: str) -> None:
+    result = _run("--max-price-fraction", fraction)
+    assert result.exit_code == 2 and "spec" not in captured
+
+
+def test_run_refuses_an_unknown_market(captured: dict[str, Any]) -> None:
+    assert _run("--market", "reserved").exit_code == 2 and "spec" not in captured
