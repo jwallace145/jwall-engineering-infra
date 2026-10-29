@@ -38,7 +38,7 @@ data "aws_ami" "pinned" {
 
 module "image" {
   source  = "jwallace145/jwall-engineering/aws//modules/ecr-repository"
-  version = "0.12.0"
+  version = "0.12.1"
 
   name                       = local.name
   keep_release_images        = var.keep_release_images
@@ -47,7 +47,7 @@ module "image" {
 
 module "network" {
   source  = "jwallace145/jwall-engineering/aws//modules/vpc"
-  version = "0.12.0"
+  version = "0.12.1"
 
   name               = local.name
   availability_zones = var.availability_zones
@@ -55,7 +55,7 @@ module "network" {
 
 module "records" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.12.0"
+  version = "0.12.1"
   count   = var.records_enabled ? 1 : 0
 
   name = "${local.name}-records"
@@ -63,7 +63,7 @@ module "records" {
 
 module "bot" {
   source  = "jwallace145/jwall-engineering/aws//modules/container-instance"
-  version = "0.12.0"
+  version = "0.12.1"
 
   name                 = "${local.name}-bot"
   project              = var.project
@@ -93,7 +93,7 @@ module "bot" {
 # back by `task run`. Expired after task_results_days.
 module "task_results" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.12.0"
+  version = "0.12.1"
   count   = var.task_runner_enabled ? 1 : 0
 
   name                           = "${local.name}-tasks"
@@ -102,7 +102,7 @@ module "task_results" {
 
 module "tasks" {
   source  = "jwallace145/jwall-engineering/aws//modules/task-runner"
-  version = "0.12.0"
+  version = "0.12.1"
   count   = var.task_runner_enabled ? 1 : 0
 
   name_root             = var.tags["Organization"]
