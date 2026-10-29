@@ -28,7 +28,9 @@ from typing import TYPE_CHECKING, Any
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+from . import github
 from .errors import ConfigError, PreflightError, RunError, SitesError
+from .log import annotate_warning
 from .project import Project
 
 if TYPE_CHECKING:
@@ -445,6 +447,9 @@ def launch(
 #: argument can break out of it.
 SCRIPT_PATH = "/root/task-runner.sh"
 AGENT_TIMEOUT_SECONDS = 600
+#: `task run`'s exit code when spot reclaimed the instance (EX_TEMPFAIL):
+#: never a result, always "re-run".
+INTERRUPTED_EXIT = 75
 #: The script's last line. `stream` keeps reading until it sees it, because
 #: the agent uploads output on its own schedule, after reporting the status.
 END_MARKER = "== task-runner: end of output"
@@ -487,10 +492,6 @@ def _check(spec: TaskSpec) -> None:
             )
 
 
-def results_prefix(spec: TaskSpec, prefix: str) -> str:
-    return f"{prefix}{spec.run_id}/{spec.task_id}/"
-
-
 def task_script(spec: TaskSpec, bucket: str, prefix: str) -> str:
     """The bash script the instance runs: wait for setup, reset the lifetime
     guard, fetch the commit anonymously, run the task, upload its outputs
@@ -499,7 +500,6 @@ def task_script(spec: TaskSpec, bucket: str, prefix: str) -> str:
     _check(spec)
     q = shlex.quote
     task = " ".join(q(part) for part in (spec.script, *spec.args))
-    destination = f"s3://{bucket}/{results_prefix(spec, prefix)}"
     minutes = spec.max_hours * 60
     region = spec.project.region
     url = f"https://github.com/{spec.repository}"
@@ -535,11 +535,49 @@ fi
 git -C /work/repo checkout --quiet FETCH_HEAD
 cd /work/repo || exit 1
 
-status=0
-OUT_DIR=/work/out bash {task} || status=$?
+# The only results prefix this instance may write: tasks/<role-id>:<instance-id>/.
+if ! uid=$(aws sts get-caller-identity --query UserId --output text --region {q(region)}); then
+  echo "task-runner: could not read the instance's identity"
+  exit 1
+fi
+dest="s3://{bucket}/{prefix}${{uid}}/"
+out=/work/out
 
-echo "== task-runner: the task exited with $status; uploading its outputs"
-aws s3 cp --recursive --only-show-errors --region {q(region)} /work/out {q(destination)} \
+# Spot: poll for the two-minute interruption notice. On it, record it, say
+# so, and stop the task's whole process group; the outputs so far are
+# uploaded and the script exits 75.
+watch_spot() {{
+  local token notice now
+  while sleep 5; do
+    token=$(curl -sS -X PUT http://169.254.169.254/latest/api/token \
+      -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null) || continue
+    notice=$(curl -sSf -H "X-aws-ec2-metadata-token: $token" \
+      http://169.254.169.254/latest/meta-data/spot/instance-action 2>/dev/null) || continue
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    echo "SPOT INTERRUPTION: $now"
+    printf '{{"time": "%s", "notice": %s}}\n' "$now" "$notice" > "$out/interrupted.json"
+    kill -TERM -- "-$1" 2>/dev/null || kill -TERM "$1"
+    return 0
+  done
+}}
+
+status=0
+# The arguments are quoted literals: `$` in them must not expand.
+# shellcheck disable=SC2016
+OUT_DIR=$out setsid bash {task} &
+task_pid=$!
+watch_spot "$task_pid" &
+watcher_pid=$!
+wait "$task_pid" || status=$?
+kill "$watcher_pid" 2>/dev/null || true
+
+if [ -f "$out/interrupted.json" ]; then
+  echo "== task-runner: interrupted by spot reclamation; uploading the partial outputs"
+  status=75
+else
+  echo "== task-runner: the task exited with $status; uploading its outputs"
+fi
+aws s3 cp --recursive --only-show-errors --region {q(region)} "$out" "$dest" \
   || echo "task-runner: uploading the outputs failed"
 # The instance ends itself a minute from now (a shutdown terminates it), in
 # case nothing else does; the minute lets the agent report and flush.
@@ -621,6 +659,8 @@ def stream(
     write: Callable[[str], None],
     poll: float,
     sleep: Callable[[float], None] = time.sleep,
+    alive: Callable[[], bool] | None = None,
+    alive_every: int = 12,
 ) -> int:
     """Print the task's output as it arrives, once per line, until the command
     finishes and its end marker arrives; return the task's exit code (124 timed
@@ -690,6 +730,8 @@ def stream(
                 return None
             raise
 
+    polls = 0
+    gone = False
     while True:
         ok, _ = attempt(drain)
         if not ok:
@@ -699,14 +741,68 @@ def stream(
             continue
         if found is not None and found["Status"] in _TERMINAL:
             break
+        polls += 1
+        if alive is not None and polls % alive_every == 0 and not alive():
+            # A reclaimed instance can leave the command InProgress for long.
+            found, gone = {"Status": "Terminated", "ResponseCode": -1}, True
+            break
         sleep(poll)
     # The output may still be on its way: read until the end marker arrives.
     waited = 0.0
-    while not ended and waited < END_WAIT_SECONDS:
+    while not ended and not gone and waited < END_WAIT_SECONDS:
         sleep(poll)
         waited += poll
         attempt(drain)
     return _outcome(found["Status"], found.get("ResponseCode", -1))
+
+
+def results_location(s3: S3Client, bucket: str, prefix: str, instance_id: str) -> str | None:
+    """The instance's own results prefix, `<prefix><role-id>:<instance-id>/`, or
+    None when the task wrote nothing (an empty OUT_DIR uploads nothing)."""
+    pages = s3.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket, Prefix=prefix, Delimiter="/"
+    )
+    for page in pages:
+        for common in page.get("CommonPrefixes", []):
+            key = common.get("Prefix", "")
+            if key.endswith(f":{instance_id}/"):
+                return key
+    return None
+
+
+def interruption(ec2: EC2Client, instance_id: str, out_dir: Path) -> str | None:
+    """When spot reclaimed the instance, the time it did; otherwise None. The
+    on-box watcher's record wins; the instance's state reason is the fallback."""
+    record = out_dir / "interrupted.json"
+    if record.is_file():
+        try:
+            when = json.loads(record.read_text()).get("time")
+        except (ValueError, AttributeError):
+            when = None
+        return str(when) if when else "unknown"
+    try:
+        reservations = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"]
+        reason = reservations[0]["Instances"][0].get("StateReason", {}).get("Code")
+    except (ClientError, BotoCoreError, IndexError, KeyError):
+        return None
+    if reason == "Server.SpotInstanceTermination":
+        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return None
+
+
+def _alive(ec2: EC2Client, instance_id: str) -> bool:
+    try:
+        reservations = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"]
+        state = reservations[0]["Instances"][0]["State"]["Name"]
+    except (ClientError, BotoCoreError, IndexError, KeyError):
+        return True  # unknown is not gone
+    return state not in ("shutting-down", "terminated")
+
+
+def _report(outcome: str, interrupted_at: str) -> None:
+    """The reusable workflow's `outcome` and `interrupted-at` outputs."""
+    github.write_output("outcome", outcome)
+    github.write_output("interrupted-at", interrupted_at)
 
 
 def collect(s3: S3Client, bucket: str, key_prefix: str, out_dir: Path) -> list[Path]:
@@ -821,6 +917,7 @@ def run_task(
 
     instance_id: str | None = None
     launching = False
+    outcome, interrupted_at = "failed", ""
     with _interruptible() as shield:
         try:
             info = instance_types_info(ec2, [spec.instance_type])
@@ -842,18 +939,35 @@ def run_task(
             wait_for_agent(ssm, instance_id, sleep=sleep)
             command_id = send(ssm, instance_id, script, project.task_log_group, spec.max_hours)
             code = stream(
-                logs, ssm, project.task_log_group, command_id, instance_id, write, poll, sleep
-            )
+                logs, ssm, project.task_log_group, command_id, instance_id, write, poll, sleep,
+                alive=lambda: _alive(ec2, launched.id),
+            )  # fmt: skip
             logger.info("the task exited with %d", code)
+            copied = True
             try:
-                paths = collect(
-                    s3, project.task_bucket, results_prefix(spec, project.task_prefix), out_dir
-                )
-                logger.info("copied %d output file(s) to %s", len(paths), out_dir)
+                key = results_location(s3, project.task_bucket, project.task_prefix, instance_id)
+                if key is None:
+                    logger.info("the task wrote no outputs")
+                else:
+                    paths = collect(s3, project.task_bucket, key, out_dir)
+                    logger.info("copied %d output file(s) to %s", len(paths), out_dir)
             except (SitesError, ClientError, BotoCoreError) as exc:
                 logger.error("could not copy the task's outputs: %s", exc)
-                return code or 1
-            return code
+                copied = False
+            if launched.lifecycle == "spot" and code != 0:
+                at = interruption(ec2, instance_id, out_dir)
+                if at is not None:
+                    message = f"interrupted by spot reclamation at {at}: no result; re-run the task"
+                    logger.warning("%s", message)
+                    annotate_warning(message, title="spot interruption")
+                    outcome, interrupted_at = "interrupted", at
+                    return INTERRUPTED_EXIT
+            outcome = "passed" if code == 0 and copied else "failed"
+            return code if copied else code or 1
+        except NoCapacity as exc:
+            logger.error("%s", exc)
+            outcome = "no-capacity"
+            return exc.exit_code
         except TaskInterrupted as exc:
             logger.warning("%s; terminating the task instance", exc)
             return exc.exit_code
@@ -866,6 +980,7 @@ def run_task(
         finally:
             shield()
             _cleanup(ec2, spec, instance_id, launching, logger)
+            _report(outcome, interrupted_at)
 
 
 def _log_launch(logger: Logger, spec: TaskSpec, launched: Launched, plan: PricePlan) -> None:

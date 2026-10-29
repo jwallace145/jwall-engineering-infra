@@ -53,20 +53,31 @@ def test_commands_carry_the_script_encoded(bot: Project) -> None:
     assert base64.b64decode(encoded).decode() == tasks.task_script(spec, "bucket", "tasks/")
 
 
-def _run_tail(script: str, task_code: int, cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run the script from `status=0` to its exit, with the task (`bash`) and
-    `aws` replaced by functions that print their arguments."""
+DEST = "s3://jwall-engineering-rusty-chess-tasks/tasks/AROAEXAMPLE:i-0abc/"
+
+
+def _run_tail(
+    script: str, task: str, cwd: Path, watcher: str = "watch_spot() { :; }"
+) -> subprocess.CompletedProcess[str]:
+    """Run the script from `status=0` to its exit, with `setsid`, the task
+    (`bash`), `aws` and `shutdown` replaced by functions, and `out`/`dest` set."""
     tail = script[script.index("status=0") :]
     probe = (
-        f"bash() {{ printf 'task<%s>\\n' \"$@\"; return {task_code}; }}\n"
+        f'out={cwd}/out; mkdir -p "$out"; dest={DEST}\n'
+        'setsid() { "$@"; }\n'
+        f"bash() {{ {task}; }}\n"
+        f"{watcher}\n"
         "aws() { printf 'aws<%s>\\n' \"$@\"; }\n"
         "shutdown() { printf 'shutdown<%s>\\n' \"$@\"; }\n" + tail
     )
     return subprocess.run(["/bin/bash", "-c", probe], capture_output=True, text=True, cwd=cwd)
 
 
+PRINT_ARGS = "printf 'task<%s>\\n' \"$@\""
+
+
 def test_script_passes_hostile_arguments_verbatim(bot: Project, tmp_path: Path) -> None:
-    result = _run_tail(_script(bot, args=("--games", "200", HOSTILE)), 0, tmp_path)
+    result = _run_tail(_script(bot, args=("--games", "200", HOSTILE)), PRINT_ARGS, tmp_path)
     assert result.returncode == 0, result.stderr
     task_lines = [ln for ln in result.stdout.split("\n") if ln.startswith("task<")]
     assert result.stdout.startswith(
@@ -77,16 +88,16 @@ def test_script_passes_hostile_arguments_verbatim(bot: Project, tmp_path: Path) 
 
 
 def test_script_uploads_and_exits_with_the_task_code(bot: Project, tmp_path: Path) -> None:
-    result = _run_tail(_script(bot), 7, tmp_path)
+    result = _run_tail(_script(bot), "return 7", tmp_path)
     assert result.returncode == 7
     assert "aws<s3>\naws<cp>" in result.stdout
-    assert "aws<s3://jwall-engineering-rusty-chess-tasks/tasks/123-1/sprt-0/>" in result.stdout
+    assert f"aws<{DEST}>" in result.stdout
 
 
 def test_script_ends_with_the_marker_and_shuts_the_instance_down(
     bot: Project, tmp_path: Path
 ) -> None:
-    out = _run_tail(_script(bot), 3, tmp_path).stdout
+    out = _run_tail(_script(bot), "return 3", tmp_path).stdout
     # The instance ends itself a minute after the task: the agent still reports
     # the status and flushes the output; a shutdown terminates it.
     assert out.index("aws<cp>") < out.index("shutdown<-h>\nshutdown<+1>")
@@ -112,13 +123,43 @@ def test_script_steps_in_order(bot: Project) -> None:
         "git -C /work/repo fetch --quiet --depth 1 https://github.com/jwallace145/rusty-chess-v2"
         " 0123456789abcdef0123456789abcdef01234567",
         "git -C /work/repo checkout --quiet FETCH_HEAD",
-        "OUT_DIR=/work/out bash scripts/sprt.sh --games 200",
-        "aws s3 cp --recursive --only-show-errors --region us-east-1 /work/out"
-        " s3://jwall-engineering-rusty-chess-tasks/tasks/123-1/sprt-0/",
+        "aws sts get-caller-identity --query UserId --output text",
+        "OUT_DIR=$out setsid bash scripts/sprt.sh --games 200 &",
+        'aws s3 cp --recursive --only-show-errors --region us-east-1 "$out" "$dest"',
         'exit "$status"',
     ]
     positions = [script.index(step) for step in steps]
     assert positions == sorted(positions)
+
+
+def test_script_reports_a_spot_interruption_with_75(bot: Project, tmp_path: Path) -> None:
+    """The watcher saw the two-minute notice: it records it and stops the task;
+    the partial outputs are still uploaded, and the exit code says interrupted."""
+    watcher = (
+        "watch_spot() { sleep 0.2; echo SPOT INTERRUPTION: T; "
+        'echo \'{"time": "T"}\' > "$out/interrupted.json"; kill -TERM "$1"; }'
+    )
+    result = _run_tail(_script(bot), "sleep 5", tmp_path, watcher)
+    assert result.returncode == 75, result.stdout + result.stderr
+    assert "interrupted by spot reclamation" in result.stdout
+    assert f"aws<{DEST}>" in result.stdout
+    assert (tmp_path / "out" / "interrupted.json").exists()
+
+
+def test_script_watches_for_spot_notices_and_isolates_the_task(bot: Project) -> None:
+    script = _script(bot)
+    assert "latest/meta-data/spot/instance-action" in script
+    assert "sleep 5" in script and "SPOT INTERRUPTION: $now" in script
+    # Its own process group, so the watcher can stop the whole task tree.
+    assert "setsid bash scripts/sprt.sh --games 200 &" in script
+    assert 'kill -TERM -- "-$1"' in script
+
+
+def test_script_writes_only_under_its_own_prefix(bot: Project) -> None:
+    script = _script(bot)
+    uid = script.index("aws sts get-caller-identity --query UserId --output text")
+    assert uid < script.index("status=0")
+    assert 'dest="s3://jwall-engineering-rusty-chess-tasks/tasks/${uid}/"' in script
 
 
 def test_setup_is_judged_by_the_ready_file(bot: Project) -> None:
@@ -390,8 +431,8 @@ class Recorder:
         self.behaviour = behaviour
         self.terminated: list[str] = []
         for name in ("instance_types_info", "wait_for_slot", "public_subnets", "price_plan",
-                     "launch", "wait_for_agent", "send", "stream", "collect", "terminate",
-                     "running_tasks"):  # fmt: skip
+                     "launch", "wait_for_agent", "send", "stream", "results_location",
+                     "collect", "interruption", "terminate", "running_tasks"):  # fmt: skip
             monkeypatch.setattr(tasks, name, self._step(name))
 
     def _step(self, name: str) -> Any:
@@ -413,6 +454,7 @@ class Recorder:
                 "launch": tasks.Launched("i-1", "us-east-1a", "ami-1", "spot"),
                 "send": "cmd-1",
                 "stream": 0,
+                "results_location": "tasks/AROAEXAMPLE:i-1/",
                 "collect": [],
             }
             return action if action is not None else defaults.get(name)
@@ -437,7 +479,8 @@ def test_run_task_success(bot: Project, tmp_path: Path, monkeypatch: pytest.Monk
     assert _run(bot, tmp_path) == 0
     assert rec.calls == ["instance_types_info", "wait_for_slot", "public_subnets", "price_plan",
                          "launch",
-                         "wait_for_agent", "send", "stream", "collect", "terminate"]  # fmt: skip
+                         "wait_for_agent", "send", "stream", "results_location", "collect",
+                         "terminate"]  # fmt: skip
     assert rec.terminated == ["i-1"]
 
 
@@ -566,3 +609,152 @@ def test_run_task_connection_error_terminates(
     rec = Recorder(monkeypatch, wait_for_agent=EndpointConnectionError(endpoint_url="https://ssm"))
     assert _run(bot, tmp_path) == 1
     assert rec.terminated == ["i-1"]
+
+
+# --- results, interruptions and the outcome ---------------------------------------
+
+
+class FakeListS3:
+    def __init__(self, prefixes: list[str]) -> None:
+        self.prefixes = prefixes
+        self.calls: list[dict[str, Any]] = []
+
+    def get_paginator(self, name: str) -> Any:
+        assert name == "list_objects_v2"
+        outer = self
+
+        class Pages:
+            def paginate(self, **kwargs: Any) -> list[dict[str, Any]]:
+                outer.calls.append(kwargs)
+                return [{"CommonPrefixes": [{"Prefix": p} for p in outer.prefixes]}]
+
+        return Pages()
+
+
+def test_results_location_is_the_instances_own_prefix() -> None:
+    s3 = FakeListS3(["tasks/AROAEXAMPLE:i-0aaa/", "tasks/AROAEXAMPLE:i-0bbb/"])
+    assert tasks.results_location(_any(s3), "b", "tasks/", "i-0bbb") == "tasks/AROAEXAMPLE:i-0bbb/"
+    assert s3.calls[0] == {"Bucket": "b", "Prefix": "tasks/", "Delimiter": "/"}
+    assert tasks.results_location(_any(s3), "b", "tasks/", "i-0ccc") is None
+
+
+class FakeStateEC2:
+    def __init__(self, reason: str | None, state: str = "terminated") -> None:
+        self.reason = reason
+        self.state = state
+
+    def describe_instances(self, **kwargs: Any) -> dict[str, Any]:
+        instance: dict[str, Any] = {"State": {"Name": self.state}}
+        if self.reason:
+            instance["StateReason"] = {"Code": self.reason, "Message": self.reason}
+        return {"Reservations": [{"Instances": [instance]}]}
+
+
+def test_interruption_from_the_watchers_record(tmp_path: Path) -> None:
+    (tmp_path / "interrupted.json").write_text('{"time": "2026-10-29T12:00:05Z"}')
+    found = tasks.interruption(_any(FakeStateEC2(None, "running")), "i-1", tmp_path)
+    assert found == "2026-10-29T12:00:05Z"
+
+
+def test_interruption_from_the_state_reason(tmp_path: Path) -> None:
+    ec2 = FakeStateEC2("Server.SpotInstanceTermination")
+    assert tasks.interruption(_any(ec2), "i-1", tmp_path) is not None
+
+
+def test_no_interruption(tmp_path: Path) -> None:
+    ec2 = FakeStateEC2("Client.UserInitiatedShutdown")
+    assert tasks.interruption(_any(ec2), "i-1", tmp_path) is None
+
+
+def test_stream_stops_when_the_instance_is_gone() -> None:
+    """A reclaimed instance can leave Run Command InProgress for a long time."""
+    ssm: Any = FakeSSM([("InProgress", -1)] * 50)
+    checks = iter([True, True, False])
+    code = tasks.stream(
+        _any(FakeLogs([])), ssm, "/g", "c", "i", lambda _: None, poll=5, sleep=lambda _: None,
+        alive=lambda: next(checks), alive_every=1,
+    )  # fmt: skip
+    assert code == 1
+
+
+def _outputs(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    return dict(line.split("=", 1) for line in path.read_text().splitlines())
+
+
+@pytest.fixture
+def github_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(path))
+    return path
+
+
+def test_outcome_passed(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    Recorder(monkeypatch)
+    assert _run(bot, tmp_path) == 0
+    assert _outputs(github_output) == {"outcome": "passed", "interrupted-at": ""}
+
+
+def test_outcome_failed(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    Recorder(monkeypatch, stream=7)
+    assert _run(bot, tmp_path) == 7
+    assert _outputs(github_output)["outcome"] == "failed"
+
+
+def test_outcome_interrupted_is_75_and_keeps_partial_outputs(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    rec = Recorder(monkeypatch, stream=1, interruption="2026-10-29T12:00:05Z")
+    assert _run(bot, tmp_path) == 75
+    assert "collect" in rec.calls and rec.terminated == ["i-1"]
+    assert _outputs(github_output) == {
+        "outcome": "interrupted",
+        "interrupted-at": "2026-10-29T12:00:05Z",
+    }
+
+
+def test_an_on_demand_task_exiting_75_is_not_an_interruption(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    rec = Recorder(
+        monkeypatch, stream=75, launch=tasks.Launched("i-1", "us-east-1a", "ami-1", "on-demand")
+    )
+    assert _run(bot, tmp_path) == 75
+    assert "interruption" not in rec.calls
+    assert _outputs(github_output)["outcome"] == "failed"
+
+
+def test_outcome_no_capacity(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    Recorder(monkeypatch, launch=tasks.NoCapacity("neither spot nor on-demand capacity"))
+    assert _run(bot, tmp_path) == 3
+    assert _outputs(github_output)["outcome"] == "no-capacity"
+
+
+def test_collect_uses_the_instances_prefix(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+
+    def collect(s3: Any, bucket: str, key: str, out: Path) -> list[Path]:
+        seen.append(key)
+        return []
+
+    Recorder(monkeypatch, collect=collect)
+    assert _run(bot, tmp_path) == 0
+    assert seen == ["tasks/AROAEXAMPLE:i-1/"]
+
+
+def test_no_outputs_is_not_a_failure(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty OUT_DIR uploads nothing, so there is no prefix to collect."""
+    rec = Recorder(monkeypatch, results_location=lambda *a: None)
+    assert _run(bot, tmp_path) == 0
+    assert "collect" not in rec.calls
