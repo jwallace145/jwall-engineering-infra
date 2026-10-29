@@ -46,7 +46,7 @@ def test_run_passes_the_task_and_its_exit_code(captured: dict[str, Any]) -> None
     spec: tasks.TaskSpec = captured["spec"]
     assert spec.args == ("--games", "200", "--flag")
     assert spec.script == "scripts/sprt.sh" and spec.ref == SHA
-    assert spec.instance_type == "c8a.xlarge" and spec.max_hours == 6
+    assert spec.instance_type == "c8a.16xlarge" and spec.max_hours == 6
     assert spec.repository == "jwallace145/rusty-chess-v2"
     assert spec.task_id == "local" and spec.workflow == "local"
     assert captured["out_dir"] == Path("out")
@@ -64,12 +64,12 @@ def test_run_ids_follow_github(captured: dict[str, Any], monkeypatch: pytest.Mon
 
 
 def test_run_explicit_options(captured: dict[str, Any]) -> None:
-    result = _run("--instance-type", "c8a.2xlarge", "--max-hours", "2", "--out", "results",
+    result = _run("--instance-type", "c8a.8xlarge", "--max-hours", "2", "--out", "results",
                   "--run-id", "r1", "--task-id", "t1")  # fmt: skip
     assert result.exit_code == 0, result.output
     spec: tasks.TaskSpec = captured["spec"]
     assert (spec.instance_type, spec.max_hours, spec.run_id, spec.task_id) == (
-        "c8a.2xlarge",
+        "c8a.8xlarge",
         2,
         "r1",
         "t1",
@@ -80,7 +80,7 @@ def test_run_explicit_options(captured: dict[str, Any]) -> None:
 def test_run_refuses_a_type_outside_the_allow_list(captured: dict[str, Any]) -> None:
     result = _run("--instance-type", "c8a.48xlarge")
     assert result.exit_code == 2
-    assert "c8a.xlarge, c8a.2xlarge" in result.output
+    assert "c8a.xlarge, c8a.8xlarge, c8a.16xlarge" in result.output
     assert "spec" not in captured
 
 

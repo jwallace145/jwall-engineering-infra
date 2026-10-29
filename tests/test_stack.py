@@ -98,12 +98,18 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
         "log_retention_days": 30,
         "health_log_pattern": "awaiting challenges",
         "health_seconds": 90,
-        "availability_zones": ["us-east-1a", "us-east-1b"],
+        "availability_zones": [
+            "us-east-1a",
+            "us-east-1b",
+            "us-east-1c",
+            "us-east-1d",
+            "us-east-1f",
+        ],
         "keep_release_images": 20,
         "expire_untagged_after_days": 7,
         "ami_name": settings.bot.amis["x86_64"],
         "task_runner_enabled": True,
-        "task_instance_type": "c8a.xlarge",
+        "task_instance_type": "c8a.16xlarge",
         "task_max_lifetime_hours": 6,
         "task_results_days": 7,
         "task_log_retention_days": 14,
@@ -309,5 +315,5 @@ def test_bot_tfvars_without_a_task_runner(tmp_path: Path, bot: Project, settings
     tfvars = render_tfvars(plain, settings)
     assert tfvars["task_runner_enabled"] is False
     # The other task variables keep valid values so the stack's validations hold.
-    assert tfvars["task_instance_type"] == "c8a.xlarge"
+    assert tfvars["task_instance_type"] == "c8a.16xlarge"
     assert set(tfvars) == _declared("bot")

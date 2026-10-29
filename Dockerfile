@@ -45,10 +45,10 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
 # --no-editable: an editable install points at /src, which the runtime stage does not have.
 RUN uv sync --locked --no-dev --no-editable
-# botocore ships API definitions for every AWS service; the tool uses seven.
+# botocore ships API definitions for every AWS service; the tool uses eight.
 # Keep those plus botocore's shared files (endpoints, partitions, retries).
 RUN cd /opt/jwall-engineering-sites/venv/lib/python3.13/site-packages/botocore/data \
-    && find . -mindepth 1 -maxdepth 1 -type d ! -name s3 ! -name sts ! -name cloudfront ! -name ssm ! -name ec2 ! -name logs ! -name ecr -exec rm -rf {} + \
+    && find . -mindepth 1 -maxdepth 1 -type d ! -name s3 ! -name sts ! -name cloudfront ! -name ssm ! -name ec2 ! -name logs ! -name ecr ! -name pricing -exec rm -rf {} + \
     && find /opt/jwall-engineering-sites/venv -type d -name __pycache__ -prune -exec rm -rf {} +
 
 COPY --from=terraform /tmp/terraform/terraform /usr/local/bin/terraform

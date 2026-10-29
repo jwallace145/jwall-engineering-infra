@@ -187,10 +187,15 @@ def _task_runner(raw: dict[str, Any]) -> dict[str, Any]:
 def test_task_runner_loads_and_names_derive(bot: Project) -> None:
     runner = bot.task_runner
     assert runner is not None
-    assert runner.instance_types == ("c8a.xlarge", "c8a.2xlarge")
-    assert runner.default_instance_type == "c8a.xlarge"
-    assert (runner.max_hours, runner.max_concurrent, runner.results_days) == (6, 4, 7)
-    assert runner.log_retention_days == 14
+    assert runner.instance_types == ("c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge")
+    assert runner.default_instance_type == "c8a.16xlarge"
+    assert (runner.market, runner.max_price_fraction, runner.on_demand_fallback) == (
+        "spot",
+        0.58,
+        True,
+    )
+    assert (runner.spot_wait_minutes, runner.max_vcpus, runner.slot_wait_minutes) == (5, 192, 30)
+    assert (runner.max_hours, runner.results_days, runner.log_retention_days) == (6, 7, 14)
     assert bot.task_name == "jwall-engineering-rusty-chess-task"
     assert bot.task_template == "jwall-engineering-rusty-chess-task"
     assert bot.task_log_group == "/jwall-engineering/rusty-chess/tasks"
@@ -205,9 +210,15 @@ def test_task_runner_defaults(tmp_path: Path, settings: Settings) -> None:
     raw["components"].append({"kind": "task-runner"})
     runner = _load(tmp_path, raw, settings).task_runner
     assert runner is not None
-    assert runner.instance_types == ("c8a.xlarge", "c8a.2xlarge")
-    assert runner.default_instance_type == "c8a.xlarge"
-    assert (runner.max_hours, runner.max_concurrent, runner.results_days) == (6, 4, 7)
+    assert runner.instance_types == ("c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge")
+    assert runner.default_instance_type == "c8a.16xlarge"
+    assert (runner.market, runner.max_price_fraction, runner.on_demand_fallback) == (
+        "spot",
+        0.58,
+        True,
+    )
+    assert (runner.spot_wait_minutes, runner.max_vcpus, runner.slot_wait_minutes) == (5, 192, 30)
+    assert runner.max_hours == 6
 
 
 def test_project_without_task_runner_loads(tmp_path: Path, settings: Settings) -> None:
@@ -240,10 +251,13 @@ def test_task_runner_default_must_be_allowed(tmp_path: Path, settings: Settings)
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("max_hours", 0), ("max_hours", 7), ("max_concurrent", 0), ("max_concurrent", 17),
-     ("results_days", 0), ("results_days", 31), ("log_retention_days", 10)],
+    [("max_hours", 0), ("max_hours", 7), ("max_vcpus", 0), ("max_vcpus", 257),
+     ("results_days", 0), ("results_days", 31), ("log_retention_days", 10),
+     ("max_price_fraction", 0), ("max_price_fraction", 1.01), ("spot_wait_minutes", 0),
+     ("spot_wait_minutes", 31), ("slot_wait_minutes", -1), ("slot_wait_minutes", 121),
+     ("market", "reserved")],
 )  # fmt: skip
-def test_task_runner_bounds(tmp_path: Path, settings: Settings, field: str, value: int) -> None:
+def test_task_runner_bounds(tmp_path: Path, settings: Settings, field: str, value: object) -> None:
     raw = _raw()
     _task_runner(raw)[field] = value
     with pytest.raises(ConfigError, match=field):

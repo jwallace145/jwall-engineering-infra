@@ -10,6 +10,8 @@ on-demand only: a spot interruption would lose a long benchmark.
 from __future__ import annotations
 
 import base64
+import json
+import math
 import re
 import shlex
 import signal
@@ -17,7 +19,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from logging import Logger
 from pathlib import Path, PurePosixPath
 from types import FrameType
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
     from mypy_boto3_ec2.type_defs import TagSpecificationTypeDef, TagTypeDef
     from mypy_boto3_logs import CloudWatchLogsClient
+    from mypy_boto3_pricing import PricingClient
     from mypy_boto3_s3 import S3Client
     from mypy_boto3_ssm import SSMClient
 
@@ -41,8 +44,14 @@ if TYPE_CHECKING:
 TASK_COMPONENT = "task-runner"
 TASK_PURPOSE = "ci-task"
 
-#: RunInstances errors that mean "no capacity here": try the next zone.
+#: RunInstances errors that mean "not here, not now": try the next zone.
 CAPACITY_ERRORS = frozenset({"InsufficientInstanceCapacity", "Unsupported"})
+#: The same for spot, plus a price above the cap and the spot quota.
+SPOT_CAPACITY_ERRORS = CAPACITY_ERRORS | {"SpotMaxPriceTooLow", "MaxSpotInstanceCountExceeded"}
+#: Pause between two passes over every zone while spot keeps failing.
+SPOT_RETRY_SECONDS = 20
+#: How often `wait_for_slot` checks the running tasks again.
+SLOT_POLL_SECONDS = 30
 
 _LIVE_STATES = ["pending", "running", "stopping"]
 _TAG_VALUE_UNSAFE = re.compile(r"[^A-Za-z0-9 +\-=._:/@]")
@@ -62,6 +71,11 @@ class TaskSpec:
     ref: str
     script: str
     args: tuple[str, ...]
+    market: str = "spot"
+    max_price_fraction: float = 0.58
+    on_demand_fallback: bool = True
+    spot_wait_minutes: int = 5
+    pull_request: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,12 +97,30 @@ class Launched:
     id: str
     zone: str
     image: str
+    lifecycle: str
 
 
 @dataclass(frozen=True)
 class Subnet:
     id: str
     zone: str
+    zone_id: str
+
+
+@dataclass(frozen=True)
+class PricePlan:
+    """Where and at what price to try: subnets in launch order, the spot cap
+    (None lets AWS cap at the on-demand price), and what was seen."""
+
+    subnets: list[Subnet]
+    max_price: str | None
+    on_demand: float | None
+    spot: dict[str, float]
+    scores: dict[str, int]
+
+
+class NoCapacity(PreflightError):  # noqa: N818 (an outcome, read as `no-capacity`)
+    """No zone had capacity for the type, spot or on demand."""
 
 
 def _tag_value(value: str) -> str:
@@ -96,12 +128,12 @@ def _tag_value(value: str) -> str:
     return _TAG_VALUE_UNSAFE.sub("-", value)[:256]
 
 
-def task_tags(spec: TaskSpec) -> dict[str, str]:
+def task_tags(spec: TaskSpec, lifecycle: str) -> dict[str, str]:
     """Every tag a task instance and its volume carry: the project file's six
     tags (RunInstances does not apply the provider's default tags), the
     launch template's two, and the run's."""
     project = spec.project
-    return {
+    tags = {
         **project.config.tags,
         "Component": TASK_COMPONENT,
         "Purpose": TASK_PURPOSE,
@@ -110,7 +142,11 @@ def task_tags(spec: TaskSpec) -> dict[str, str]:
         "RunId": _tag_value(spec.run_id),
         "TaskId": _tag_value(spec.task_id),
         "MaxLifetimeHours": str(spec.max_hours),
+        "Lifecycle": lifecycle,
     }
+    if spec.pull_request:
+        tags["PullRequest"] = _tag_value(spec.pull_request)
+    return tags
 
 
 def _tags(raw: list[dict[str, str]] | None) -> dict[str, str]:
@@ -148,71 +184,259 @@ def running_tasks(ec2: EC2Client, project: str) -> list[TaskInstance]:
 
 
 def public_subnets(ec2: EC2Client, project: str) -> list[Subnet]:
-    """The project's public subnets, in zone order: the launch fallback order."""
+    """The project's public subnets, in zone order."""
     response = ec2.describe_subnets(
         Filters=[
             {"Name": "tag:Project", "Values": [project]},
             {"Name": "map-public-ip-on-launch", "Values": ["true"]},
         ]
     )
-    subnets = [Subnet(s["SubnetId"], s["AvailabilityZone"]) for s in response["Subnets"]]
+    subnets = [
+        Subnet(s["SubnetId"], s["AvailabilityZone"], s.get("AvailabilityZoneId", ""))
+        for s in response["Subnets"]
+    ]
     return sorted(subnets, key=lambda s: (s.zone, s.id))
 
 
-def check_capacity_cap(running: list[TaskInstance], max_concurrent: int) -> None:
-    """Refuse to launch when the project already runs max_concurrent tasks."""
-    if len(running) < max_concurrent:
-        return
-    listing = ", ".join(f"{t.id} (run {t.run_id}, task {t.task_id})" for t in running)
-    raise PreflightError(
-        f"{len(running)} task instances already running (max_concurrent {max_concurrent}): "
-        f"{listing}; wait for them or stop them with `task terminate`"
+def instance_types_info(ec2: EC2Client, types: list[str]) -> dict[str, tuple[int, int]]:
+    """vCPUs and threads per core of each type."""
+    response = ec2.describe_instance_types(InstanceTypes=types)  # type: ignore[arg-type]
+    return {
+        t["InstanceType"]: (
+            t["VCpuInfo"]["DefaultVCpus"],
+            t["VCpuInfo"].get("DefaultThreadsPerCore", 1),
+        )
+        for t in response["InstanceTypes"]
+    }
+
+
+def wait_for_slot(
+    ec2: EC2Client,
+    spec: TaskSpec,
+    vcpus: int,
+    max_vcpus: int,
+    wait_seconds: float,
+    logger: Logger,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Wait until the project's running tasks leave room for `vcpus` under
+    `max_vcpus`, at most `wait_seconds`. A live instance with this task's
+    run and task ID is refused at once: matrix legs must not share an ID."""
+    if vcpus > max_vcpus:
+        raise PreflightError(
+            f"{spec.instance_type} has {vcpus} vCPUs, more than max_vcpus ({max_vcpus})"
+        )
+    deadline = clock() + wait_seconds
+    sizes: dict[str, int] = {}
+    while True:
+        running = running_tasks(ec2, spec.project.project)
+        twins = [t.id for t in running if (t.run_id, t.task_id) == (spec.run_id, spec.task_id)]
+        if twins:
+            raise PreflightError(
+                f"task {spec.task_id} of run {spec.run_id} is already running on "
+                f"{', '.join(twins)}; give each matrix leg its own task id"
+            )
+        unknown = sorted({t.type for t in running} - set(sizes))
+        if unknown:
+            sizes.update({k: v[0] for k, v in instance_types_info(ec2, unknown).items()})
+        used = sum(sizes.get(t.type, 0) for t in running)
+        if used + vcpus <= max_vcpus:
+            return
+        if clock() >= deadline:
+            listing = ", ".join(f"{t.id} ({t.type}, run {t.run_id})" for t in running)
+            raise PreflightError(
+                f"no free slot after {wait_seconds / 60:.0f} minutes: {used} of {max_vcpus} "
+                f"task vCPUs in use ({listing}); re-run later or stop them with `task terminate`"
+            )
+        logger.info("%d of %d task vCPUs in use; waiting for room for %d", used, max_vcpus, vcpus)
+        sleep(SLOT_POLL_SECONDS)
+
+
+def on_demand_price(pricing: PricingClient, instance_type: str, region: str) -> float | None:
+    """The Linux on-demand hourly price of the type, from the Pricing API."""
+    fields = {
+        "instanceType": instance_type,
+        "regionCode": region,
+        "operatingSystem": "Linux",
+        "tenancy": "Shared",
+        "preInstalledSw": "NA",
+        "capacitystatus": "Used",
+    }
+    response = pricing.get_products(
+        ServiceCode="AmazonEC2",
+        Filters=[{"Type": "TERM_MATCH", "Field": k, "Value": v} for k, v in fields.items()],
+        MaxResults=10,
+    )
+    for raw in response.get("PriceList", []):
+        item = json.loads(raw) if isinstance(raw, str) else raw
+        for term in item.get("terms", {}).get("OnDemand", {}).values():
+            for dimension in term.get("priceDimensions", {}).values():
+                usd = dimension.get("pricePerUnit", {}).get("USD")
+                if usd and float(usd) > 0:
+                    return float(usd)
+    return None
+
+
+def price_plan(
+    ec2: EC2Client, pricing: PricingClient, spec: TaskSpec, subnets: list[Subnet], logger: Logger
+) -> PricePlan:
+    """Resolve the spot cap and order the zones: best spot placement score
+    first, then the cheapest current spot price. Lookups that fail are
+    logged; launching never depends on them, except the cap."""
+    region = spec.project.region
+    try:
+        on_demand = on_demand_price(pricing, spec.instance_type, region)
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning("the Pricing API failed: %s", exc)
+        on_demand = None
+    if spec.market != "spot":
+        return PricePlan(subnets=subnets, max_price=None, on_demand=on_demand, spot={}, scores={})
+    max_price: str | None = None
+    if on_demand is None:
+        logger.warning(
+            "no on-demand price for %s; spot is capped at the on-demand price by AWS",
+            spec.instance_type,
+        )
+    else:
+        # Rounded down: the cap must never exceed the fraction of on demand.
+        cents = math.floor(on_demand * spec.max_price_fraction * 10_000)
+        max_price = f"{cents / 10_000:.4f}"
+    spot: dict[str, float] = {}
+    scores: dict[str, int] = {}
+    try:
+        history = ec2.describe_spot_price_history(
+            InstanceTypes=[spec.instance_type],  # type: ignore[list-item]
+            ProductDescriptions=["Linux/UNIX"],
+            StartTime=datetime.now(UTC),
+        )
+        latest: dict[str, tuple[datetime, float]] = {}
+        for entry in history.get("SpotPriceHistory", []):
+            zone, when = entry["AvailabilityZone"], entry["Timestamp"]
+            if zone not in latest or when > latest[zone][0]:
+                latest[zone] = (when, float(entry["SpotPrice"]))
+        spot = {zone: price for zone, (_, price) in latest.items()}
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning("could not read spot prices: %s", exc)
+    try:
+        response = ec2.get_spot_placement_scores(
+            InstanceTypes=[spec.instance_type],
+            TargetCapacity=1,
+            SingleAvailabilityZone=True,
+            RegionNames=[region],
+        )
+        by_id = {s["AvailabilityZoneId"]: s["Score"] for s in response["SpotPlacementScores"]}
+        scores = {s.zone: by_id[s.zone_id] for s in subnets if s.zone_id in by_id}
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning("could not read spot placement scores: %s", exc)
+    ordered = sorted(
+        subnets, key=lambda s: (-scores.get(s.zone, 0), spot.get(s.zone, math.inf), s.zone)
+    )
+    return PricePlan(
+        subnets=ordered, max_price=max_price, on_demand=on_demand, spot=spot, scores=scores
     )
 
 
-def launch(
-    ec2: EC2Client, spec: TaskSpec, template: str, subnets: list[Subnet], logger: Logger
-) -> Launched:
-    """Launch one on-demand instance from the template's default version,
-    trying each subnet's zone in turn when one has no capacity."""
-    if not subnets:
-        raise PreflightError(
-            f"no public subnet tagged Project={spec.project.project}; apply the bot stack first"
-        )
-    tags: list[TagTypeDef] = [{"Key": k, "Value": v} for k, v in sorted(task_tags(spec).items())]
+def _run_instance(
+    ec2: EC2Client, spec: TaskSpec, template: str, subnet: Subnet, lifecycle: str,
+    max_price: str | None,
+) -> Launched:  # fmt: skip
+    tags: list[TagTypeDef] = [
+        {"Key": k, "Value": v} for k, v in sorted(task_tags(spec, lifecycle).items())
+    ]
     specifications: list[TagSpecificationTypeDef] = [
         {"ResourceType": "instance", "Tags": tags},
         {"ResourceType": "volume", "Tags": tags},
     ]
-    for subnet in subnets:
+    kwargs: dict[str, Any] = {
+        "LaunchTemplate": {"LaunchTemplateName": template, "Version": "$Default"},
+        "InstanceType": spec.instance_type,
+        "SubnetId": subnet.id,
+        "MinCount": 1,
+        "MaxCount": 1,
+        "TagSpecifications": specifications,
+    }
+    if lifecycle == "spot":
+        options: dict[str, Any] = {
+            "SpotInstanceType": "one-time",
+            "InstanceInterruptionBehavior": "terminate",
+        }
+        if max_price is not None:
+            options = {"MaxPrice": max_price, **options}
+        kwargs["InstanceMarketOptions"] = {"MarketType": "spot", "SpotOptions": options}
+    response = ec2.run_instances(**kwargs)
+    instance = response["Instances"][0]
+    return Launched(
+        id=instance["InstanceId"],
+        zone=instance.get("Placement", {}).get("AvailabilityZone", subnet.zone),
+        image=instance.get("ImageId", "unknown"),
+        lifecycle=lifecycle,
+    )
+
+
+def _try_zones(
+    ec2: EC2Client, spec: TaskSpec, template: str, plan: PricePlan, lifecycle: str,
+    logger: Logger,
+) -> Launched | None:  # fmt: skip
+    errors = SPOT_CAPACITY_ERRORS if lifecycle == "spot" else CAPACITY_ERRORS
+    for subnet in plan.subnets:
         try:
-            response = ec2.run_instances(
-                LaunchTemplate={"LaunchTemplateName": template, "Version": "$Default"},
-                InstanceType=spec.instance_type,  # type: ignore[arg-type]
-                SubnetId=subnet.id,
-                MinCount=1,
-                MaxCount=1,
-                TagSpecifications=specifications,
-            )
+            return _run_instance(ec2, spec, template, subnet, lifecycle, plan.max_price)
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
-            if code not in CAPACITY_ERRORS:
+            if code not in errors:
                 raise
             logger.warning(
-                "no on-demand %s capacity in %s (%s); trying the next zone",
-                spec.instance_type,
-                subnet.zone,
-                code,
-            )
-            continue
-        instance = response["Instances"][0]
-        return Launched(
-            id=instance["InstanceId"],
-            zone=instance.get("Placement", {}).get("AvailabilityZone", subnet.zone),
-            image=instance.get("ImageId", "unknown"),
+                "no %s %s capacity in %s (%s); trying the next zone",
+                lifecycle, spec.instance_type, subnet.zone, code,
+            )  # fmt: skip
+    return None
+
+
+def launch(
+    ec2: EC2Client,
+    spec: TaskSpec,
+    template: str,
+    plan: PricePlan,
+    logger: Logger,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> Launched:
+    """Launch one instance from the template's default version. Spot: every
+    zone in plan order, again and again for spot_wait_minutes, then (if
+    allowed) on demand. This is the only place on demand replaces spot:
+    never once a task runs."""
+    if not plan.subnets:
+        raise PreflightError(
+            f"no public subnet tagged Project={spec.project.project}; apply the bot stack first"
         )
-    zones = ", ".join(s.zone for s in subnets)
-    raise PreflightError(f"no on-demand {spec.instance_type} capacity in {zones}; re-run later")
+    zones = ", ".join(s.zone for s in plan.subnets)
+    if spec.market == "spot":
+        deadline = clock() + spec.spot_wait_minutes * 60
+        while True:
+            launched = _try_zones(ec2, spec, template, plan, "spot", logger)
+            if launched is not None:
+                return launched
+            if clock() >= deadline:
+                break
+            sleep(SPOT_RETRY_SECONDS)
+        if not spec.on_demand_fallback:
+            raise NoCapacity(
+                f"no spot {spec.instance_type} capacity in {zones} for "
+                f"{spec.spot_wait_minutes} minutes; re-run later"
+            )
+        logger.warning(
+            "no spot %s capacity in %s for %d minutes; falling back to on demand",
+            spec.instance_type, zones, spec.spot_wait_minutes,
+        )  # fmt: skip
+    launched = _try_zones(ec2, spec, template, plan, "on-demand", logger)
+    if launched is not None:
+        return launched
+    if spec.market == "spot":
+        raise NoCapacity(
+            f"neither spot nor on-demand {spec.instance_type} capacity in {zones}; re-run later"
+        )
+    raise NoCapacity(f"no on-demand {spec.instance_type} capacity in {zones}; re-run later")
 
 
 # --- running one task -----------------------------------------------------------
@@ -573,6 +797,7 @@ def run_task(
     write: Callable[[str], None],
     poll: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """Run one task end to end and return its exit code. The instance is
     terminated on every path: success, task failure, AWS errors, timeouts
@@ -589,6 +814,7 @@ def run_task(
         return exc.exit_code
 
     ec2 = session.client("ec2")
+    pricing = session.client("pricing", region_name="us-east-1")  # its endpoint's region
     ssm = session.client("ssm")
     logs = session.client("logs")
     s3 = session.client("s3")
@@ -597,22 +823,22 @@ def run_task(
     launching = False
     with _interruptible() as shield:
         try:
-            running = running_tasks(ec2, project.project)
-            twins = [t.id for t in running if (t.run_id, t.task_id) == (spec.run_id, spec.task_id)]
-            if twins:
-                raise PreflightError(
-                    f"task {spec.task_id} of run {spec.run_id} is already running on "
-                    f"{', '.join(twins)}; give each matrix leg its own task id"
+            info = instance_types_info(ec2, [spec.instance_type])
+            vcpus, threads = info[spec.instance_type]
+            if threads > 1:
+                raise ConfigError(
+                    f"{spec.instance_type} runs {threads} threads per core; tasks need "
+                    "whole cores (an SMT-off type such as c8a)"
                 )
-            check_capacity_cap(running, runner.max_concurrent)
-            subnets = public_subnets(ec2, project.project)
-            launching = True
-            launched = launch(ec2, spec, project.task_template, subnets, logger)
-            instance_id = launched.id
-            logger.info(
-                "launched %s: %s on-demand in %s, image %s; output follows",
-                instance_id, spec.instance_type, launched.zone, launched.image,
+            wait_for_slot(
+                ec2, spec, vcpus, runner.max_vcpus, runner.slot_wait_minutes * 60, logger,
+                sleep, clock,
             )  # fmt: skip
+            plan = price_plan(ec2, pricing, spec, public_subnets(ec2, project.project), logger)
+            launching = True
+            launched = launch(ec2, spec, project.task_template, plan, logger, sleep, clock)
+            instance_id = launched.id
+            _log_launch(logger, spec, launched, plan)
             wait_for_agent(ssm, instance_id, sleep=sleep)
             command_id = send(ssm, instance_id, script, project.task_log_group, spec.max_hours)
             code = stream(
@@ -640,6 +866,27 @@ def run_task(
         finally:
             shield()
             _cleanup(ec2, spec, instance_id, launching, logger)
+
+
+def _log_launch(logger: Logger, spec: TaskSpec, launched: Launched, plan: PricePlan) -> None:
+    """The plain lines before the task's own output: what it runs on, and at what price."""
+    logger.info(
+        "launched %s: %s, %s, in %s (spot placement score %s), image %s",
+        launched.id, spec.instance_type, launched.lifecycle, launched.zone,
+        plan.scores.get(launched.zone, "unknown"), launched.image,
+    )  # fmt: skip
+    on_demand = f"${plan.on_demand:.4f}/h" if plan.on_demand is not None else "unknown"
+    if launched.lifecycle == "spot":
+        current = plan.spot.get(launched.zone)
+        logger.info(
+            "spot price: %s/h now in %s, capped at %s (%.2f of on demand, %s)",
+            f"${current:.4f}" if current is not None else "unknown", launched.zone,
+            f"${plan.max_price}/h" if plan.max_price else "the on-demand price",
+            spec.max_price_fraction, on_demand,
+        )  # fmt: skip
+    else:
+        logger.info("on-demand price: %s", on_demand)
+    logger.info("the CPU model and core count head the task's output; output follows")
 
 
 def _cleanup(

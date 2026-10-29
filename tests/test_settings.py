@@ -84,7 +84,9 @@ def test_bot_section_defaults(settings: Settings) -> None:
     assert settings.bot.health_log_pattern == "awaiting challenges"
     assert settings.bot.health_seconds == 90
     assert settings.bot.records_prefix == "records/"
-    assert settings.bot.availability_zones == ("us-east-1a", "us-east-1b")
+    assert settings.bot.availability_zones == (
+        "us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d", "us-east-1f",
+    )  # fmt: skip
 
 
 def test_bot_health_seconds_bounds(tmp_path: Path) -> None:

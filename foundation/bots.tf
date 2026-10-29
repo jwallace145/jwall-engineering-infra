@@ -28,7 +28,7 @@ locals {
   # Bots with a task-runner component, and the instance types their task
   # launch role may start: the project file's task-runner.instance_types.
   bot_task_types = {
-    rusty-chess = ["c8a.xlarge", "c8a.2xlarge"]
+    rusty-chess = ["c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge"]
   }
 
   bot_tfstate = {

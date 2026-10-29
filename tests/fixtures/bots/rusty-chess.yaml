@@ -36,10 +36,15 @@ components:
     logs:
       retention_days: 30
 
-  - kind: task-runner               # optional: ephemeral on-demand EC2 instances for CI tasks
-    instance_types: [c8a.xlarge, c8a.2xlarge]  # the launch role's allow-list
-    default_instance_type: c8a.xlarge
+  - kind: task-runner               # optional: ephemeral EC2 instances for CI tasks (`task run`)
+    instance_types: [c8a.xlarge, c8a.8xlarge, c8a.16xlarge]  # the launch role's allow-list; SMT-off only
+    default_instance_type: c8a.16xlarge  # 64 physical Zen 5 cores, the bot's core
+    market: spot                    # spot | on-demand
+    max_price_fraction: 0.58        # spot cap as a fraction of the on-demand price (about $2.00/h for c8a.16xlarge)
+    on_demand_fallback: true        # on demand at launch only, after spot fails everywhere for spot_wait_minutes
+    spot_wait_minutes: 5
     max_hours: 6                    # 1-6; an instance shuts itself down (and terminates) after this
-    max_concurrent: 4               # `task run` refuses beyond this many running tasks
+    max_vcpus: 192                  # running task vCPUs per project; a launch over it waits for a slot
+    slot_wait_minutes: 30           # how long `task run` waits for a slot before exiting 3
     results_days: 7                 # task outputs expire from S3 after this
     log_retention_days: 14

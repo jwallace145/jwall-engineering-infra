@@ -389,8 +389,9 @@ class Recorder:
         self.calls: list[str] = []
         self.behaviour = behaviour
         self.terminated: list[str] = []
-        for name in ("running_tasks", "public_subnets", "launch", "wait_for_agent",
-                     "send", "stream", "collect", "terminate"):  # fmt: skip
+        for name in ("instance_types_info", "wait_for_slot", "public_subnets", "price_plan",
+                     "launch", "wait_for_agent", "send", "stream", "collect", "terminate",
+                     "running_tasks"):  # fmt: skip
             monkeypatch.setattr(tasks, name, self._step(name))
 
     def _step(self, name: str) -> Any:
@@ -403,10 +404,13 @@ class Recorder:
                 raise action
             if name == "terminate":
                 self.terminated.append(args[1])
+            subnets = [tasks.Subnet("subnet-a", "us-east-1a", "use1-az6")]
             defaults: dict[str, Any] = {
                 "running_tasks": [],
-                "public_subnets": [tasks.Subnet("subnet-a", "us-east-1a")],
-                "launch": tasks.Launched("i-1", "us-east-1a", "ami-1"),
+                "instance_types_info": {"c8a.16xlarge": (64, 1)},
+                "public_subnets": subnets,
+                "price_plan": tasks.PricePlan(subnets, "2.0002", 3.44864, {}, {}),
+                "launch": tasks.Launched("i-1", "us-east-1a", "ami-1", "spot"),
                 "send": "cmd-1",
                 "stream": 0,
                 "collect": [],
@@ -419,7 +423,7 @@ class Recorder:
 class FakeSession:
     """The steps are replaced, so the clients are never used."""
 
-    def client(self, name: str) -> object:
+    def client(self, name: str, **kwargs: Any) -> object:
         return object()
 
 
@@ -431,7 +435,8 @@ def _run(bot: Project, tmp_path: Path) -> int:
 def test_run_task_success(bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rec = Recorder(monkeypatch)
     assert _run(bot, tmp_path) == 0
-    assert rec.calls == ["running_tasks", "public_subnets", "launch",
+    assert rec.calls == ["instance_types_info", "wait_for_slot", "public_subnets", "price_plan",
+                         "launch",
                          "wait_for_agent", "send", "stream", "collect", "terminate"]  # fmt: skip
     assert rec.terminated == ["i-1"]
 
@@ -493,7 +498,7 @@ def test_run_task_interrupt_during_launch_finds_the_instance_by_tags(
         tasks.TaskInstance("i-9", "c8a.xlarge", "pending", "123-1", "sprt-0", LAUNCHED, 6),
         tasks.TaskInstance("i-8", "c8a.xlarge", "running", "123-1", "other", LAUNCHED, 6),
     ]
-    calls = iter([[], found])
+    calls = iter([found])
 
     def launch(*args: Any, **kwargs: Any) -> str:
         os.kill(os.getpid(), signal.SIGINT)
@@ -512,14 +517,20 @@ def test_run_task_launch_failure_has_nothing_to_terminate(
     assert rec.terminated == []
 
 
-def test_run_task_cap_refuses_before_launching(
+def test_run_task_refuses_before_launching_when_no_slot_frees(
     bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    busy = [tasks.TaskInstance(f"i-{n}", "c8a.xlarge", "running", "r", "t", LAUNCHED, 6)
-            for n in range(4)]  # fmt: skip
-    rec = Recorder(monkeypatch, running_tasks=busy)
+    rec = Recorder(monkeypatch, wait_for_slot=PreflightError("no free slot after 30 minutes"))
     assert _run(bot, tmp_path) == 3
     assert "launch" not in rec.calls and rec.terminated == []
+
+
+def test_run_task_refuses_an_smt_type(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = Recorder(monkeypatch, instance_types_info={"c8a.16xlarge": (64, 2)})
+    assert _run(bot, tmp_path) == 2
+    assert "launch" not in rec.calls
 
 
 def test_run_task_agent_timeout_terminates(
@@ -547,16 +558,6 @@ def test_run_task_needs_a_task_runner(bot: Project, tmp_path: Path) -> None:
     spec = _spec(plain)
     session: Any = FakeSession()
     assert tasks.run_task(session, spec, tmp_path, LOG, write=lambda _: None) == 2
-
-
-def test_run_task_refuses_a_duplicate_run_and_task(
-    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two matrix legs with one task id would kill and read each other's work."""
-    twin = [tasks.TaskInstance("i-7", "c8a.xlarge", "running", "123-1", "sprt-0", LAUNCHED, 6)]
-    rec = Recorder(monkeypatch, running_tasks=twin)
-    assert _run(bot, tmp_path) == 3
-    assert "launch" not in rec.calls and rec.terminated == []
 
 
 def test_run_task_connection_error_terminates(

@@ -57,7 +57,9 @@ bot:
   health_seconds: 90
   asset_wait: 30m # a release's Linux asset is attached after the release is published
   records_prefix: records/ # game records: <prefix>pgn|meta/schema=1/engine=<tag>/date=<day>/
-  availability_zones: [us-east-1a, us-east-1b]
+  # Every zone that offers c8a (1e does not): spot tasks try each for capacity.
+  # Append only: subnets are numbered by position, and the bot is in the first.
+  availability_zones: [us-east-1a, us-east-1b, us-east-1c, us-east-1d, us-east-1f]
   # Pinned Amazon Linux 2023 image per architecture, by its Amazon image name.
   # The bot instance changes OS only when this changes (a PR whose bot plan shows
   # the replacement; Bot apply while the bot is idle). Name of the latest image:

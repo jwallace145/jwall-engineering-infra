@@ -112,7 +112,10 @@ class BotSection(_Section):
     health_log_pattern: str
     health_seconds: int = Field(ge=10, le=600)
     records_prefix: str = Field(pattern=r"^([a-z0-9][a-z0-9-]*/)+$")
-    availability_zones: tuple[str, ...] = Field(min_length=1, max_length=4)
+    #: Zones of the bot VPC's public subnets, in order (the bot uses the first).
+    #: Spot tasks try each, so list every zone that offers their type; append
+    #: only, since subnets are numbered by position.
+    availability_zones: tuple[str, ...] = Field(min_length=1, max_length=6)
     #: How long a build waits for a release's assets to be attached: release
     #: workflows publish first and upload their build outputs afterwards.
     asset_wait: str = "30m"

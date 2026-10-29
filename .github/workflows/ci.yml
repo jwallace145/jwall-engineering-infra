@@ -223,7 +223,7 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint python jwall-engineering-sites:ci -c '
           import boto3
-          for service in ("s3", "sts", "cloudfront", "ssm", "ec2", "logs", "ecr"):
+          for service in ("s3", "sts", "cloudfront", "ssm", "ec2", "logs", "ecr", "pricing"):
               boto3.session.Session(region_name="us-east-1").client(service)
           print("boto3 clients ok")'
       - name: Image size budget

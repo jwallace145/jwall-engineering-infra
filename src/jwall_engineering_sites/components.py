@@ -125,15 +125,29 @@ _INSTANCE_TYPE = re.compile(r"^[a-z0-9]+\.[a-z0-9]+$")
 
 
 class TaskRunner(_Model):
-    """Ephemeral, on-demand EC2 instances that run one CI task each (`task run`)."""
+    """Ephemeral EC2 instances, spot by default, that run one CI task each (`task run`)."""
 
     kind: Literal["task-runner"]
-    instance_types: tuple[str, ...] = ("c8a.xlarge", "c8a.2xlarge")
-    default_instance_type: str = "c8a.xlarge"
+    #: The launch role's allow-list. Never burstable, never SMT-on: `task run`
+    #: refuses a type with more than one thread per core.
+    instance_types: tuple[str, ...] = ("c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge")
+    default_instance_type: str = "c8a.16xlarge"
+    market: Literal["spot", "on-demand"] = "spot"
+    #: The spot price cap, as a fraction of the on-demand price (resolved and
+    #: logged at launch). Spot has no bidding: you pay the current price; the
+    #: cap only decides when AWS stops the instance for price.
+    max_price_fraction: float = Field(default=0.58, gt=0, le=1)
+    #: On demand at launch only, after spot fails in every zone for
+    #: spot_wait_minutes. Never mid-task: an interrupted task is reported.
+    on_demand_fallback: bool = True
+    spot_wait_minutes: int = Field(default=5, ge=1, le=30)
     #: At most 6: GitHub-hosted jobs stop at six hours, and the launch role's
     #: sessions last seven (the task plus an hour for launch and setup).
     max_hours: int = Field(default=6, ge=1, le=6)
-    max_concurrent: int = Field(default=4, ge=1, le=16)
+    #: Running task vCPUs per project (the account's standard spot and
+    #: on-demand quotas are 256 each); a launch over it waits for a slot.
+    max_vcpus: int = Field(default=192, ge=1, le=256)
+    slot_wait_minutes: int = Field(default=30, ge=0, le=120)
     results_days: int = Field(default=7, ge=1, le=30)
     log_retention_days: RetentionDays = 14
 
