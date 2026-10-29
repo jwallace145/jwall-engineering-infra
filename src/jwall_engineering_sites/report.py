@@ -176,8 +176,18 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def _plan_alert(exit_code: int, summary: PlanSummary, subject: str) -> list[str]:
+def _plan_alert(
+    exit_code: int, summary: PlanSummary, subject: str, applied_by: str | None = None
+) -> list[str]:
+    """`applied_by` names the manual workflow that applies the stack (bot stacks);
+    without it, merging the pull request applies it (sites, foundation)."""
     if exit_code == PLAN_NO_CHANGES:
+        if applied_by:
+            return _alert(
+                "NOTE",
+                f"**No changes.** The infrastructure of `{subject}` already matches this pull "
+                f"request. A **{applied_by}** would not touch AWS.",
+            )
         return _alert(
             "NOTE",
             f"**No changes.** The infrastructure of `{subject}` already matches this pull "
@@ -200,6 +210,23 @@ def _plan_alert(exit_code: int, summary: PlanSummary, subject: str) -> list[str]
         f"**{summary.add}** to add, **{summary.change}** to change, "
         f"**{summary.destroy}** to destroy"
     )
+    if applied_by:
+        manual = (
+            f" Merging this pull request alone changes nothing: `{subject}` is applied by "
+            f"hand with **{applied_by}**."
+        )
+        if summary.destructive:
+            return _alert(
+                "CAUTION",
+                f"**Destructive changes pending.** The next **{applied_by}** would destroy or "
+                f"replace {_plural(summary.destroy or 0, 'resource')} of `{subject}`: {counts}."
+                f"{manual} Check every 🗑️ and ♻️ row below before running it.",
+            )
+        return _alert(
+            "WARNING",
+            f"**Changes pending.** The next **{applied_by}** would change the infrastructure "
+            f"of `{subject}`: {counts}.{manual}",
+        )
     if summary.destructive:
         return _alert(
             "CAUTION",
@@ -223,11 +250,13 @@ def plan_comment(
     max_bytes: int,
     subject: str,
     provenance: Provenance,
+    applied_by: str | None = None,
 ) -> str:
-    """The sticky plan comment. `max_bytes` bounds the whole comment."""
+    """The sticky plan comment. `max_bytes` bounds the whole comment. `applied_by`
+    names the manual workflow for stacks that merging does not apply."""
     summary = parse_plan(plan_text)
     failed = exit_code not in (PLAN_NO_CHANGES, PLAN_CHANGES)
-    head = _header("Terraform plan", subject) + _plan_alert(exit_code, summary, subject)
+    head = _header("Terraform plan", subject) + _plan_alert(exit_code, summary, subject, applied_by)
     if exit_code == PLAN_CHANGES and summary.add is not None:
         head += _counts_table(summary)
     if exit_code == PLAN_CHANGES and summary.resources:

@@ -280,3 +280,41 @@ def test_sync_summary() -> None:
     assert "## Published prod" in summary
     assert "2 uploaded (99 bytes), 3 unchanged, 1 deleted" in summary
     assert "invalidation `I1`" in summary
+
+
+# -- bot stacks are applied by hand, not by merging ---------------------------------
+
+
+def test_bot_plan_comment_names_the_manual_apply_when_destructive() -> None:
+    comment = plan_comment(
+        PLAN_CHANGES, PLAN_WITH_DESTROY, 60000, "rusty-chess", PROVENANCE, applied_by="Bot apply"
+    )
+    assert "Merging this pull request will" not in comment
+    assert "The next **Bot apply** would destroy or replace" in comment
+    assert "Merging this pull request alone changes nothing" in comment
+
+
+def test_bot_plan_comment_names_the_manual_apply_for_changes() -> None:
+    comment = plan_comment(
+        PLAN_CHANGES, PLAN_ADD_ONLY, 60000, "rusty-chess", PROVENANCE, applied_by="Bot apply"
+    )
+    assert "Merging this pull request will" not in comment
+    assert "The next **Bot apply** would change" in comment
+
+
+def test_bot_plan_comment_no_changes() -> None:
+    comment = plan_comment(
+        PLAN_NO_CHANGES,
+        PLAN_NO_CHANGES_TEXT,
+        60000,
+        "rusty-chess",
+        PROVENANCE,
+        applied_by="Bot apply",
+    )
+    assert "Merging will not touch AWS" not in comment
+    assert "A **Bot apply** would not touch AWS" in comment
+
+
+def test_site_plan_comment_wording_is_unchanged() -> None:
+    comment = plan_comment(PLAN_CHANGES, PLAN_WITH_DESTROY, 60000, "a.example", PROVENANCE)
+    assert "Merging this pull request will destroy or replace" in comment

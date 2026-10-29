@@ -108,3 +108,30 @@ def test_aws_account_must_be_twelve_digits(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(raw))
     with pytest.raises(ConfigError, match="account_id"):
         load_settings(path, environ={})
+
+
+def test_bot_amis_are_validated(tmp_path: Path) -> None:
+    raw = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    raw["bot"]["amis"] = {"x86_64": "ami-04b938437b69a2c9c"}  # an ID, not a name
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="amis"):
+        load_settings(path, environ={})
+
+
+def test_bot_amis_only_name_known_architectures(tmp_path: Path) -> None:
+    raw = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    raw["bot"]["amis"] = {"riscv64": "ami-0123456789abcdef0"}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="amis"):
+        load_settings(path, environ={})
+
+
+def test_bot_ami_name_must_match_its_architecture(tmp_path: Path) -> None:
+    raw = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    raw["bot"]["amis"] = {"x86_64": "al2023-ami-2023.9.20251027.0-kernel-6.1-arm64"}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="must end in -x86_64"):
+        load_settings(path, environ={})

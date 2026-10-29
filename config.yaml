@@ -16,7 +16,7 @@ terraform:
 
 library:
   source: jwallace145/jwall-engineering/aws
-  version: 0.10.1 # the one module pin the whole fleet shares (sites and bots)
+  version: 0.11.0 # the one module pin the whole fleet shares (sites and bots)
 
 state:
   bucket: jwall-engineering-tfstate
@@ -57,3 +57,11 @@ bot:
   health_seconds: 90
   records_prefix: records/ # game records: <prefix>pgn|meta/schema=1/engine=<tag>/date=<day>/
   availability_zones: [us-east-1a, us-east-1b]
+  # Pinned Amazon Linux 2023 image per architecture, by its Amazon image name.
+  # The bot instance changes OS only when this changes (a PR whose bot plan shows
+  # the replacement; Bot apply while the bot is idle). Name of the latest image:
+  # aws ec2 describe-images --image-ids "$(aws ssm get-parameter --name
+  #   /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  #   --query Parameter.Value --output text)" --query 'Images[0].Name' --output text
+  amis:
+    x86_64: al2023-ami-2023.12.20261026.1-kernel-6.18-x86_64 # ami-04b938437b69a2c9c in us-east-1

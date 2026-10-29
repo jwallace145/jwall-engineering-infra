@@ -101,6 +101,7 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
         "availability_zones": ["us-east-1a", "us-east-1b"],
         "keep_release_images": 20,
         "expire_untagged_after_days": 7,
+        "ami_name": settings.bot.amis["x86_64"],
     }
 
 
@@ -281,3 +282,14 @@ def test_failed_run_keeps_workdir_when_asked(
     terraform.cleanup(failed=True)
     assert workdir.exists()
     terraform.cleanup(failed=False)
+
+
+def test_bot_tfvars_follow_the_latest_image_without_a_pin(bot: Project, settings: Settings) -> None:
+    unpinned = settings.model_copy(update={"bot": settings.bot.model_copy(update={"amis": {}})})
+    assert render_tfvars(bot, unpinned)["ami_name"] is None
+
+
+def test_config_pins_the_x86_64_image(settings: Settings) -> None:
+    """The bot instance only changes OS when this pin changes; it is pinned by name."""
+    name = settings.bot.amis["x86_64"]
+    assert name.startswith("al2023-ami-") and name.endswith("-x86_64")

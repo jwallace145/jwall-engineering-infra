@@ -2,9 +2,10 @@
 # with public subnets (egress only, no NAT), the records bucket the games are
 # shipped to, and the instance that runs the bot.
 #
-# Changing the instance's inputs (or a library bump that changes its user
-# data or AMI) replaces the instance and ends the game in progress. Read the
-# plan comment and apply bot stacks by hand while the bot is idle.
+# Changing the instance's inputs replaces the instance and ends the game in
+# progress: its image (pinned in config.yaml, bot.amis), its type, or its user
+# data (a library bump can change that). Read the plan comment and apply bot
+# stacks by hand while the bot is idle.
 #
 # The CI roles live in the foundation stack (foundation/bots.tf).
 
@@ -12,9 +13,30 @@ locals {
   name = "${var.tags["Organization"]}-${var.project}"
 }
 
+# The pinned image, resolved from its readable name. Names are unique among
+# Amazon-owned images; deprecated images are included so a pin keeps resolving
+# after Amazon deprecates it.
+data "aws_ami" "pinned" {
+  count = var.ami_name == null ? 0 : 1
+
+  owners             = ["amazon"]
+  include_deprecated = true
+  most_recent        = false
+
+  filter {
+    name   = "name"
+    values = [var.ami_name]
+  }
+
+  filter {
+    name   = "architecture"
+    values = [var.architecture]
+  }
+}
+
 module "image" {
   source  = "jwallace145/jwall-engineering/aws//modules/ecr-repository"
-  version = "0.10.1"
+  version = "0.11.0"
 
   name                       = local.name
   keep_release_images        = var.keep_release_images
@@ -23,7 +45,7 @@ module "image" {
 
 module "network" {
   source  = "jwallace145/jwall-engineering/aws//modules/vpc"
-  version = "0.10.1"
+  version = "0.11.0"
 
   name               = local.name
   availability_zones = var.availability_zones
@@ -31,7 +53,7 @@ module "network" {
 
 module "records" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.10.1"
+  version = "0.11.0"
   count   = var.records_enabled ? 1 : 0
 
   name = "${local.name}-records"
@@ -39,7 +61,7 @@ module "records" {
 
 module "bot" {
   source  = "jwallace145/jwall-engineering/aws//modules/container-instance"
-  version = "0.10.1"
+  version = "0.11.0"
 
   name                 = "${local.name}-bot"
   project              = var.project
@@ -48,6 +70,7 @@ module "bot" {
   image_repository_arn = module.image.arn
   instance_type        = var.instance_type
   architecture         = var.architecture
+  ami_id               = var.ami_name == null ? null : data.aws_ami.pinned[0].id
   vpc_id               = module.network.vpc_id
   subnet_id            = module.network.public_subnet_ids[0]
 

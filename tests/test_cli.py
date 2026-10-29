@@ -717,3 +717,12 @@ def test_bot_build_reads_the_config_next_to_the_project_file(
     )
     assert result.exit_code == 0, result.output
     assert [line.split()[0] for line in fake_docker.read_text().splitlines()] == ["build", "run"]
+
+
+def test_plan_bot_comment_names_bot_apply(bot_workspace: Path, fake_terraform: Path) -> None:
+    with _as_role(BOT_PLAN_ROLE):
+        result = runner.invoke(cli.app, ["plan"])
+    assert result.exit_code == 0, result.output
+    comment = (bot_workspace / ".jwall-engineering-sites" / "plan-comment.md").read_text()
+    assert "Merging will not touch AWS" not in comment
+    assert "**Bot apply**" in comment
