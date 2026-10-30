@@ -59,7 +59,7 @@ locals {
 module "bot_ci_plan" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version  = "0.16.0"
+  version  = "0.16.1"
 
   project           = each.key
   repository        = local.context.repository
@@ -81,7 +81,7 @@ module "bot_ci_plan" {
 module "bot_ci_apply" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version  = "0.16.0"
+  version  = "0.16.1"
 
   project           = each.key
   repository        = local.context.repository
@@ -104,7 +104,7 @@ module "bot_ci_apply" {
 module "bot_ci_release" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-release-role"
-  version  = "0.16.0"
+  version  = "0.16.1"
 
   project           = each.key
   repository        = each.value.repository
@@ -122,7 +122,7 @@ module "bot_ci_release" {
 module "bot_ci_task" {
   for_each = local.bot_task_types
   source   = "jwallace145/jwall-engineering/aws//modules/ci-task-role"
-  version  = "0.16.0"
+  version  = "0.16.1"
 
   project           = each.key
   repository        = local.bots[each.key].repository
