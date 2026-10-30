@@ -2,14 +2,14 @@ version: 1
 project: rusty-chess
 repository: jwallace145/rusty-chess-v2
 
-# The six tags every resource carries (through the provider's default_tags).
-# Project, Repository, Environment=prod and ManagedBy=terraform are cross-checked.
+# The tags every resource carries (through the provider's default_tags), plus
+# ManagedBy=jwall-engineering-infra, which the tool adds.
+# Project, Repository and Environment=prod are cross-checked.
 tags:
   Organization: jwall-engineering
   Project: rusty-chess
   Environment: prod
   Repository: jwallace145/rusty-chess-v2
-  ManagedBy: terraform
   Owner: jwallace145
 
 components:

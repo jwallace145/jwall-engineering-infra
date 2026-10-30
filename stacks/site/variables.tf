@@ -72,7 +72,7 @@ variable "tags" {
   }
 
   validation {
-    condition     = lookup(var.tags, "ManagedBy", null) == "terraform" && lookup(var.tags, "Environment", null) == "prod"
-    error_message = "tags.ManagedBy must be `terraform` and tags.Environment must be `prod`."
+    condition     = lookup(var.tags, "ManagedBy", null) == "jwall-engineering-infra" && lookup(var.tags, "Environment", null) == "prod"
+    error_message = "tags.ManagedBy must be `jwall-engineering-infra` and tags.Environment must be `prod`."
   }
 }

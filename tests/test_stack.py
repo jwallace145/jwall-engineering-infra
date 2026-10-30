@@ -52,6 +52,7 @@ def test_rendered_tfvars_match_the_old_infra_directories(site: Site) -> None:
     assert tfvars["repository"] == site.config.repository
     assert tfvars["tags"]["Project"] == site.project
     assert tfvars["tags"]["Organization"] == "jwall-engineering"
+    assert tfvars["tags"]["ManagedBy"] == "jwall-engineering-infra"
 
 
 def test_rendered_backend_matches_the_old_backend_files(site: Site) -> None:

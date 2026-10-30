@@ -132,7 +132,7 @@ def _tag_value(value: str) -> str:
 
 
 def task_tags(spec: TaskSpec, lifecycle: str) -> dict[str, str]:
-    """Every tag a task instance and its volume carry: the project file's six
+    """Every tag a task instance and its volume carry: the project's six
     tags (RunInstances does not apply the provider's default tags), the
     launch template's two, and the run's."""
     project = spec.project
