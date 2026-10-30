@@ -4,7 +4,9 @@
 # task runner (local.bot_task_types):
 #
 #   jwall-engineering-<key>-ci-plan     trusted for pull_request on THIS repo     tfstate/read, container/read, task/read
+#                                                                                 (+ dataset/read with datasets)
 #   jwall-engineering-<key>-ci-apply    trusted for environment:prod on THIS repo tfstate/write, container/read, container/manage, task/read, task/manage
+#                                                                                 (+ dataset/read, dataset/manage with datasets)
 #   jwall-engineering-<key>-ci-release  trusted for the bot repo's v* tags only   container/release
 #   jwall-engineering-<key>-ci-task     trusted for the bot repo's pull_request   task/launch
 #                                       and main only (never forks)
@@ -31,6 +33,13 @@ locals {
     rusty-chess = ["c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge"]
   }
 
+  # Bots with dataset components, and their buckets: the project file's
+  # dataset buckets, <Organization>-<project>-<name>. Their plan and apply
+  # roles may read and configure these buckets, never their objects.
+  bot_datasets = {
+    rusty-chess = ["jwall-engineering-rusty-chess-nnue"]
+  }
+
   bot_tfstate = {
     for key, bot in local.bots : key => {
       bucket_arn = module.state_bucket.arn
@@ -42,7 +51,7 @@ locals {
 module "bot_ci_plan" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version  = "0.13.0"
+  version  = "0.14.0"
 
   project           = each.key
   repository        = local.context.repository
@@ -50,17 +59,21 @@ module "bot_ci_plan" {
   repository_id     = local.github.repository_id
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
 
-  policies = ["tfstate/read", "container/read", "task/read"]
+  policies = concat(
+    ["tfstate/read", "container/read", "task/read"],
+    contains(keys(local.bot_datasets), each.key) ? ["dataset/read"] : [],
+  )
 
   policy_inputs = {
     tfstate = local.bot_tfstate[each.key]
+    dataset = contains(keys(local.bot_datasets), each.key) ? { bucket_names = local.bot_datasets[each.key] } : null
   }
 }
 
 module "bot_ci_apply" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version  = "0.13.0"
+  version  = "0.14.0"
 
   project           = each.key
   repository        = local.context.repository
@@ -69,17 +82,21 @@ module "bot_ci_apply" {
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
   environment       = "prod"
 
-  policies = ["tfstate/write", "container/read", "container/manage", "task/read", "task/manage"]
+  policies = concat(
+    ["tfstate/write", "container/read", "container/manage", "task/read", "task/manage"],
+    contains(keys(local.bot_datasets), each.key) ? ["dataset/read", "dataset/manage"] : [],
+  )
 
   policy_inputs = {
     tfstate = local.bot_tfstate[each.key]
+    dataset = contains(keys(local.bot_datasets), each.key) ? { bucket_names = local.bot_datasets[each.key] } : null
   }
 }
 
 module "bot_ci_release" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-release-role"
-  version  = "0.13.0"
+  version  = "0.14.0"
 
   project           = each.key
   repository        = each.value.repository
@@ -97,7 +114,7 @@ module "bot_ci_release" {
 module "bot_ci_task" {
   for_each = local.bot_task_types
   source   = "jwallace145/jwall-engineering/aws//modules/ci-task-role"
-  version  = "0.13.0"
+  version  = "0.14.0"
 
   project           = each.key
   repository        = local.bots[each.key].repository

@@ -1,4 +1,4 @@
-"""Components of a bot project: the container image, the Lichess bot and the task runner.
+"""Components of a bot project: the container image, the Lichess bot, the task runner and datasets.
 
 A project file with `components` (instead of `domain` and `site`) describes a
 container image built from the repository's GitHub releases and a Lichess bot
@@ -172,4 +172,61 @@ class TaskRunner(_Model):
         return self
 
 
-Component = Annotated[ContainerImage | LichessBot | TaskRunner, Field(discriminator="kind")]
+_KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_PREFIX = re.compile(r"^([a-z0-9][a-z0-9._=-]*/)+$")
+_ROLE_ARN = re.compile(r"^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$")
+#: Names whose buckets the project already has: <Organization>-<project>-<name>.
+_RESERVED_DATASET_NAMES = ("records", "tasks")
+
+
+class Dataset(_Model):
+    """A kept-forever, append-only S3 bucket, `<Organization>-<project>-<name>`."""
+
+    kind: Literal["dataset"]
+    name: str
+    #: The derived bucket name, written out so workflows can read it without
+    #: the tool; checked against the derivation in `project.py`.
+    bucket: str
+    #: Everything the project writes lives under it; writers and readers get
+    #: this prefix only.
+    prefix: str
+    #: Components whose roles may add objects under the prefix (never read or
+    #: delete them): `task-runner`, the task instances.
+    writers: tuple[Literal["task-runner"], ...] = ()
+    #: IAM role ARNs that may read under the prefix. Administrators can
+    #: always read.
+    readers: tuple[str, ...] = ()
+    #: Days before objects move to Intelligent-Tiering; 0 moves them at once.
+    transition_days: int = Field(default=0, ge=0, le=3650)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        if not _KEBAB.match(value):
+            raise ValueError("name must be kebab-case, e.g. nnue")
+        if value in _RESERVED_DATASET_NAMES:
+            raise ValueError(f"name {value!r} is reserved: the project already has that bucket")
+        return value
+
+    @field_validator("prefix")
+    @classmethod
+    def _prefix(cls, value: str) -> str:
+        if not _PREFIX.match(value):
+            raise ValueError(
+                "prefix must be path segments of lowercase letters, digits, '.', '_', '=' "
+                "and '-', ending in '/' and without a leading '/', e.g. data/"
+            )
+        return value
+
+    @field_validator("readers")
+    @classmethod
+    def _readers(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for arn in value:
+            if not _ROLE_ARN.match(arn):
+                raise ValueError(f"readers: {arn!r} is not an IAM role ARN")
+        return value
+
+
+Component = Annotated[
+    ContainerImage | LichessBot | TaskRunner | Dataset, Field(discriminator="kind")
+]

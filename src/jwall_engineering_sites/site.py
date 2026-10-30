@@ -13,7 +13,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from .components import Component, ContainerImage, LichessBot, TaskRunner
+from .components import Component, ContainerImage, Dataset, LichessBot, TaskRunner
 from .errors import ConfigError
 from .settings import Settings
 
@@ -107,6 +107,13 @@ class SiteConfig(_Model):
             runners = sum(1 for c in self.components if c.kind == "task-runner")
             if runners > 1:
                 raise ValueError(f"components may hold at most one task-runner, got {runners}")
+            names = [c.name for c in self.datasets]
+            if len(names) != len(set(names)):
+                raise ValueError(f"dataset names must be unique, got {names}")
+            if runners == 0 and any("task-runner" in c.writers for c in self.datasets):
+                raise ValueError(
+                    "a dataset with writers: [task-runner] needs a task-runner component"
+                )
         return self
 
     @property
@@ -124,6 +131,10 @@ class SiteConfig(_Model):
     @property
     def task_runner(self) -> TaskRunner | None:
         return next((c for c in self.components if isinstance(c, TaskRunner)), None)
+
+    @property
+    def datasets(self) -> tuple[Dataset, ...]:
+        return tuple(c for c in self.components if isinstance(c, Dataset))
 
     @model_validator(mode="after")
     def _required_tags(self) -> SiteConfig:

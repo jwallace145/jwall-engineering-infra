@@ -114,6 +114,16 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
         "task_results_days": 7,
         "task_log_retention_days": 14,
         "task_rust_toolchain": settings.tasks.rust_toolchain,
+        "datasets": [
+            {
+                "name": "nnue",
+                "bucket": "jwall-engineering-rusty-chess-nnue",
+                "prefix": "data/",
+                "writers": ["task-runner"],
+                "readers": [],
+                "transition_days": 0,
+            }
+        ],
     }
 
 
@@ -307,8 +317,16 @@ def test_config_pins_the_x86_64_image(settings: Settings) -> None:
     assert name.startswith("al2023-ami-") and name.endswith("-x86_64")
 
 
+def test_bot_tfvars_without_datasets(bot: Project, settings: Settings) -> None:
+    components = tuple(c for c in bot.config.components if c.kind != "dataset")
+    plain = bot.model_copy(
+        update={"config": bot.config.model_copy(update={"components": components})}
+    )
+    assert render_tfvars(plain, settings)["datasets"] == []
+
+
 def test_bot_tfvars_without_a_task_runner(tmp_path: Path, bot: Project, settings: Settings) -> None:
-    components = tuple(c for c in bot.config.components if c.kind != "task-runner")
+    components = tuple(c for c in bot.config.components if c.kind not in ("task-runner", "dataset"))
     plain = bot.model_copy(
         update={"config": bot.config.model_copy(update={"components": components})}
     )

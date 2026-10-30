@@ -128,7 +128,8 @@ def _module(name: str) -> str:
 
 
 def _policies(block: str) -> list[str]:
-    match = re.search(r"^\s*policies\s*=\s*\[([^\]]*)\]", block, re.MULTILINE)
+    # The first list: the policies every bot gets, before any concat()ed extras.
+    match = re.search(r"^\s*policies\s*=\s*(?:concat\(\s*)?\[([^\]]*)\]", block, re.MULTILINE)
     assert match, "no policies list"
     return re.findall(r'"([^"]+)"', match.group(1))
 
@@ -173,3 +174,31 @@ def test_task_instance_types_match_the_project_file() -> None:
 def test_bots_output_names_the_task_role() -> None:
     outputs = (REPO_ROOT / "foundation" / "outputs.tf").read_text()
     assert "task_role_arn" in outputs and "module.bot_ci_task[key].role_arn" in outputs
+
+
+def _bot_datasets() -> dict[str, list[str]]:
+    text = BOTS_TF.read_text()
+    match = re.search(r"bot_datasets\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
+    assert match, "local.bot_datasets not found"
+    return {
+        key: re.findall(r'"([^"]+)"', buckets)
+        for key, buckets in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
+    }
+
+
+def test_dataset_buckets_match_the_project_file() -> None:
+    import yaml
+
+    fixture = yaml.safe_load((FIXTURES / "bots" / "rusty-chess.yaml").read_text())
+    buckets = [c["bucket"] for c in fixture["components"] if c["kind"] == "dataset"]
+    assert _bot_datasets() == {"rusty-chess": buckets}
+    assert set(_bot_datasets()) <= set(registry())
+
+
+def test_bot_plan_and_apply_carry_the_dataset_policies() -> None:
+    plan, apply = _module("bot_ci_plan"), _module("bot_ci_apply")
+    assert '["dataset/read"]' in plan and "dataset/manage" not in plan
+    assert '["dataset/read", "dataset/manage"]' in apply
+    for block in (plan, apply):
+        assert "contains(keys(local.bot_datasets), each.key)" in block
+        assert "bucket_names = local.bot_datasets[each.key]" in block

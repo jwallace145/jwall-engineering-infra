@@ -122,6 +122,17 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
         "task_results_days": runner.results_days,
         "task_log_retention_days": runner.log_retention_days,
         "task_rust_toolchain": settings.tasks.rust_toolchain,
+        "datasets": [
+            {
+                "name": d.name,
+                "bucket": d.bucket,
+                "prefix": d.prefix,
+                "writers": list(d.writers),
+                "readers": list(d.readers),
+                "transition_days": d.transition_days,
+            }
+            for d in project.datasets
+        ],
     }
 
 

@@ -158,3 +158,31 @@ variable "task_rust_toolchain" {
   description = "Rust toolchain task instances install (tasks.rust_toolchain in config.yaml)."
   type        = string
 }
+
+variable "datasets" {
+  description = "The project's dataset components: kept-forever, append-only buckets named `<Organization>-<project>-<name>`. `writers` lists the components whose roles may add objects under `prefix` (`task-runner`: the task instances); `readers` lists role ARNs that may read under it."
+  type = list(object({
+    name            = string
+    bucket          = string
+    prefix          = string
+    writers         = list(string)
+    readers         = list(string)
+    transition_days = number
+  }))
+  default = []
+
+  validation {
+    condition     = alltrue([for d in var.datasets : d.bucket == "${var.tags["Organization"]}-${var.project}-${d.name}"])
+    error_message = "each dataset's bucket must be <Organization>-<project>-<name>."
+  }
+
+  validation {
+    condition     = alltrue([for d in var.datasets : alltrue([for w in d.writers : w == "task-runner"])])
+    error_message = "dataset writers may only be task-runner."
+  }
+
+  validation {
+    condition     = var.task_runner_enabled || !anytrue([for d in var.datasets : contains(d.writers, "task-runner")])
+    error_message = "a dataset written by task-runner needs the task-runner component."
+  }
+}
