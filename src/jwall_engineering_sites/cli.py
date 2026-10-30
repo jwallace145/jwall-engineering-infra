@@ -23,7 +23,7 @@ from typing import Annotated
 import boto3
 import typer
 
-from . import aws, github, image, releases, report, rollout, stack, sync, tasks
+from . import aws, costs, github, image, releases, report, rollout, stack, sync, tasks
 from . import bot as botlib
 from .components import CPU_PROFILE, TaskRunner
 from .errors import ConfigError, PreflightError, RunError, SitesError
@@ -58,12 +58,17 @@ task_app = typer.Typer(
     help="Remote CI tasks on ephemeral, on-demand EC2 instances (bot projects with a task-runner).",
     no_args_is_help=True,
 )
+cost_app = typer.Typer(
+    help="The account's spend from Cost Explorer, by the tags every resource carries.",
+    no_args_is_help=True,
+)
 bot_app.add_typer(secrets_app, name="secrets")
 app.add_typer(task_app, name="task")
 app.add_typer(bot_app, name="bot")
 app.add_typer(preview_app, name="preview")
 app.add_typer(config_app, name="config")
 app.add_typer(report_app, name="report")
+app.add_typer(cost_app, name="cost")
 
 LOG_FILE = "jwall-engineering-sites.log"
 
@@ -1172,3 +1177,50 @@ def task_sweep(
 
 if __name__ == "__main__":  # pragma: no cover
     app()
+
+
+# -- costs --------------------------------------------------------------------
+
+
+@cost_app.command("report")
+def cost_report(
+    ctx: typer.Context,
+    project: Annotated[
+        str | None,
+        typer.Option(
+            "--project", help="One project by component; omit for every project and the untagged."
+        ),
+    ] = None,
+    months: Annotated[
+        int,
+        typer.Option(
+            "--months", min=1, max=costs.MAX_MONTHS, help="Calendar months, this one included."
+        ),
+    ] = 3,
+) -> None:
+    """Monthly spend by project and component. Run with the owner's credentials:
+    Cost Explorer is account-wide, so no CI role may read it. Each Cost Explorer
+    request costs $0.01; this makes one or two."""
+
+    def body(run: Run) -> None:
+        if project is not None and not costs.PROJECT_NAME.match(project):
+            raise ConfigError(f"--project must be a kebab-case project name: {project!r}")
+        start, end = costs.period(datetime.now(UTC).date(), months)
+        session = boto3.session.Session(region_name=costs.CE_REGION)
+        with phase("preflight"):
+            _, arn = aws.caller_identity(session.client("sts"))
+            run.logger.info("running as %s", arn)
+        ce = session.client("ce")
+        if project is not None:
+            print(costs.render(costs.project_table(ce, project, start, end)))
+        else:
+            print(costs.render(costs.account_table(ce, start, end)))
+            print()
+            untagged = costs.untagged_table(ce, start, end)
+            print(costs.render(untagged, limit=costs.UNTAGGED_ROWS))
+        run.logger.info(
+            "%s from %s to %s; Cost Explorer lags about a day and charges $0.01 a request",
+            costs.METRIC, start, end - timedelta(days=1),
+        )  # fmt: skip
+
+    _command(body)(ctx)
