@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.12.0...v0.13.0) (2026-10-30)
+
+
+### Features
+
+* run consumer tasks on dedicated, ephemeral EC2 instances ([#72](https://github.com/jwallace145/jwall-engineering-infra/issues/72)) ([3c28a7f](https://github.com/jwallace145/jwall-engineering-infra/commit/3c28a7ffed617c019ee269705245b7becd9bccaf))
+
 ## [0.12.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.11.1...v0.12.0) (2026-10-29)
 
 
