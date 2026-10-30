@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.15.1...v0.16.0) (2026-10-30)
+
+
+### Features
+
+* put GPU tasks' scratch on the instance's local NVMe SSD ([#81](https://github.com/jwallace145/jwall-engineering-infra/issues/81)) ([c64b25e](https://github.com/jwallace145/jwall-engineering-infra/commit/c64b25ecb6143ea6223c449201d89ec948412ffb))
+
 ## [0.15.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.15.0...v0.15.1) (2026-10-30)
 
 
