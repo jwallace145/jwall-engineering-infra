@@ -1,6 +1,8 @@
 # One bot project: the image repository its releases are pushed to, a VPC
 # with public subnets (egress only, no NAT), the records bucket the games are
-# shipped to, and the instance that runs the bot.
+# shipped to, and the instance that runs the bot. With a task-runner
+# component, also the task launch template and the task results bucket
+# (ephemeral CI task instances are launched by `task run`, never by Terraform).
 #
 # Changing the instance's inputs replaces the instance and ends the game in
 # progress: its image (pinned in config.yaml, bot.amis), its type, or its user
@@ -36,7 +38,7 @@ data "aws_ami" "pinned" {
 
 module "image" {
   source  = "jwallace145/jwall-engineering/aws//modules/ecr-repository"
-  version = "0.11.0"
+  version = "0.13.0"
 
   name                       = local.name
   keep_release_images        = var.keep_release_images
@@ -45,7 +47,7 @@ module "image" {
 
 module "network" {
   source  = "jwallace145/jwall-engineering/aws//modules/vpc"
-  version = "0.11.0"
+  version = "0.13.0"
 
   name               = local.name
   availability_zones = var.availability_zones
@@ -53,7 +55,7 @@ module "network" {
 
 module "records" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.11.0"
+  version = "0.13.0"
   count   = var.records_enabled ? 1 : 0
 
   name = "${local.name}-records"
@@ -61,7 +63,7 @@ module "records" {
 
 module "bot" {
   source  = "jwallace145/jwall-engineering/aws//modules/container-instance"
-  version = "0.11.0"
+  version = "0.13.0"
 
   name                 = "${local.name}-bot"
   project              = var.project
@@ -85,4 +87,31 @@ module "bot" {
   log_retention_days = var.log_retention_days
   health_log_pattern = var.health_log_pattern
   health_seconds     = var.health_seconds
+}
+
+# Task outputs, written by task instances under tasks/<run>/<task>/ and copied
+# back by `task run`. Expired after task_results_days.
+module "task_results" {
+  source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
+  version = "0.13.0"
+  count   = var.task_runner_enabled ? 1 : 0
+
+  name                           = "${local.name}-tasks"
+  current_object_expiration_days = var.task_results_days
+}
+
+module "tasks" {
+  source  = "jwallace145/jwall-engineering/aws//modules/task-runner"
+  version = "0.13.0"
+  count   = var.task_runner_enabled ? 1 : 0
+
+  name_root             = var.tags["Organization"]
+  project               = var.project
+  vpc_id                = module.network.vpc_id
+  architecture          = var.architecture
+  ami_id                = var.ami_name == null ? null : data.aws_ami.pinned[0].id
+  default_instance_type = var.task_instance_type
+  max_lifetime_hours    = var.task_max_lifetime_hours
+  log_retention_days    = var.task_log_retention_days
+  rust_toolchain        = var.task_rust_toolchain
 }

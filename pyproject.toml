@@ -20,7 +20,7 @@ jwall-engineering-sites = "jwall_engineering_sites.cli:app"
 
 [dependency-groups]
 dev = [
-  "boto3-stubs[cloudfront,ec2,ecr,logs,s3,ssm,sts]>=1.40",
+  "boto3-stubs[cloudfront,ec2,ecr,logs,pricing,s3,ssm,sts]>=1.40",
   "moto[ec2,ecr,logs,s3,ssm,sts]>=5.1",
   "mypy>=1.17",
   "pytest>=8.4",

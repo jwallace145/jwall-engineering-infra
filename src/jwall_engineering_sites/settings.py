@@ -112,7 +112,10 @@ class BotSection(_Section):
     health_log_pattern: str
     health_seconds: int = Field(ge=10, le=600)
     records_prefix: str = Field(pattern=r"^([a-z0-9][a-z0-9-]*/)+$")
-    availability_zones: tuple[str, ...] = Field(min_length=1, max_length=4)
+    #: Zones of the bot VPC's public subnets, in order (the bot uses the first).
+    #: Spot tasks try each, so list every zone that offers their type; append
+    #: only, since subnets are numbered by position.
+    availability_zones: tuple[str, ...] = Field(min_length=1, max_length=6)
     #: How long a build waits for a release's assets to be attached: release
     #: workflows publish first and upload their build outputs afterwards.
     asset_wait: str = "30m"
@@ -146,6 +149,16 @@ class BotSection(_Section):
         return value
 
 
+class TasksSection(_Section):
+    """How `task run` sets up and follows task instances (component `task-runner`)."""
+
+    #: The Rust toolchain every task instance installs with rustup. Pin a
+    #: version: changing it is a new launch template version, not a rebuild.
+    rust_toolchain: str = Field(pattern=r"^[a-z0-9][a-z0-9.-]*$")
+    #: Seconds between polls of a task's output and status.
+    poll_seconds: int = Field(default=5, ge=1, le=60)
+
+
 class PlanSection(_Section):
     comment_max_bytes: int = Field(ge=1024, le=65000)
 
@@ -164,6 +177,7 @@ class Settings(_Section):
     sync: SyncSection
     plan: PlanSection
     bot: BotSection
+    tasks: TasksSection
 
     def state_key(self, project: str, environment: str) -> str:
         return self.state.key_template.format(project=project, environment=environment)

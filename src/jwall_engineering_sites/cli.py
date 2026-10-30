@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -21,8 +23,9 @@ from typing import Annotated
 import boto3
 import typer
 
-from . import aws, github, image, releases, report, rollout, stack, sync
+from . import aws, github, image, releases, report, rollout, stack, sync, tasks
 from . import bot as botlib
+from .components import TaskRunner
 from .errors import ConfigError, PreflightError, RunError, SitesError
 from .log import annotate_error, artifacts_dir, phase, setup_logging
 from .project import Project, Role
@@ -51,7 +54,12 @@ secrets_app = typer.Typer(
     help="The bot's secrets in SSM Parameter Store (values are never printed).",
     no_args_is_help=True,
 )
+task_app = typer.Typer(
+    help="Remote CI tasks on ephemeral, on-demand EC2 instances (bot projects with a task-runner).",
+    no_args_is_help=True,
+)
 bot_app.add_typer(secrets_app, name="secrets")
+app.add_typer(task_app, name="task")
 app.add_typer(bot_app, name="bot")
 app.add_typer(preview_app, name="preview")
 app.add_typer(config_app, name="config")
@@ -508,6 +516,14 @@ def destroy(
             tags = image.present_tags(session.client("ecr"), project.image_repository)
         except RunError:
             tags = set()  # no repository (never applied, or already destroyed)
+        running = tasks.running_tasks(session.client("ec2"), project.project)
+        if running:
+            ids = ", ".join(t.id for t in running)
+            raise PreflightError(
+                f"task instances are running ({ids}); destroying would remove their network "
+                "and role under them. Wait for them, or stop them with `task terminate --all` "
+                "(as the task role, or with admin credentials outside CI)"
+            )
         if tags:
             raise PreflightError(
                 f"{project.image_repository} still holds {len(tags)} image tag(s); the repository "
@@ -528,6 +544,14 @@ def destroy(
                     run.logger.info(
                         "released %s from Terraform state; the bucket and its games are kept",
                         project.records_bucket,
+                    )
+            # The task results bucket too; it expires its own contents.
+            if any(a.startswith("module.task_results") for a in terraform.state_list()):
+                with phase("keep task results"):
+                    terraform.state_rm("module.task_results")
+                    run.logger.info(
+                        "released %s from Terraform state; it expires its contents on its own",
+                        project.task_bucket,
                     )
             with phase("destroy"):
                 terraform.destroy()
@@ -881,6 +905,247 @@ def bot_reconcile(
             _push(run, project, session, plan.version)
         if plan.deploy:
             _deploy(run, project, session, plan.version, restart=False)
+
+    _command(body)(ctx)
+
+
+# -- remote tasks -----------------------------------------------------------------
+
+
+#: The lifetime guard counts from the task's start, after setup: sweep only
+#: instances older than their lifetime plus this headroom.
+SWEEP_SETUP_HOURS = 1
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _task_runner(project: Project) -> TaskRunner:
+    runner = project.task_runner
+    if runner is None:
+        raise ConfigError(f"{project.project} has no task-runner component")
+    return runner
+
+
+def _default_run_id() -> str:
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if run_id:
+        return f"{run_id}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
+    return _now().strftime("local-%Y%m%dT%H%M%SZ")
+
+
+@task_app.command("run", context_settings={"allow_interspersed_args": False})
+def task_run(
+    ctx: typer.Context,
+    script: Annotated[
+        str, typer.Option("--script", help="Task script, relative to the repository root.")
+    ],
+    ref: Annotated[str, typer.Option("--ref", help="Commit SHA of the repository to run.")],
+    args: Annotated[
+        list[str] | None, typer.Argument(help="Arguments for the script, after --.")
+    ] = None,
+    instance_type: Annotated[
+        str | None, typer.Option("--instance-type", help="One of task-runner.instance_types.")
+    ] = None,
+    max_hours: Annotated[
+        int | None, typer.Option("--max-hours", help="Hard limit; at most task-runner.max_hours.")
+    ] = None,
+    out: Annotated[Path, typer.Option("--out", help="Where the task's outputs are copied.")] = Path(
+        "out"
+    ),
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="Default: GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT.")
+    ] = None,
+    task_id: Annotated[str | None, typer.Option("--task-id", help="Default: GITHUB_JOB.")] = None,
+    market: Annotated[
+        str | None, typer.Option("--market", help="spot or on-demand; default task-runner.market.")
+    ] = None,
+    max_price_fraction: Annotated[
+        float | None,
+        typer.Option(
+            "--max-price-fraction",
+            help="Spot price cap, a fraction of on demand; default from the project file.",
+        ),
+    ] = None,
+    on_demand_fallback: Annotated[
+        bool | None,
+        typer.Option(
+            "--on-demand-fallback/--no-on-demand-fallback",
+            help="On demand at launch when spot has no capacity; default from the project file.",
+        ),
+    ] = None,
+    pull_request: Annotated[
+        str | None, typer.Option("--pull-request", help="Pull request number, for the tags.")
+    ] = None,
+) -> None:
+    """Run one script on a fresh instance (spot by default) and exit with its code.
+
+    The instance is terminated whatever happens. Exit codes: the task's own,
+    1 for a runtime failure, 2 configuration, 3 preflight or no capacity, 75 spot
+    interruption (never a result: re-run), 124 timed out, 130 cancelled.
+    """
+
+    def body(run: Run) -> None:
+        # Until the task reports otherwise, any refusal reads as failed.
+        github.write_output("outcome", "failed")
+        github.write_output("interrupted-at", "")
+        project = _bot_project(run)
+        runner = _task_runner(project)
+        chosen = instance_type or runner.default_instance_type
+        if chosen not in runner.instance_types:
+            allowed = ", ".join(runner.instance_types)
+            raise ConfigError(f"--instance-type {chosen} is not allowed; use one of {allowed}")
+        hours = max_hours if max_hours is not None else runner.max_hours
+        if not 1 <= hours <= runner.max_hours:
+            raise ConfigError(
+                f"--max-hours must be 1 to task-runner.max_hours ({runner.max_hours})"
+            )
+        chosen_market = market or runner.market
+        if chosen_market not in ("spot", "on-demand"):
+            raise ConfigError(f"--market must be spot or on-demand, got {chosen_market}")
+        fraction = runner.max_price_fraction if max_price_fraction is None else max_price_fraction
+        if not 0 < fraction <= 1:
+            raise ConfigError(f"--max-price-fraction must be above 0 and at most 1, got {fraction}")
+        if pull_request is not None and not pull_request.isdigit():
+            raise ConfigError(f"--pull-request must be a number, got {pull_request}")
+        spec = tasks.TaskSpec(
+            project=project,
+            instance_type=chosen,
+            max_hours=hours,
+            run_id=run_id or _default_run_id(),
+            task_id=task_id or os.environ.get("GITHUB_JOB") or "local",
+            workflow=os.environ.get("GITHUB_WORKFLOW") or "local",
+            repository=project.config.repository,
+            ref=ref,
+            script=script,
+            args=tuple(args or ()),
+            market=chosen_market,
+            max_price_fraction=fraction,
+            on_demand_fallback=(
+                runner.on_demand_fallback if on_demand_fallback is None else on_demand_fallback
+            ),
+            spot_wait_minutes=runner.spot_wait_minutes,
+            pull_request=pull_request,
+        )
+        session = _bot_session(run, roles=["task"])
+        run.logger.info(
+            "task %s/%s: %s on %s %s (at most %dh)",
+            spec.run_id, spec.task_id, script, chosen, chosen_market, hours,
+        )  # fmt: skip
+        code = tasks.run_task(
+            session,
+            spec,
+            out,
+            run.logger,
+            write=lambda line: print(line, flush=True),
+            poll=run.settings.tasks.poll_seconds,
+        )
+        if code:
+            raise typer.Exit(code)
+
+    _command(body)(ctx)
+
+
+def _render_tasks(instances: list[tasks.TaskInstance]) -> str:
+    if not instances:
+        return "no task instances running"
+    lines = [f"{'instance':<21} {'type':<13} {'state':<9} {'run':<14} {'task':<14} launched"]
+    for t in instances:
+        lines.append(
+            f"{t.id:<21} {t.type:<13} {t.state:<9} {t.run_id or '-':<14} {t.task_id or '-':<14} "
+            f"{t.launched_at:%Y-%m-%d %H:%M}Z"
+        )
+    return "\n".join(lines)
+
+
+@task_app.command("list")
+def task_list(ctx: typer.Context) -> None:
+    """List the project's running task instances. Read-only."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        session = _bot_session(run, roles=["plan", "task"])
+        print(_render_tasks(tasks.running_tasks(session.client("ec2"), project.project)))
+
+    _command(body)(ctx)
+
+
+@task_app.command("terminate")
+def task_terminate(
+    ctx: typer.Context,
+    instance: Annotated[
+        str | None, typer.Option("--instance", help="One task instance ID.")
+    ] = None,
+    run_id: Annotated[str | None, typer.Option("--run-id", help="Every task of this run.")] = None,
+    task_id: Annotated[
+        str | None, typer.Option("--task-id", help="With --run-id: only this task.")
+    ] = None,
+    all_: Annotated[bool, typer.Option("--all", help="Every running task instance.")] = False,
+) -> None:
+    """Terminate task instances. Only instances tagged Purpose=ci-task of this project match."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        if sum([instance is not None, run_id is not None, all_]) != 1 or (
+            task_id is not None and run_id is None
+        ):
+            raise ConfigError("give exactly one of --instance, --run-id [--task-id] or --all")
+        session = _bot_session(run, roles=["task"])
+        ec2 = session.client("ec2")
+        running = tasks.running_tasks(ec2, project.project)
+        if instance is not None:
+            chosen = [t for t in running if t.id == instance]
+            if not chosen:
+                raise PreflightError(
+                    f"{instance} is not a running task instance of {project.project}"
+                )
+        elif run_id is not None:
+            chosen = [
+                t
+                for t in running
+                if t.run_id == run_id and (task_id is None or t.task_id == task_id)
+            ]
+        else:
+            chosen = running
+        if not chosen:
+            run.logger.info("no task instance matches; nothing to terminate")
+        for t in chosen:
+            tasks.terminate(ec2, t.id, run.logger)
+
+    _command(body)(ctx)
+
+
+@task_app.command("sweep")
+def task_sweep(
+    ctx: typer.Context,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="List, terminate nothing.")] = False,
+) -> None:
+    """Terminate task instances past their MaxLifetimeHours. Run by hand: leaks are
+    normally impossible (the CLI, the workflow's cleanup step and the instance's
+    own shutdown all terminate), so there is no scheduled sweeper."""
+
+    def body(run: Run) -> None:
+        project = _bot_project(run)
+        runner = _task_runner(project)
+        session = _bot_session(run, roles=["task"])
+        ec2 = session.client("ec2")
+        now = _now()
+        expired = [
+            t
+            for t in tasks.running_tasks(ec2, project.project)
+            if now - t.launched_at
+            > timedelta(hours=(t.max_hours or runner.max_hours) + SWEEP_SETUP_HOURS)
+        ]
+        if not expired:
+            run.logger.info("no task instance is past its lifetime")
+        for t in expired:
+            age = (now - t.launched_at).total_seconds() / 3600
+            if dry_run:
+                run.logger.info("would terminate %s (%.1fh old, run %s)", t.id, age, t.run_id)
+            else:
+                run.logger.warning("terminating %s (%.1fh old, run %s)", t.id, age, t.run_id)
+                tasks.terminate(ec2, t.id, run.logger)
 
     _command(body)(ctx)
 

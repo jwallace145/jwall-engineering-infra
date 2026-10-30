@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -127,6 +127,9 @@ ecr = [
 ]
 logs = [
     { name = "mypy-boto3-logs" },
+]
+pricing = [
+    { name = "mypy-boto3-pricing" },
 ]
 s3 = [
     { name = "mypy-boto3-s3" },
@@ -469,7 +472,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "boto3-stubs", extra = ["cloudfront", "ec2", "ecr", "logs", "s3", "ssm", "sts"] },
+    { name = "boto3-stubs", extra = ["cloudfront", "ec2", "ecr", "logs", "pricing", "s3", "ssm", "sts"] },
     { name = "moto", extra = ["s3", "ssm"] },
     { name = "mypy" },
     { name = "pytest" },
@@ -487,7 +490,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "boto3-stubs", extras = ["cloudfront", "ec2", "ecr", "logs", "s3", "ssm", "sts"], specifier = ">=1.40" },
+    { name = "boto3-stubs", extras = ["cloudfront", "ec2", "ecr", "logs", "pricing", "s3", "ssm", "sts"], specifier = ">=1.40" },
     { name = "moto", extras = ["ec2", "ecr", "logs", "s3", "ssm", "sts"], specifier = ">=5.1" },
     { name = "mypy", specifier = ">=1.17" },
     { name = "pytest", specifier = ">=8.4" },
@@ -809,6 +812,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/9e/60/3fe46a309e3190252651090c4290572d59ffed82f806fe17a82c26c69e20/mypy_boto3_logs-1.43.115.tar.gz", hash = "sha256:4e583b1f10883a34255360b7af54fa47fc2de4aa91161e68e9e6eee37b0b430a", size = 56180, upload-time = "2026-10-19T20:43:38.989Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/3c/515b22499114705573fd880ce4c771cbdc86e581ea6c8f1edef32a9b5b51/mypy_boto3_logs-1.43.115-py3-none-any.whl", hash = "sha256:830d6812f5257a5b9a4ce8e09c643330a5f3f5c8a12241b16f5e20e0693d5484", size = 63595, upload-time = "2026-10-19T20:43:36.148Z" },
+]
+
+[[package]]
+name = "mypy-boto3-pricing"
+version = "1.43.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/68/1c8d2a746637b891ddd5ad46bd811c099368b9511b958383e157e00cadb5/mypy_boto3_pricing-1.43.0.tar.gz", hash = "sha256:6e3e3f8d413ca6438b2220b5ba6e5353401585cf3beef5999dd7a2c6cc4cb617", size = 17281, upload-time = "2026-04-29T23:04:33.702Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/34/31f4417c653542aa5e70ebc3d9ddd8566bd573cb02d75a527bbc6a25a547/mypy_boto3_pricing-1.43.0-py3-none-any.whl", hash = "sha256:c9fbafb0a2b98d4fe011e9be4ec438d077efaf0d50af19ad8bc57cb1d06e97d4", size = 22538, upload-time = "2026-04-29T23:04:31.183Z" },
 ]
 
 [[package]]

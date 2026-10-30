@@ -365,6 +365,12 @@ The records bucket is released from Terraform state first, because its
 `prevent_destroy` would otherwise reject the whole plan. The bucket and its
 games are kept, along with the secret parameter.
 
+## Remote tasks
+
+A bot project can also run CI tasks, such as an SPRT, on dedicated,
+ephemeral EC2 instances by adding a `task-runner` component. See
+[remote-tasks.md](remote-tasks.md).
+
 ## Owner setup, once
 
 No repository variables or secrets are needed: every role ARN is derived

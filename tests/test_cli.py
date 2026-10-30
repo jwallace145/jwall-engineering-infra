@@ -278,6 +278,44 @@ def test_destroy_releases_the_records_bucket_from_state_first(
     assert rm < destroy
 
 
+def test_destroy_releases_the_task_results_bucket_from_state_first(
+    bot_workspace: Path, fake_terraform: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The task results bucket also has prevent_destroy; it expires its own contents."""
+    monkeypatch.setenv(
+        "FAKE_TF_STATE_LIST",
+        "module.records[0].aws_s3_bucket.this module.task_results[0].aws_s3_bucket.this "
+        "module.tasks[0].aws_launch_template.this",
+    )
+    with mock_aws(), _as_role(BOT_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 0, result.output
+    calls = [c for c in fake_terraform.read_text().splitlines() if not c.startswith("version")]
+    rm = calls.index("state rm -lock-timeout=120s module.task_results")
+    destroy = next(i for i, c in enumerate(calls) if c.startswith("destroy "))
+    assert rm < destroy
+    assert "jwall-engineering-rusty-chess-tasks" in result.output
+
+
+def test_destroy_refuses_while_task_instances_run(
+    bot_workspace: Path, fake_terraform: Path
+) -> None:
+    with mock_aws(), _as_role(BOT_APPLY_ROLE):
+        ec2 = boto3.client("ec2", region_name="us-east-1")
+        image_id = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
+        instance = ec2.run_instances(
+            ImageId=image_id, MinCount=1, MaxCount=1, InstanceType="c8a.xlarge",
+            TagSpecifications=[{"ResourceType": "instance", "Tags": [
+                {"Key": "Project", "Value": "rusty-chess"}, {"Key": "Purpose", "Value": "ci-task"},
+            ]}],
+        )["Instances"][0]["InstanceId"]  # fmt: skip
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 3
+    assert instance in result.output and "task terminate --all" in result.output
+    calls = fake_terraform.read_text().splitlines() if fake_terraform.exists() else []
+    assert not any(c.startswith("destroy") for c in calls)
+
+
 def test_destroy_refuses_while_images_remain(bot_workspace: Path, fake_terraform: Path) -> None:
     with mock_aws(), _as_role(BOT_APPLY_ROLE):
         _ecr_with("v0.14.0")

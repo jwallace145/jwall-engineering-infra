@@ -32,3 +32,18 @@ output "vpc_id" {
   description = "The project's VPC."
   value       = module.network.vpc_id
 }
+
+output "task_launch_template" {
+  description = "Name of the task launch template, or null without a task runner."
+  value       = var.task_runner_enabled ? module.tasks[0].launch_template_name : null
+}
+
+output "task_log_group" {
+  description = "Log group task output streams to, or null without a task runner."
+  value       = var.task_runner_enabled ? module.tasks[0].log_group_name : null
+}
+
+output "task_results_uri" {
+  description = "Where task outputs land, as <uri><run>/<task>/, or null without a task runner."
+  value       = var.task_runner_enabled ? module.tasks[0].results_uri : null
+}

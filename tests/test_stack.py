@@ -98,10 +98,22 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
         "log_retention_days": 30,
         "health_log_pattern": "awaiting challenges",
         "health_seconds": 90,
-        "availability_zones": ["us-east-1a", "us-east-1b"],
+        "availability_zones": [
+            "us-east-1a",
+            "us-east-1b",
+            "us-east-1c",
+            "us-east-1d",
+            "us-east-1f",
+        ],
         "keep_release_images": 20,
         "expire_untagged_after_days": 7,
         "ami_name": settings.bot.amis["x86_64"],
+        "task_runner_enabled": True,
+        "task_instance_type": "c8a.16xlarge",
+        "task_max_lifetime_hours": 6,
+        "task_results_days": 7,
+        "task_log_retention_days": 14,
+        "task_rust_toolchain": settings.tasks.rust_toolchain,
     }
 
 
@@ -293,3 +305,15 @@ def test_config_pins_the_x86_64_image(settings: Settings) -> None:
     """The bot instance only changes OS when this pin changes; it is pinned by name."""
     name = settings.bot.amis["x86_64"]
     assert name.startswith("al2023-ami-") and name.endswith("-x86_64")
+
+
+def test_bot_tfvars_without_a_task_runner(tmp_path: Path, bot: Project, settings: Settings) -> None:
+    components = tuple(c for c in bot.config.components if c.kind != "task-runner")
+    plain = bot.model_copy(
+        update={"config": bot.config.model_copy(update={"components": components})}
+    )
+    tfvars = render_tfvars(plain, settings)
+    assert tfvars["task_runner_enabled"] is False
+    # The other task variables keep valid values so the stack's validations hold.
+    assert tfvars["task_instance_type"] == "c8a.16xlarge"
+    assert set(tfvars) == _declared("bot")

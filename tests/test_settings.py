@@ -84,7 +84,9 @@ def test_bot_section_defaults(settings: Settings) -> None:
     assert settings.bot.health_log_pattern == "awaiting challenges"
     assert settings.bot.health_seconds == 90
     assert settings.bot.records_prefix == "records/"
-    assert settings.bot.availability_zones == ("us-east-1a", "us-east-1b")
+    assert settings.bot.availability_zones == (
+        "us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d", "us-east-1f",
+    )  # fmt: skip
 
 
 def test_bot_health_seconds_bounds(tmp_path: Path) -> None:
@@ -140,3 +142,20 @@ def test_bot_ami_name_must_match_its_architecture(tmp_path: Path) -> None:
 def test_bot_asset_wait(settings: Settings) -> None:
     """How long a build waits for a release's assets to be attached."""
     assert settings.bot.asset_wait_seconds == 1800
+
+
+def test_tasks_section(settings: Settings) -> None:
+    assert settings.tasks.rust_toolchain == "1.99.1"
+    assert settings.tasks.poll_seconds == 5
+
+
+@pytest.mark.parametrize("bad", ["", "1.99.1; rm -rf /", "Stable", "1.99.1 "])
+def test_tasks_toolchain_is_a_rustup_name(tmp_path: Path, bad: str) -> None:
+    with pytest.raises(ConfigError, match="rust_toolchain"):
+        load_settings(_write(tmp_path, {"tasks.rust_toolchain": bad}), environ={})
+
+
+@pytest.mark.parametrize("bad", [0, 61])
+def test_tasks_poll_bounds(tmp_path: Path, bad: int) -> None:
+    with pytest.raises(ConfigError, match="poll_seconds"):
+        load_settings(_write(tmp_path, {"tasks.poll_seconds": bad}), environ={})

@@ -21,6 +21,7 @@ from logging import Logger
 from pathlib import Path
 from typing import Any
 
+from .components import TaskRunner
 from .errors import RunError
 from .project import Project
 from .settings import Settings
@@ -90,6 +91,7 @@ def _site_tfvars_from_project(project: Project) -> dict[str, Any]:
 
 def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
     bot, image = project.bot, project.image
+    runner = project.task_runner or TaskRunner(kind="task-runner")
     return {
         "project": project.project,
         "repository": project.config.repository,
@@ -112,6 +114,14 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
         "keep_release_images": settings.ecr.keep_release_images,
         "expire_untagged_after_days": settings.ecr.expire_untagged_after_days,
         "ami_name": settings.bot.amis.get(image.architecture),
+        # Without a task runner the stack creates none of its resources; the
+        # other variables keep the component's defaults so they stay valid.
+        "task_runner_enabled": project.task_runner is not None,
+        "task_instance_type": runner.default_instance_type,
+        "task_max_lifetime_hours": runner.max_hours,
+        "task_results_days": runner.results_days,
+        "task_log_retention_days": runner.log_retention_days,
+        "task_rust_toolchain": settings.tasks.rust_toolchain,
     }
 
 
