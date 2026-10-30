@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.13.0...v0.14.0) (2026-10-30)
+
+
+### Features
+
+* add the dataset component for kept-forever, append-only project data ([#74](https://github.com/jwallace145/jwall-engineering-infra/issues/74)) ([bce8796](https://github.com/jwallace145/jwall-engineering-infra/commit/bce87968db916f7167e8d647ee89cc214c99d6a5))
+
 ## [0.13.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.12.0...v0.13.0) (2026-10-30)
 
 
