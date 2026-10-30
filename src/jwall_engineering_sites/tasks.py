@@ -1,10 +1,11 @@
-"""Remote CI tasks: one task on one fresh, dedicated, on-demand EC2 instance.
+"""Remote CI tasks: one task on one fresh, dedicated EC2 instance.
 
 `task run` launches an instance from the project's task launch template
 (module task-runner), runs one script from the consumer repository on it
 through SSM Run Command, streams its output from CloudWatch, copies its
-outputs from S3 and terminates it, on every exit path. Instances are
-on-demand only: a spot interruption would lose a long benchmark.
+outputs from S3 and terminates it, on every exit path. Instances are spot
+under a price cap by default, falling back to on demand at launch only; a
+spot interruption is reported (exit 75), never read as a result.
 """
 
 from __future__ import annotations
@@ -386,6 +387,11 @@ def _try_zones(
             return _run_instance(ec2, spec, template, subnet, lifecycle, plan.max_price)
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
+            if code == "VcpuLimitExceeded":
+                raise NoCapacity(
+                    f"the account's {lifecycle} vCPU limit is reached for {spec.instance_type}; "
+                    "re-run later or ask for a quota increase"
+                ) from exc
             if code not in errors:
                 raise
             logger.warning(
@@ -556,7 +562,12 @@ watch_spot() {{
     now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     echo "SPOT INTERRUPTION: $now"
     printf '{{"time": "%s", "notice": %s}}\n' "$now" "$notice" > "$out/interrupted.json"
+    # The record first: the two minutes may not leave time for anything else.
+    aws s3 cp --only-show-errors --region {q(region)} "$out/interrupted.json" \
+      "${{dest}}interrupted.json" || true
     kill -TERM -- "-$1" 2>/dev/null || kill -TERM "$1"
+    sleep 45
+    kill -KILL -- "-$1" 2>/dev/null || true
     return 0
   done
 }}
@@ -564,7 +575,7 @@ watch_spot() {{
 status=0
 # The arguments are quoted literals: `$` in them must not expand.
 # shellcheck disable=SC2016
-OUT_DIR=$out setsid bash {task} &
+OUT_DIR=$out setsid -w bash {task} &
 task_pid=$!
 watch_spot "$task_pid" &
 watcher_pid=$!
@@ -577,7 +588,7 @@ if [ -f "$out/interrupted.json" ]; then
 else
   echo "== task-runner: the task exited with $status; uploading its outputs"
 fi
-aws s3 cp --recursive --only-show-errors --region {q(region)} "$out" "$dest" \
+timeout 50 aws s3 cp --recursive --only-show-errors --region {q(region)} "$out" "$dest" \
   || echo "task-runner: uploading the outputs failed"
 # The instance ends itself a minute from now (a shutdown terminates it), in
 # case nothing else does; the minute lets the agent report and flush.
@@ -770,11 +781,12 @@ def results_location(s3: S3Client, bucket: str, prefix: str, instance_id: str) -
     return None
 
 
-def interruption(ec2: EC2Client, instance_id: str, out_dir: Path) -> str | None:
+def interruption(ec2: EC2Client, instance_id: str, collected: list[Path]) -> str | None:
     """When spot reclaimed the instance, the time it did; otherwise None. The
-    on-box watcher's record wins; the instance's state reason is the fallback."""
-    record = out_dir / "interrupted.json"
-    if record.is_file():
+    watcher's record among this task's collected files wins; the instance's
+    state reason is the fallback."""
+    record = next((p for p in collected if p.name == "interrupted.json"), None)
+    if record is not None and record.is_file():
         try:
             when = json.loads(record.read_text()).get("time")
         except (ValueError, AttributeError):
@@ -916,8 +928,17 @@ def run_task(
     s3 = session.client("s3")
 
     instance_id: str | None = None
+    launched: Launched | None = None
+    collected: list[Path] = []
     launching = False
     outcome, interrupted_at = "failed", ""
+
+    def reclaimed() -> str | None:
+        """On a failure after a spot launch: was it spot reclaiming the instance?"""
+        if launched is None or launched.lifecycle != "spot":
+            return None
+        return interruption(ec2, launched.id, collected)
+
     with _interruptible() as shield:
         try:
             info = instance_types_info(ec2, [spec.instance_type])
@@ -949,19 +970,16 @@ def run_task(
                 if key is None:
                     logger.info("the task wrote no outputs")
                 else:
-                    paths = collect(s3, project.task_bucket, key, out_dir)
-                    logger.info("copied %d output file(s) to %s", len(paths), out_dir)
+                    collected = collect(s3, project.task_bucket, key, out_dir)
+                    logger.info("copied %d output file(s) to %s", len(collected), out_dir)
             except (SitesError, ClientError, BotoCoreError) as exc:
                 logger.error("could not copy the task's outputs: %s", exc)
                 copied = False
-            if launched.lifecycle == "spot" and code != 0:
-                at = interruption(ec2, instance_id, out_dir)
+            if code != 0:
+                at = reclaimed()
                 if at is not None:
-                    message = f"interrupted by spot reclamation at {at}: no result; re-run the task"
-                    logger.warning("%s", message)
-                    annotate_warning(message, title="spot interruption")
                     outcome, interrupted_at = "interrupted", at
-                    return INTERRUPTED_EXIT
+                    return _interrupted(logger, at)
             outcome = "passed" if code == 0 and copied else "failed"
             return code if copied else code or 1
         except NoCapacity as exc:
@@ -971,16 +989,30 @@ def run_task(
         except TaskInterrupted as exc:
             logger.warning("%s; terminating the task instance", exc)
             return exc.exit_code
-        except SitesError as exc:
-            logger.error("%s", exc)
-            return exc.exit_code
-        except (ClientError, BotoCoreError) as exc:
+        except (SitesError, ClientError, BotoCoreError) as exc:
+            # Reclaimed while booting, sending or following: never a failure.
+            at = reclaimed()
+            if at is not None:
+                logger.warning("%s", exc)
+                outcome, interrupted_at = "interrupted", at
+                return _interrupted(logger, at)
+            if isinstance(exc, SitesError):
+                logger.error("%s", exc)
+                return exc.exit_code
             logger.error("AWS call failed: %s", exc)
             return 1
         finally:
             shield()
-            _cleanup(ec2, spec, instance_id, launching, logger)
+            # The outcome first: a failing cleanup must not lose it.
             _report(outcome, interrupted_at)
+            _cleanup(ec2, spec, instance_id, launching, logger)
+
+
+def _interrupted(logger: Logger, at: str) -> int:
+    message = f"interrupted by spot reclamation at {at}: no result; re-run the task"
+    logger.warning("%s", message)
+    annotate_warning(message, title="spot interruption")
+    return INTERRUPTED_EXIT
 
 
 def _log_launch(logger: Logger, spec: TaskSpec, launched: Launched, plan: PricePlan) -> None:
@@ -1005,6 +1037,19 @@ def _log_launch(logger: Logger, spec: TaskSpec, launched: Launched, plan: PriceP
 
 
 def _cleanup(
+    ec2: EC2Client, spec: TaskSpec, instance_id: str | None, launching: bool, logger: Logger
+) -> None:
+    try:
+        _terminate_mine(ec2, spec, instance_id, launching, logger)
+    except (SitesError, ClientError, BotoCoreError) as exc:
+        logger.error(
+            "could not terminate the task instance (%s); it shuts itself down within its "
+            "maximum lifetime, and the workflow's cleanup step tries again",
+            exc,
+        )
+
+
+def _terminate_mine(
     ec2: EC2Client, spec: TaskSpec, instance_id: str | None, launching: bool, logger: Logger
 ) -> None:
     if instance_id is None and launching:

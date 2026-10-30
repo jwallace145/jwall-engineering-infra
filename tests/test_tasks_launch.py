@@ -208,6 +208,14 @@ def test_no_fallback_means_no_capacity(bot: Project) -> None:
     assert all("InstanceMarketOptions" in c for c in ec2.calls)
 
 
+def test_the_account_vcpu_limit_is_no_capacity(bot: Project) -> None:
+    """An account-wide quota: trying the next zone cannot help."""
+    ec2 = FakeEC2({("subnet-a", "*"): "VcpuLimitExceeded"})
+    with pytest.raises(tasks.NoCapacity, match="vCPU limit"):
+        _launch(ec2, _spec(bot, market="on-demand"))
+    assert len(ec2.calls) == 1
+
+
 def test_no_capacity_anywhere(bot: Project) -> None:
     ec2 = FakeEC2({("subnet-a", "*"): "InsufficientInstanceCapacity",
                    ("subnet-b", "*"): "InsufficientInstanceCapacity"})  # fmt: skip

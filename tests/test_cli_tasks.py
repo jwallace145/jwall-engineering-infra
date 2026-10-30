@@ -219,3 +219,12 @@ def test_run_refuses_a_bad_price_fraction(captured: dict[str, Any], fraction: st
 
 def test_run_refuses_an_unknown_market(captured: dict[str, Any]) -> None:
     assert _run("--market", "reserved").exit_code == 2 and "spec" not in captured
+
+
+def test_a_refusal_before_launch_still_reports_failed(
+    captured: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert _run("--instance-type", "c8a.48xlarge").exit_code == 2
+    assert "outcome=failed" in output.read_text()

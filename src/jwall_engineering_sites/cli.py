@@ -987,6 +987,9 @@ def task_run(
     """
 
     def body(run: Run) -> None:
+        # Until the task reports otherwise, any refusal reads as failed.
+        github.write_output("outcome", "failed")
+        github.write_output("interrupted-at", "")
         project = _bot_project(run)
         runner = _task_runner(project)
         chosen = instance_type or runner.default_instance_type

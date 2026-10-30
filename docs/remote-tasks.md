@@ -133,9 +133,9 @@ variables or secrets. The workflow builds the role ARN from this tool's
   this repository's `config.yaml`). `git`, `gcc`, `gcc-c++`, `make`, `tar`,
   `curl` and the AWS CLI are installed. The script installs anything else
   itself.
-- **Exit code.** The script's exit code is the job's. Avoid 75: on spot it
-  reads as an interruption only when the interruption record exists, but
-  keep it clear.
+- **Exit code.** The script's exit code is the job's. Avoid 75: on spot, a
+  non-zero exit counts as an interruption when the watcher's record or AWS's
+  termination reason says spot reclaimed the instance, and 75 is that code.
 - **Concurrency.** Run at most physical cores minus two games at once, or
   timed games steal each other's clock. That is 62 on a `c8a.16xlarge`; the
   brief settles on 60.
@@ -145,9 +145,11 @@ variables or secrets. The workflow builds the role ARN from this tool's
   arrives, so the last lines are never cut off.
 - **Interruptions.** On a spot interruption notice the watcher prints
   `SPOT INTERRUPTION: <time>`, writes `interrupted.json` to `OUT_DIR` and
-  sends SIGTERM to the script's process group. AWS terminates the instance
-  two minutes after the notice. Trap SIGTERM if the script can save partial
-  results quickly. Partial logs are for reading, never for a verdict.
+  uploads it at once. It then sends SIGTERM to the script's process group,
+  and SIGKILL 45 seconds later. The outputs so far are uploaded, for at
+  most 50 seconds, and AWS terminates the instance two minutes after the
+  notice. Trap SIGTERM only to save partial results quickly. Partial logs
+  are for reading, never for a verdict.
 
 The output starts with the environment block, so every result records what
 it ran on:
@@ -250,7 +252,8 @@ Concurrency is capped per project in vCPUs. A launch that would exceed
 exits 3 naming them. The default of 192 vCPUs fits three `c8a.16xlarge`
 (one pull request's two legs plus a match) inside the account's 256-vCPU spot
 and on-demand quotas, and smaller types fit more. The check happens before
-the launch, so legs that start at the same moment can briefly exceed it.
+the launch, so legs that start at the same moment can exceed it until those
+tasks end.
 
 ## Limits
 

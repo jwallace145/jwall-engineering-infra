@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import shutil
@@ -64,7 +65,8 @@ def _run_tail(
     tail = script[script.index("status=0") :]
     probe = (
         f'out={cwd}/out; mkdir -p "$out"; dest={DEST}\n'
-        'setsid() { "$@"; }\n'
+        'setsid() { [ "$1" = -w ] && shift; "$@"; }\n'
+        'timeout() { shift; "$@"; }\n'
         f"bash() {{ {task}; }}\n"
         f"{watcher}\n"
         "aws() { printf 'aws<%s>\\n' \"$@\"; }\n"
@@ -73,6 +75,7 @@ def _run_tail(
     return subprocess.run(["/bin/bash", "-c", probe], capture_output=True, text=True, cwd=cwd)
 
 
+NOTICE = '{"action": "terminate", "time": "2026-10-29T12:02:00Z"}'
 PRINT_ARGS = "printf 'task<%s>\\n' \"$@\""
 
 
@@ -124,8 +127,8 @@ def test_script_steps_in_order(bot: Project) -> None:
         " 0123456789abcdef0123456789abcdef01234567",
         "git -C /work/repo checkout --quiet FETCH_HEAD",
         "aws sts get-caller-identity --query UserId --output text",
-        "OUT_DIR=$out setsid bash scripts/sprt.sh --games 200 &",
-        'aws s3 cp --recursive --only-show-errors --region us-east-1 "$out" "$dest"',
+        "OUT_DIR=$out setsid -w bash scripts/sprt.sh --games 200 &",
+        'timeout 50 aws s3 cp --recursive --only-show-errors --region us-east-1 "$out" "$dest"',
         'exit "$status"',
     ]
     positions = [script.index(step) for step in steps]
@@ -151,8 +154,8 @@ def test_script_watches_for_spot_notices_and_isolates_the_task(bot: Project) -> 
     assert "latest/meta-data/spot/instance-action" in script
     assert "sleep 5" in script and "SPOT INTERRUPTION: $now" in script
     # Its own process group, so the watcher can stop the whole task tree.
-    assert "setsid bash scripts/sprt.sh --games 200 &" in script
-    assert 'kill -TERM -- "-$1"' in script
+    assert "setsid -w bash scripts/sprt.sh --games 200 &" in script
+    assert 'kill -TERM -- "-$1"' in script and 'kill -KILL -- "-$1"' in script
 
 
 def test_script_writes_only_under_its_own_prefix(bot: Project) -> None:
@@ -652,18 +655,20 @@ class FakeStateEC2:
 
 def test_interruption_from_the_watchers_record(tmp_path: Path) -> None:
     (tmp_path / "interrupted.json").write_text('{"time": "2026-10-29T12:00:05Z"}')
-    found = tasks.interruption(_any(FakeStateEC2(None, "running")), "i-1", tmp_path)
+    found = tasks.interruption(
+        _any(FakeStateEC2(None, "running")), "i-1", [tmp_path / "interrupted.json"]
+    )
     assert found == "2026-10-29T12:00:05Z"
 
 
 def test_interruption_from_the_state_reason(tmp_path: Path) -> None:
     ec2 = FakeStateEC2("Server.SpotInstanceTermination")
-    assert tasks.interruption(_any(ec2), "i-1", tmp_path) is not None
+    assert tasks.interruption(_any(ec2), "i-1", []) is not None
 
 
 def test_no_interruption(tmp_path: Path) -> None:
     ec2 = FakeStateEC2("Client.UserInitiatedShutdown")
-    assert tasks.interruption(_any(ec2), "i-1", tmp_path) is None
+    assert tasks.interruption(_any(ec2), "i-1", []) is None
 
 
 def test_stream_stops_when_the_instance_is_gone() -> None:
@@ -758,3 +763,104 @@ def test_no_outputs_is_not_a_failure(
     rec = Recorder(monkeypatch, results_location=lambda *a: None)
     assert _run(bot, tmp_path) == 0
     assert "collect" not in rec.calls
+
+
+# --- the real watcher (Linux: setsid and timeout from util-linux/coreutils) --------
+
+
+@pytest.mark.skipif(
+    shutil.which("setsid") is None or shutil.which("timeout") is None,
+    reason="needs setsid and timeout (Linux)",
+)
+def test_the_real_watcher_stops_the_whole_task_and_records_the_notice(
+    bot: Project, tmp_path: Path
+) -> None:
+    """The real watch_spot and process-group kill: IMDS answers a notice, the
+    watcher uploads its record at once and stops the task's whole tree."""
+    script = _script(bot)
+    body = script[script.index("watch_spot() {") :]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "curl").write_text(
+        "#!/bin/bash\n"
+        'case "$*" in\n'
+        "  *api/token*) echo token ;;\n"
+        f"  *spot/instance-action*) echo '{NOTICE}' ;;\n"
+        "  *) exit 22 ;;\n"
+        "esac\n"
+    )
+    (bin_dir / "aws").write_text(f'#!/bin/bash\necho "aws $*" >> {tmp_path}/aws.log\n')
+    (bin_dir / "shutdown").write_text("#!/bin/bash\n")
+    for tool in ("curl", "aws", "shutdown"):
+        (bin_dir / tool).chmod(0o755)
+    repo = tmp_path / "repo" / "scripts"
+    repo.mkdir(parents=True)
+    # A task with a grandchild that would outlive a kill of the task alone.
+    (repo / "sprt.sh").write_text(f"sleep 300 &\necho $! > {tmp_path}/grandchild.pid\nwait\n")
+    out = tmp_path / "out"
+    out.mkdir()
+    probe = f"out={out}\ndest={DEST}\ncd {tmp_path}/repo\n" + body
+    result = subprocess.run(
+        ["/bin/bash", "-c", probe], capture_output=True, text=True, timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )  # fmt: skip
+    assert result.returncode == 75, result.stdout + result.stderr
+    assert "SPOT INTERRUPTION: " in result.stdout
+    record = json.loads((out / "interrupted.json").read_text())
+    assert record["notice"]["action"] == "terminate"
+    grandchild = int((tmp_path / "grandchild.pid").read_text())
+    assert not Path(f"/proc/{grandchild}").exists(), "the task's grandchild must be stopped"
+    calls = (tmp_path / "aws.log").read_text().splitlines()
+    assert calls[0].startswith("aws s3 cp") and "interrupted.json" in calls[0]
+
+
+# --- interruptions on error paths -------------------------------------------------
+
+
+@pytest.mark.parametrize("step", ["wait_for_agent", "send", "stream"])
+def test_an_interruption_on_an_error_path_is_still_75(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path,
+    step: str,
+) -> None:  # fmt: skip
+    """Reclaimed during boot, while sending, or while following: never a failure."""
+    error: Exception = (
+        RunError("SSM agent not online")
+        if step == "wait_for_agent"
+        else ClientError({"Error": {"Code": "InvalidInstanceId"}}, "SendCommand")
+    )
+    rec = Recorder(monkeypatch, **{step: error, "interruption": "2026-10-29T12:00:05Z"})
+    assert _run(bot, tmp_path) == 75
+    assert rec.terminated == ["i-1"]
+    assert _outputs(github_output)["outcome"] == "interrupted"
+
+
+def test_an_error_on_demand_is_not_checked_for_interruption(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    rec = Recorder(
+        monkeypatch, wait_for_agent=RunError("SSM agent not online"),
+        launch=tasks.Launched("i-1", "us-east-1a", "ami-1", "on-demand"),
+    )  # fmt: skip
+    assert _run(bot, tmp_path) == 1
+    assert "interruption" not in rec.calls
+    assert _outputs(github_output)["outcome"] == "failed"
+
+
+def test_the_outcome_is_written_even_when_cleanup_fails(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    Recorder(
+        monkeypatch, stream=1, interruption="2026-10-29T12:00:05Z",
+        terminate=EndpointConnectionError(endpoint_url="https://ec2"),
+    )  # fmt: skip
+    assert _run(bot, tmp_path) == 75
+    assert _outputs(github_output)["outcome"] == "interrupted"
+
+
+def test_only_a_collected_record_counts(tmp_path: Path) -> None:
+    """A stale interrupted.json in a reused out dir is not this task's."""
+    stale = tmp_path / "interrupted.json"
+    stale.write_text('{"time": "old"}')
+    ec2 = FakeStateEC2("Client.UserInitiatedShutdown")
+    assert tasks.interruption(_any(ec2), "i-1", []) is None
+    assert tasks.interruption(_any(ec2), "i-1", [stale]) == "old"
