@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from pathlib import PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -197,8 +197,22 @@ class TaskProfile(_Model):
     #: Instances have an NVIDIA GPU: setup waits for the driver, and the
     #: environment block records the GPU, driver and CUDA version.
     gpu: bool = False
+    #: Where SCRATCH_DIR lives: the instance's local NVMe SSD, or the EBS root
+    #: volume. Unset, a GPU profile uses the instance store and others the
+    #: root volume (the c8a types have no instance store).
+    scratch: Literal["instance-store", "root-volume"] = "root-volume"
     #: Read and write access to the project's datasets, by dataset name.
     datasets: dict[str, DatasetAccess] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_scratch(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("scratch") is None:
+            data = {
+                **data,
+                "scratch": "instance-store" if data.get("gpu") is True else "root-volume",
+            }
+        return data
 
     @field_validator("instance_types")
     @classmethod

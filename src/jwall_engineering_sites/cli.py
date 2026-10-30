@@ -1043,6 +1043,7 @@ def task_run(
             profile=profile_name,
             whole_cores=profile.whole_cores,
             gpu=profile.gpu,
+            scratch=profile.scratch,
         )
         session = _bot_session(run, roles=["task"])
         run.logger.info(

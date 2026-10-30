@@ -99,6 +99,8 @@ class TaskSpec:
     whole_cores: bool = True
     #: The instance has an NVIDIA GPU, checked before the task starts.
     gpu: bool = False
+    #: Where SCRATCH_DIR lives: `instance-store` or `root-volume`.
+    scratch: str = "root-volume"
 
 
 @dataclass(frozen=True)
@@ -539,6 +541,38 @@ def _check(spec: TaskSpec) -> None:
             )
 
 
+#: Puts /work/scratch on the instance's local NVMe SSD. The Deep Learning AMIs
+#: mount the instance store at /opt/dlami/nvme at boot (hence waiting for boot
+#: to finish); its scratch directory is bind-mounted. Otherwise the first
+#: instance-store disk (the g6 and g6e types have one) is formatted, but only
+#: if it is blank. Without one, the task runs on the root volume and says so.
+INSTANCE_STORE_SETUP = """
+mount_instance_store() {
+  local disk
+  timeout 300 systemctl is-system-running --wait >/dev/null 2>&1 || true
+  if findmnt -rn --mountpoint /opt/dlami/nvme >/dev/null; then
+    mkdir -p /opt/dlami/nvme/scratch && mount --bind /opt/dlami/nvme/scratch /work/scratch
+    return
+  fi
+  disk=$(lsblk -dnpo NAME,MODEL | awk '/Amazon EC2 NVMe Instance Storage/ {print $1; exit}')
+  if [ -z "$disk" ]; then
+    echo "this instance type has no instance store"
+    return 1
+  fi
+  if [ -n "$(lsblk -no FSTYPE,MOUNTPOINTS "$disk" | tr -d '[:space:]')" ]; then
+    echo "$disk is not blank; it is left alone"
+    return 1
+  fi
+  mkfs.xfs -q -K "$disk" && mount -o noatime "$disk" /work/scratch
+}
+if why=$(mount_instance_store 2>&1); then
+  scratch=instance-store
+else
+  scratch_note="task-runner: WARNING: the profile asks for scratch on the instance store, \
+but it could not be mounted (${why:-no reason given}); SCRATCH_DIR is on the root volume"
+fi"""
+
+
 def task_script(spec: TaskSpec, bucket: str, prefix: str) -> str:
     """The bash script the instance runs: wait for setup, reset the lifetime
     guard, fetch the commit anonymously, run the task, upload its outputs
@@ -559,6 +593,7 @@ fi
         if spec.gpu
         else ""
     )
+    scratch_setup = INSTANCE_STORE_SETUP if spec.scratch == "instance-store" else ""
     region = spec.project.region
     url = f"https://github.com/{spec.repository}"
     return f"""set -uo pipefail
@@ -579,14 +614,24 @@ fi
 shutdown -c 2>/dev/null || true
 shutdown -h +{minutes} 2>/dev/null
 
+rm -rf /work
+mkdir -p /work/repo /work/out /work/scratch
+scratch=root-volume
+scratch_note=""
+{scratch_setup}
+scratch_device=$(df -h --output=source,size /work/scratch \\
+  | awk 'NR == 2 {{sub("^/dev/", "", $1); print $1, $2}}')
+
 echo "== task-runner environment"
 echo "profile={spec.profile}"
 cat /etc/task-runner/ready
+echo "scratch=$scratch"
+echo "scratch_device=$scratch_device"
 echo "=="
-{gpu_check}
-rm -rf /work
-mkdir -p /work/repo /work/out /work/scratch
-git init --quiet /work/repo
+if [ -n "$scratch_note" ]; then
+  echo "$scratch_note"
+fi
+{gpu_check}git init --quiet /work/repo
 if ! git -C /work/repo fetch --quiet --depth 1 {q(url)} {q(spec.ref)}; then
   echo "task-runner: could not fetch {spec.ref} from {spec.repository}"
   exit 1

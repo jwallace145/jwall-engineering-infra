@@ -421,6 +421,31 @@ def test_the_cpu_profile_is_the_task_runners_own_fields(bot: Project) -> None:
     )  # fmt: skip
 
 
+def test_scratch_defaults_to_the_instance_store_for_gpu_profiles_only(bot: Project) -> None:
+    """The rusty-chess file sets no `scratch`: gpu reads from the NVMe, cpu stays put."""
+    runner = bot.task_runner
+    assert runner is not None
+    assert runner.profile("gpu").scratch == "instance-store"
+    assert runner.profile("cpu").scratch == "root-volume"
+
+
+@pytest.mark.parametrize(("gpu", "scratch"), [(True, "root-volume"), (False, "instance-store")])
+def test_a_profile_may_choose_its_scratch(
+    tmp_path: Path, settings: Settings, gpu: bool, scratch: str
+) -> None:
+    raw = _raw()
+    _gpu(raw).update(gpu=gpu, scratch=scratch)
+    runner = _load(tmp_path, raw, settings).task_runner
+    assert runner is not None and runner.profile("gpu").scratch == scratch
+
+
+def test_scratch_takes_only_the_two_places(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _gpu(raw)["scratch"] = "tmpfs"
+    with pytest.raises(ConfigError, match="scratch"):
+        _load(tmp_path, raw, settings)
+
+
 def test_the_allow_list_covers_every_profile(bot: Project) -> None:
     runner = bot.task_runner
     assert runner is not None
