@@ -157,6 +157,20 @@ class TasksSection(_Section):
     rust_toolchain: str = Field(pattern=r"^[a-z0-9][a-z0-9.-]*$")
     #: Seconds between polls of a task's output and status.
     poll_seconds: int = Field(default=5, ge=1, le=60)
+    #: Pinned images for task profiles, by key (a profile's `image`): the
+    #: Amazon-owned image *name*, resolved to its ID by the bot stack. A
+    #: profile's image changes only when its pin changes.
+    images: dict[str, str] = {}
+
+    @field_validator("images")
+    @classmethod
+    def _image_names(cls, value: dict[str, str]) -> dict[str, str]:
+        for key, name in value.items():
+            if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", key):
+                raise ValueError(f"images: key {key!r} must be kebab-case")
+            if name.startswith("ami-") or not re.fullmatch(r"[A-Za-z0-9._()/ -]{3,128}", name):
+                raise ValueError(f"images.{key}: {name!r} must be an Amazon image name, not an ID")
+        return value
 
 
 class PlanSection(_Section):

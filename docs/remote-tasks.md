@@ -21,6 +21,9 @@ which runs `jwall-engineering-sites task run`. That command:
 It is a task, not a runner: the instance never registers with GitHub, holds
 no GitHub credential and exists only for the one script.
 
+A project can also run tasks on other kinds of instance, such as NVIDIA GPU
+instances for training, through [task profiles](#task-profiles-gpu-tasks).
+
 ## Turning it on
 
 Add the component to the bot's `jwall-engineering-sites.yaml`:
@@ -93,9 +96,10 @@ jobs:
 | Input | Default |
 |---|---|
 | `args` | `[]` |
-| `instance-type` | empty: the project's default type |
-| `market` | empty: the project's `market` |
-| `max-hours` | 0: the project's `max_hours` |
+| `profile` | `cpu`: the task-runner's own fields; or one of its `profiles`, such as `gpu` |
+| `instance-type` | empty: the profile's default type |
+| `market` | empty: the profile's `market` |
+| `max-hours` | 0: the profile's `max_hours` |
 | `task-id` | the `artifact` name |
 | `artifact` | `task-output` |
 | `artifact-path` | `out` |
@@ -127,7 +131,11 @@ variables or secrets. The workflow builds the role ARN from this tool's
   commit, or the pushed commit.
 - **Outputs.** `OUT_DIR` is an empty directory. Everything written there is
   uploaded to S3 and copied into the job's artifact, whether the script
-  succeeds, fails or is interrupted.
+  succeeds, fails or is interrupted. Keep it small: results, summaries and
+  logs, never a dataset.
+- **Scratch.** `SCRATCH_DIR` is an empty directory on the root volume for
+  large working files, such as downloaded training shards. It is not
+  uploaded, and it goes with the instance.
 - **Toolchain.** `HOME=/root`, and `PATH` includes `/root/.cargo/bin`, so
   `cargo` and `rustc` are the pinned toolchain (`tasks.rust_toolchain` in
   this repository's `config.yaml`). `git`, `gcc`, `gcc-c++`, `make`, `tar`,
@@ -156,6 +164,7 @@ it ran on:
 
 ```text
 == task-runner environment
+profile=cpu
 image_id=ami-0...
 rust_toolchain=1.99.1
 rustc=rustc 1.99.1 (...)
@@ -163,6 +172,134 @@ cpu_model=AMD EPYC 9R45
 physical_cores=64
 ==
 ```
+
+A GPU profile adds `gpu_model`, `gpu_memory`, `nvidia_driver` and
+`cuda_version`, so every net records the hardware it trained on.
+
+## Task profiles: GPU tasks
+
+A **profile** is one kind of task instance. The task-runner's own fields are
+the `cpu` profile, which every existing caller uses without change. Further
+profiles go under `profiles`, each with its own launch template and instance
+role, `<org>-<project>-task-<profile>`. All profiles share the log group, the
+security group, the network and the results bucket.
+
+```yaml
+  - kind: task-runner
+    # ...the cpu fields above...
+    profiles:
+      gpu:
+        instance_types: [g6.xlarge, g6.2xlarge, g6e.xlarge]  # NVIDIA L4, L4, L40S
+        default_instance_type: g6.xlarge
+        market: on-demand           # spot | on-demand
+        max_hours: 6                # 1-6
+        max_vcpus: 4                # this profile's own running-vCPU budget
+        image: deep-learning-gpu    # a key of tasks.images in config.yaml
+        root_volume_gb: 200         # 20-200, gp3; SCRATCH_DIR lives on it
+        whole_cores: false          # GPU types run two threads per core
+        gpu: true                   # wait for the driver; record GPU, driver, CUDA
+        datasets:
+          nnue: { read: [selfplay/], write: [nets/] }  # sub-prefixes of the dataset's prefix
+```
+
+A profile also takes `max_price_fraction`, `on_demand_fallback`,
+`spot_wait_minutes` and `slot_wait_minutes`, as the cpu profile does. The
+defaults are `market: on-demand`, `max_vcpus: 4`, `root_volume_gb: 40`,
+`whole_cores: true` and `gpu: false`, with no image (the bot's pinned Amazon
+Linux 2023 image) and no dataset access.
+
+Call it with `profile: gpu`:
+
+```yaml
+jobs:
+  train:
+    uses: jwallace145/jwall-engineering-infra/.github/workflows/remote-task.yml@vX.Y.Z
+    with:
+      project: rusty-chess
+      profile: gpu
+      script: ci/train-task.sh
+      args: '["--lambda", "0.5"]'
+      artifact: net-lambda-0.5
+    permissions:
+      contents: read
+      id-token: write
+```
+
+**Turning a profile on.** Add it to the project file, then in this
+repository add its types to `local.bot_task_types` and its name to
+`local.bot_task_profiles` in `foundation/bots.tf` (a test checks both
+against the project file). Release, then run **Bot apply** for the project.
+
+**Budgets.** Each profile counts only its own running vCPUs against its
+`max_vcpus`, so a GPU task never waits behind SPRTs, nor they behind it.
+Instances launched before profiles existed carry no `Profile` tag and count
+as cpu. A run and task ID may run only once across all profiles.
+
+**The image.** GPU tasks run on the AWS *Deep Learning Base OSS Nvidia
+Driver GPU AMI (Amazon Linux 2023)*, which has the NVIDIA driver and the CUDA
+toolkit installed. `tasks.images` in `config.yaml` pins it by its
+Amazon-owned image name, and the bot stack resolves the name to its ID: the
+2026-10-27 build is `ami-0f964da32f9793d2b`. An upgrade is a change of the
+pin, then **Bot apply**; nothing changes implicitly. Setup adds what the cpu
+image has: git, gcc, make, the SSM agent if missing, and rustup with
+`tasks.rust_toolchain`. It then waits up to five minutes for `nvidia-smi`. A
+GPU task also runs `nvidia-smi` before it starts and exits 1 if it fails.
+`PATH` includes `/usr/local/cuda/bin`, so `nvcc` is found.
+
+**Data in, nets out.** The `datasets` grants become an inline policy on the
+profile's instance role: `GetObject` under each `read` sub-prefix,
+`PutObject` under each `write` one, and `ListBucket` limited to them. For
+rusty-chess that is: read `data/selfplay/*`, write `data/nets/*`, and nothing
+else in the bucket. The cpu task role stays write-only. A training task
+writes `data/nets/<net id>/{net.nnue, training.json, log.txt, checkpoints/}`
+and puts only the small files in `OUT_DIR`. See [datasets](datasets.md).
+
+**Interruptions and long runs.** On demand needs nothing beyond the six-hour
+limit. Spot GPU tasks come later, once the spot quota is raised. A trainer
+that uploads checkpoints to `data/nets/<net id>/checkpoints/` as it goes can
+resume from them when the workflow reports `outcome = interrupted`. The
+resume logic belongs to the consumer.
+
+### Quotas
+
+| Quota (Service Quotas, Amazon EC2, us-east-1) | 2026-10-30 | Fits |
+|---|---|---|
+| Running On-Demand G and VT instances | 5 vCPUs | one `g6.xlarge` (4) at a time; not a `g6.2xlarge` (8) |
+| All G and VT Spot Instance Requests | 0 vCPUs | no GPU spot |
+
+Raise them in the Service Quotas console (Amazon EC2 → the quota → Request
+increase). 16 vCPUs on demand runs four `g6.xlarge` at once. Increases take
+hours to a day. Raise the profile's `max_vcpus` with the quota.
+
+### Costs
+
+us-east-1, 2026-10-30. Billing is per second.
+
+| Type | vCPU | RAM | GPU | On demand | Spot (lowest, last day) |
+|---|--:|--:|---|--:|--:|
+| `g6.xlarge` | 4 | 16 GiB | NVIDIA L4, 24 GB | $0.80/h | $0.46/h |
+| `g6.2xlarge` | 8 | 32 GiB | NVIDIA L4, 24 GB | $0.98/h | $0.84/h |
+| `g6e.xlarge` | 4 | 32 GiB | NVIDIA L40S, 48 GB | $1.86/h | $1.26/h |
+
+A 200 GB gp3 root volume adds about $0.02 an hour. A net trained in one to
+six hours on a `g6.xlarge` costs about $1 to $5. Instances carry
+`Profile = gpu`; activate it as a cost allocation tag to see GPU spend on its
+own.
+
+### GPU runbook
+
+- **No capacity (exit 3, `outcome = no-capacity`).** No zone had an
+  on-demand GPU. Re-run later, or try another allowed type.
+- **The quota is used up (exit 3).** The error names the quota, for example
+  `'Running On-Demand G and VT instances'`. Wait for running GPU instances to
+  end (`task list`), or raise the quota as above.
+- **Driver mismatch or no GPU (exit 1).** Setup fails without the ready
+  file, and the job log shows the end of `/var/log/task-runner-setup.log`;
+  or the task's own `nvidia-smi` check fails. The pinned image is broken or
+  doesn't match the instance type. Check the image's release notes, pin a
+  newer build in `tasks.images`, and run **Bot apply**.
+- **Waiting for a slot.** The log says `N of 4 gpu task vCPUs in use`. Wait,
+  or stop stale GPU tasks with `task terminate`.
 
 ## Spot, prices and capacity
 
@@ -281,8 +418,8 @@ tasks end.
 
 | Command | Role | What it does |
 |---|---|---|
-| `task run --script P --ref SHA [--instance-type T] [--market spot\|on-demand] [--max-price-fraction F] [--on-demand-fallback\|--no-on-demand-fallback] [--max-hours N] [--out DIR] [--run-id ID] [--task-id ID] [--pull-request N] -- ARGS...` | `ci-task` | Runs the task, writes `outcome` and `interrupted-at` to `GITHUB_OUTPUT`, and exits with the task's code |
-| `task list` | `ci-plan` or `ci-task` | Lists the project's running task instances (read-only) |
+| `task run --script P --ref SHA [--profile NAME] [--instance-type T] [--market spot\|on-demand] [--max-price-fraction F] [--on-demand-fallback\|--no-on-demand-fallback] [--max-hours N] [--out DIR] [--run-id ID] [--task-id ID] [--pull-request N] -- ARGS...` | `ci-task` | Runs the task, writes `outcome` and `interrupted-at` to `GITHUB_OUTPUT`, and exits with the task's code |
+| `task list` | `ci-plan` or `ci-task` | Lists the project's running task instances and their profiles (read-only) |
 | `task terminate (--instance ID \| --run-id ID [--task-id ID] \| --all)` | `ci-task` | Terminates matching task instances |
 | `task sweep [--dry-run]` | `ci-task` | Terminates task instances past their `MaxLifetimeHours` |
 
@@ -291,6 +428,7 @@ tasks end.
 | What | Name |
 |---|---|
 | Launch template, instance role, profile, security group | `<org>-<project>-task` |
+| Another profile's launch template, instance role and profile | `<org>-<project>-task-<profile>` |
 | Launch role | `<org>-<project>-ci-task` |
 | Log group | `/<org>/<project>/tasks` |
 | Results | `s3://<org>-<project>-tasks/tasks/<role-id>:<instance-id>/` |
@@ -301,6 +439,7 @@ Every task instance and its volume carry the project's six tags (the five from t
 |---|---|
 | `Component` | `task-runner` |
 | `Purpose` | `ci-task` |
+| `Profile` | `cpu`, `gpu`, ... |
 | `Lifecycle` | `spot` or `on-demand` |
 | `Name` | `<org>-<project>-task-<run>-<task>` |
 | `Workflow` | the calling workflow's name |
@@ -309,7 +448,7 @@ Every task instance and its volume carry the project's six tags (the five from t
 | `PullRequest` | the pull request number, when there is one |
 | `MaxLifetimeHours` | the task's hour limit |
 
-Activate `Purpose` and `Lifecycle` as cost allocation tags so cost tools can
+Activate `Purpose`, `Profile` and `Lifecycle` as cost allocation tags so cost tools can
 separate task spend from the bot's, and spot from on demand.
 
 us-east-1 prices on 2026-10-29, rounded. Billing is per second.

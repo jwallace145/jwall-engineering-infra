@@ -16,7 +16,7 @@ terraform:
 
 library:
   source: jwallace145/jwall-engineering/aws
-  version: 0.14.0 # the one module pin the whole fleet shares (sites and bots)
+  version: 0.16.0 # the one module pin the whole fleet shares (sites and bots)
 
 state:
   bucket: jwall-engineering-tfstate
@@ -75,3 +75,8 @@ tasks:
   # https://static.rust-lang.org/dist/channel-rust-stable.toml
   rust_toolchain: 1.99.1
   poll_seconds: 5 # how often `task run` polls a task's output and status
+  # Pinned images of task profiles (a profile's `image`), by Amazon-owned image
+  # name; the bot stack resolves each to its ID. Upgrade by changing the pin.
+  images:
+    # NVIDIA driver and CUDA toolkit installed; ami-0f964da32f9793d2b (2026-10-28).
+    deep-learning-gpu: Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20261027

@@ -122,6 +122,95 @@ class LichessBot(_Model):
 
 
 _INSTANCE_TYPE = re.compile(r"^[a-z0-9]+\.[a-z0-9]+$")
+_KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_PREFIX = re.compile(r"^([a-z0-9][a-z0-9._=-]*/)+$")
+#: The profile today's top-level task-runner fields describe.
+CPU_PROFILE = "cpu"
+
+
+def _check_instance_types(value: tuple[str, ...]) -> tuple[str, ...]:
+    if not value:
+        raise ValueError("must list at least one instance type")
+    for name in value:
+        if not _INSTANCE_TYPE.match(name):
+            raise ValueError(f"{name!r} is not an EC2 instance type like c8a.xlarge")
+        if name.startswith("t"):
+            # Burstable types throttle under sustained load: benchmark noise.
+            raise ValueError(f"{name!r} is burstable; tasks need dedicated cores")
+    return value
+
+
+def _check_prefixes(value: tuple[str, ...]) -> tuple[str, ...]:
+    for prefix in value:
+        if not _PREFIX.match(prefix):
+            raise ValueError(
+                f"{prefix!r} must be a sub-prefix of the dataset's prefix: path segments "
+                "ending in '/' without a leading '/', e.g. selfplay/"
+            )
+    return value
+
+
+class DatasetAccess(_Model):
+    """A profile's access to one dataset: sub-prefixes of the dataset's `prefix`."""
+
+    read: tuple[str, ...] = ()
+    write: tuple[str, ...] = ()
+
+    @field_validator("read", "write")
+    @classmethod
+    def _prefixes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _check_prefixes(value)
+
+    @model_validator(mode="after")
+    def _something(self) -> DatasetAccess:
+        if not self.read and not self.write:
+            raise ValueError("grant at least one read or write sub-prefix")
+        return self
+
+
+class TaskProfile(_Model):
+    """One kind of task instance: its types, image, disk, market, budget and access.
+
+    The `cpu` profile is the task-runner's own top-level fields; every other
+    profile lives under `profiles` and gets its own launch template and
+    instance role, `<org>-<project>-task-<profile>`.
+    """
+
+    instance_types: tuple[str, ...]
+    default_instance_type: str
+    market: Literal["spot", "on-demand"] = "on-demand"
+    max_price_fraction: float = Field(default=0.58, gt=0, le=1)
+    on_demand_fallback: bool = True
+    spot_wait_minutes: int = Field(default=5, ge=1, le=30)
+    max_hours: int = Field(default=6, ge=1, le=6)
+    #: Running vCPUs of this profile's tasks: each profile has its own budget,
+    #: so a GPU task never waits behind CPU tasks, nor they behind it.
+    max_vcpus: int = Field(default=4, ge=1, le=256)
+    slot_wait_minutes: int = Field(default=30, ge=0, le=120)
+    #: A key of `tasks.images` in config.yaml, the pinned image name; none
+    #: uses the bot's pinned Amazon Linux 2023 image, as the cpu profile does.
+    image: str | None = Field(default=None, pattern=_KEBAB.pattern)
+    root_volume_gb: int = Field(default=40, ge=20, le=200)
+    #: Refuse types with more than one thread per core (timed games need a
+    #: whole core). GPU types all run two, so a GPU profile turns it off.
+    whole_cores: bool = True
+    #: Instances have an NVIDIA GPU: setup waits for the driver, and the
+    #: environment block records the GPU, driver and CUDA version.
+    gpu: bool = False
+    #: Read and write access to the project's datasets, by dataset name.
+    datasets: dict[str, DatasetAccess] = {}
+
+    @field_validator("instance_types")
+    @classmethod
+    def _instance_types(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _check_instance_types(value)
+
+    @model_validator(mode="after")
+    def _default_is_allowed(self) -> TaskProfile:
+        if self.default_instance_type not in self.instance_types:
+            chosen = self.default_instance_type
+            raise ValueError(f"default_instance_type {chosen!r} must be one of instance_types")
+        return self
 
 
 class TaskRunner(_Model):
@@ -150,18 +239,22 @@ class TaskRunner(_Model):
     slot_wait_minutes: int = Field(default=30, ge=0, le=120)
     results_days: int = Field(default=7, ge=1, le=30)
     log_retention_days: RetentionDays = 14
+    #: Further profiles, such as `gpu`, by name. The fields above are `cpu`.
+    profiles: dict[str, TaskProfile] = {}
 
     @field_validator("instance_types")
     @classmethod
     def _instance_types(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if not value:
-            raise ValueError("must list at least one instance type")
+        return _check_instance_types(value)
+
+    @field_validator("profiles")
+    @classmethod
+    def _profile_names(cls, value: dict[str, TaskProfile]) -> dict[str, TaskProfile]:
         for name in value:
-            if not _INSTANCE_TYPE.match(name):
-                raise ValueError(f"{name!r} is not an EC2 instance type like c8a.xlarge")
-            if name.startswith("t"):
-                # Burstable types throttle under sustained load: benchmark noise.
-                raise ValueError(f"{name!r} is burstable; tasks need dedicated cores")
+            if name == CPU_PROFILE:
+                raise ValueError("cpu is the task-runner's own fields; don't list it in profiles")
+            if not _KEBAB.match(name) or len(name) > 16:
+                raise ValueError(f"profile {name!r} must be kebab-case, at most 16 characters")
         return value
 
     @model_validator(mode="after")
@@ -171,9 +264,37 @@ class TaskRunner(_Model):
             raise ValueError(f"default_instance_type {chosen!r} must be one of instance_types")
         return self
 
+    @property
+    def profile_names(self) -> tuple[str, ...]:
+        return (CPU_PROFILE, *self.profiles)
 
-_KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
-_PREFIX = re.compile(r"^([a-z0-9][a-z0-9._=-]*/)+$")
+    def profile(self, name: str = CPU_PROFILE) -> TaskProfile:
+        """The named profile; `cpu` is built from the top-level fields."""
+        if name == CPU_PROFILE:
+            return TaskProfile(
+                instance_types=self.instance_types,
+                default_instance_type=self.default_instance_type,
+                market=self.market,
+                max_price_fraction=self.max_price_fraction,
+                on_demand_fallback=self.on_demand_fallback,
+                spot_wait_minutes=self.spot_wait_minutes,
+                max_hours=self.max_hours,
+                max_vcpus=self.max_vcpus,
+                slot_wait_minutes=self.slot_wait_minutes,
+            )
+        if name not in self.profiles:
+            raise KeyError(name)
+        return self.profiles[name]
+
+    @property
+    def all_instance_types(self) -> tuple[str, ...]:
+        """Every type any profile may launch: the launch role's allow-list."""
+        types = list(self.instance_types)
+        for profile in self.profiles.values():
+            types += [t for t in profile.instance_types if t not in types]
+        return tuple(types)
+
+
 _ROLE_ARN = re.compile(r"^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$")
 #: Names whose buckets the project already has: <Organization>-<project>-<name>.
 _RESERVED_DATASET_NAMES = ("records", "tasks")

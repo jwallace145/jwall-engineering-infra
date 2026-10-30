@@ -25,7 +25,7 @@ import typer
 
 from . import aws, github, image, releases, report, rollout, stack, sync, tasks
 from . import bot as botlib
-from .components import TaskRunner
+from .components import CPU_PROFILE, TaskRunner
 from .errors import ConfigError, PreflightError, RunError, SitesError
 from .log import annotate_error, artifacts_dir, phase, setup_logging
 from .project import Project, Role
@@ -945,11 +945,15 @@ def task_run(
     args: Annotated[
         list[str] | None, typer.Argument(help="Arguments for the script, after --.")
     ] = None,
+    profile_name: Annotated[
+        str,
+        typer.Option("--profile", help="The task profile: cpu, or one of task-runner.profiles."),
+    ] = CPU_PROFILE,
     instance_type: Annotated[
-        str | None, typer.Option("--instance-type", help="One of task-runner.instance_types.")
+        str | None, typer.Option("--instance-type", help="One of the profile's instance_types.")
     ] = None,
     max_hours: Annotated[
-        int | None, typer.Option("--max-hours", help="Hard limit; at most task-runner.max_hours.")
+        int | None, typer.Option("--max-hours", help="Hard limit; at most the profile's max_hours.")
     ] = None,
     out: Annotated[Path, typer.Option("--out", help="Where the task's outputs are copied.")] = Path(
         "out"
@@ -959,7 +963,8 @@ def task_run(
     ] = None,
     task_id: Annotated[str | None, typer.Option("--task-id", help="Default: GITHUB_JOB.")] = None,
     market: Annotated[
-        str | None, typer.Option("--market", help="spot or on-demand; default task-runner.market.")
+        str | None,
+        typer.Option("--market", help="spot or on-demand; default the profile's market."),
     ] = None,
     max_price_fraction: Annotated[
         float | None,
@@ -992,19 +997,27 @@ def task_run(
         github.write_output("interrupted-at", "")
         project = _bot_project(run)
         runner = _task_runner(project)
-        chosen = instance_type or runner.default_instance_type
-        if chosen not in runner.instance_types:
-            allowed = ", ".join(runner.instance_types)
-            raise ConfigError(f"--instance-type {chosen} is not allowed; use one of {allowed}")
-        hours = max_hours if max_hours is not None else runner.max_hours
-        if not 1 <= hours <= runner.max_hours:
+        if profile_name not in runner.profile_names:
+            known = ", ".join(runner.profile_names)
+            raise ConfigError(f"--profile {profile_name} is not a task profile; use one of {known}")
+        profile = runner.profile(profile_name)
+        chosen = instance_type or profile.default_instance_type
+        if chosen not in profile.instance_types:
+            allowed = ", ".join(profile.instance_types)
             raise ConfigError(
-                f"--max-hours must be 1 to task-runner.max_hours ({runner.max_hours})"
+                f"--instance-type {chosen} is not allowed in the {profile_name} profile; "
+                f"use one of {allowed}"
             )
-        chosen_market = market or runner.market
+        hours = max_hours if max_hours is not None else profile.max_hours
+        if not 1 <= hours <= profile.max_hours:
+            raise ConfigError(
+                f"--max-hours must be 1 to the {profile_name} profile's max_hours "
+                f"({profile.max_hours})"
+            )
+        chosen_market = market or profile.market
         if chosen_market not in ("spot", "on-demand"):
             raise ConfigError(f"--market must be spot or on-demand, got {chosen_market}")
-        fraction = runner.max_price_fraction if max_price_fraction is None else max_price_fraction
+        fraction = profile.max_price_fraction if max_price_fraction is None else max_price_fraction
         if not 0 < fraction <= 1:
             raise ConfigError(f"--max-price-fraction must be above 0 and at most 1, got {fraction}")
         if pull_request is not None and not pull_request.isdigit():
@@ -1023,15 +1036,18 @@ def task_run(
             market=chosen_market,
             max_price_fraction=fraction,
             on_demand_fallback=(
-                runner.on_demand_fallback if on_demand_fallback is None else on_demand_fallback
+                profile.on_demand_fallback if on_demand_fallback is None else on_demand_fallback
             ),
-            spot_wait_minutes=runner.spot_wait_minutes,
+            spot_wait_minutes=profile.spot_wait_minutes,
             pull_request=pull_request,
+            profile=profile_name,
+            whole_cores=profile.whole_cores,
+            gpu=profile.gpu,
         )
         session = _bot_session(run, roles=["task"])
         run.logger.info(
-            "task %s/%s: %s on %s %s (at most %dh)",
-            spec.run_id, spec.task_id, script, chosen, chosen_market, hours,
+            "task %s/%s: %s on %s %s, %s profile (at most %dh)",
+            spec.run_id, spec.task_id, script, chosen, chosen_market, profile_name, hours,
         )  # fmt: skip
         code = tasks.run_task(
             session,
@@ -1050,11 +1066,14 @@ def task_run(
 def _render_tasks(instances: list[tasks.TaskInstance]) -> str:
     if not instances:
         return "no task instances running"
-    lines = [f"{'instance':<21} {'type':<13} {'state':<9} {'run':<14} {'task':<14} launched"]
+    lines = [
+        f"{'instance':<21} {'profile':<8} {'type':<13} {'state':<9} {'run':<14} {'task':<14} "
+        "launched"
+    ]
     for t in instances:
         lines.append(
-            f"{t.id:<21} {t.type:<13} {t.state:<9} {t.run_id or '-':<14} {t.task_id or '-':<14} "
-            f"{t.launched_at:%Y-%m-%d %H:%M}Z"
+            f"{t.id:<21} {t.profile:<8} {t.type:<13} {t.state:<9} {t.run_id or '-':<14} "
+            f"{t.task_id or '-':<14} {t.launched_at:%Y-%m-%d %H:%M}Z"
         )
     return "\n".join(lines)
 

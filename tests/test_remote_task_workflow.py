@@ -29,11 +29,12 @@ def _index(predicate: Any) -> int:
 def test_it_is_reusable_with_the_planned_inputs() -> None:
     call = _workflow()[True]["workflow_call"]
     assert set(call["inputs"]) == {
-        "project", "script", "args", "instance-type", "market", "max-hours", "task-id",
-        "artifact", "artifact-path", "debug",
+        "project", "script", "args", "profile", "instance-type", "market", "max-hours",
+        "task-id", "artifact", "artifact-path", "debug",
     }  # fmt: skip
     assert call["inputs"]["project"]["required"] and call["inputs"]["script"]["required"]
     assert call["inputs"]["args"]["default"] == "[]"
+    assert call["inputs"]["profile"]["default"] == "cpu"
     assert call["inputs"]["artifact-path"]["default"] == "out"
 
 

@@ -8,7 +8,7 @@
 #   jwall-engineering-<key>-ci-apply    trusted for environment:prod on THIS repo tfstate/write, container/read, container/manage, task/read, task/manage
 #                                                                                 (+ dataset/read, dataset/manage with datasets)
 #   jwall-engineering-<key>-ci-release  trusted for the bot repo's v* tags only   container/release
-#   jwall-engineering-<key>-ci-task     trusted for the bot repo's pull_request   task/launch
+#   jwall-engineering-<key>-ci-task     trusted for the bot repo's pull_request   task/launch, for every task profile
 #                                       and main only (never forks)
 #
 # The bot's infrastructure is planned and applied from this repository (the
@@ -28,9 +28,17 @@ locals {
   }
 
   # Bots with a task-runner component, and the instance types their task
-  # launch role may start: the project file's task-runner.instance_types.
+  # launch role may start: the project file's task-runner.instance_types,
+  # then each profile's.
   bot_task_types = {
-    rusty-chess = ["c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge"]
+    rusty-chess = ["c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge", "g6.xlarge", "g6.2xlarge", "g6e.xlarge"]
+  }
+
+  # Their task profiles: cpu (the task-runner's own fields), then the
+  # project file's task-runner.profiles. The launch role may pass each
+  # profile's instance role, <org>-<key>-task[-<profile>].
+  bot_task_profiles = {
+    rusty-chess = ["cpu", "gpu"]
   }
 
   # Bots with dataset components, and their buckets: the project file's
@@ -51,7 +59,7 @@ locals {
 module "bot_ci_plan" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-plan-role"
-  version  = "0.14.0"
+  version  = "0.16.0"
 
   project           = each.key
   repository        = local.context.repository
@@ -73,7 +81,7 @@ module "bot_ci_plan" {
 module "bot_ci_apply" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-apply-role"
-  version  = "0.14.0"
+  version  = "0.16.0"
 
   project           = each.key
   repository        = local.context.repository
@@ -96,7 +104,7 @@ module "bot_ci_apply" {
 module "bot_ci_release" {
   for_each = local.bots
   source   = "jwallace145/jwall-engineering/aws//modules/ci-release-role"
-  version  = "0.14.0"
+  version  = "0.16.0"
 
   project           = each.key
   repository        = each.value.repository
@@ -114,7 +122,7 @@ module "bot_ci_release" {
 module "bot_ci_task" {
   for_each = local.bot_task_types
   source   = "jwallace145/jwall-engineering/aws//modules/ci-task-role"
-  version  = "0.14.0"
+  version  = "0.16.0"
 
   project           = each.key
   repository        = local.bots[each.key].repository
@@ -125,6 +133,6 @@ module "bot_ci_task" {
   policies = ["task/launch"]
 
   policy_inputs = {
-    task = { instance_types = each.value }
+    task = { instance_types = each.value, profiles = local.bot_task_profiles[each.key] }
   }
 }

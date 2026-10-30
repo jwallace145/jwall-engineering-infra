@@ -159,6 +159,39 @@ variable "task_rust_toolchain" {
   type        = string
 }
 
+variable "task_profiles" {
+  description = "The task-runner's profiles beyond `cpu` (task-runner.profiles): each gets its own launch template and instance role, `<Organization>-<project>-task-<name>`, sharing the cpu profile's log group, security group and results bucket. `ami_name` is the pinned image name (tasks.images in config.yaml), null for the bot's image; `datasets` grants the profile's instances read and write sub-prefixes of datasets."
+  type = list(object({
+    name                  = string
+    default_instance_type = string
+    max_hours             = number
+    ami_name              = string
+    root_volume_gb        = number
+    gpu                   = bool
+    datasets = list(object({
+      name  = string
+      read  = list(string)
+      write = list(string)
+    }))
+  }))
+  default = []
+
+  validation {
+    condition     = var.task_runner_enabled || length(var.task_profiles) == 0
+    error_message = "task profiles need the task-runner component."
+  }
+
+  validation {
+    condition     = alltrue([for p in var.task_profiles : can(regex("^[a-z0-9]+(-[a-z0-9]+)*$", p.name)) && p.name != "cpu"])
+    error_message = "task profile names must be kebab-case and not cpu, which is the task-runner itself."
+  }
+
+  validation {
+    condition     = alltrue([for p in var.task_profiles : alltrue([for d in p.datasets : contains([for x in var.datasets : x.name], d.name)])])
+    error_message = "a task profile may only be granted the project's own datasets."
+  }
+}
+
 variable "datasets" {
   description = "The project's dataset components: kept-forever, append-only buckets named `<Organization>-<project>-<name>`. `writers` lists the components whose roles may add objects under `prefix` (`task-runner`: the task instances); `readers` lists role ARNs that may read under it."
   type = list(object({

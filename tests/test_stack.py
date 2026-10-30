@@ -115,6 +115,19 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
         "task_results_days": 7,
         "task_log_retention_days": 14,
         "task_rust_toolchain": settings.tasks.rust_toolchain,
+        "task_profiles": [
+            {
+                "name": "gpu",
+                "default_instance_type": "g6.xlarge",
+                "max_hours": 6,
+                "ami_name": (
+                    "Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20261027"
+                ),
+                "root_volume_gb": 200,
+                "gpu": True,
+                "datasets": [{"name": "nnue", "read": ["selfplay/"], "write": ["nets/"]}],
+            }
+        ],
         "datasets": [
             {
                 "name": "nnue",
