@@ -490,8 +490,10 @@ Every task instance and its volume carry the project's six tags (the five from t
 | `PullRequest` | the pull request number, when there is one |
 | `MaxLifetimeHours` | the task's hour limit |
 
-Activate `Purpose`, `Profile` and `Lifecycle` as cost allocation tags so cost tools can
-separate task spend from the bot's, and spot from on demand.
+`Project`, `Component`, `Purpose`, `Profile`, `Lifecycle`, `Workflow`, `RunId`
+and `TaskId` are active cost allocation tags, so `cost report --project <name>`
+splits task spend by workflow (training, data generation, SPRT, ...); see
+[costs](costs.md).
 
 us-east-1 prices on 2026-10-29, rounded. Billing is per second.
 

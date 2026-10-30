@@ -46,6 +46,7 @@ reusable workflows this repository publishes. The design is in
 | `task run --script P --ref SHA [--profile NAME] [--instance-type T] [--market spot\|on-demand] [--max-hours N] [--out DIR] -- ARGS...` | `ci-task` | Bot projects with a `task-runner`: run one script on a fresh instance (spot under a price cap by default, on demand only as a launch fallback), stream it, copy its outputs, always terminate; exits with the script's code, or 75 on a spot interruption |
 | `task list` | `ci-plan` or `ci-task` | The project's running task instances (read-only) |
 | `task terminate (--instance ID \| --run-id ID [--task-id ID] \| --all)`, `task sweep [--dry-run]` | `ci-task` | Terminate task instances; sweep those past their lifetime (by hand: there is no scheduled sweeper) |
+| `cost report [--project NAME] [--months N]` | the owner's shell | Monthly spend from Cost Explorer: one project by component (task spend split by workflow), or every project plus the untagged spend by service ([docs/costs.md](docs/costs.md)) |
 
 Every command checks that the credentials are the role it expects, that the
 built site and bucket exist, and that the Terraform in the image is the
@@ -252,7 +253,7 @@ Every AWS resource this tool manages carries the same six tags, through the prov
 | `ManagedBy` | `jwall-engineering-infra` | this tool, which provisions and changes it |
 | `Owner` | `jwallace145` | the person responsible for it |
 
-Project files state the first five; the CLI cross-checks `Project`, `Repository`, `Environment` and `Organization` against the rest of the file and `config.yaml`, and adds `ManagedBy` itself. The foundation stack gets the same set from the library's `context` module. Components add `Component`, `Purpose` and `Lifecycle` where they apply.
+Project files state the first five; the CLI cross-checks `Project`, `Repository`, `Environment` and `Organization` against the rest of the file and `config.yaml`, and adds `ManagedBy` itself. The foundation stack gets the same set from the library's `context` module. Components add `Component`, `Purpose` and `Lifecycle` where they apply. These tags are the cost allocation tags `cost report` groups by; [docs/costs.md](docs/costs.md) lists which must be active.
 
 ## State bucket and key convention
 
