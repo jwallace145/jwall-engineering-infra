@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.14.0...v0.15.0) (2026-10-30)
+
+
+### Features
+
+* add task profiles and run GPU tasks on dedicated instances ([#78](https://github.com/jwallace145/jwall-engineering-infra/issues/78)) ([f281f69](https://github.com/jwallace145/jwall-engineering-infra/commit/f281f691cbd8d51e1de97b72c8429f41cf74e8fd))
+* tag resources ManagedBy=jwall-engineering-infra ([#76](https://github.com/jwallace145/jwall-engineering-infra/issues/76)) ([9b4763e](https://github.com/jwallace145/jwall-engineering-infra/commit/9b4763ee26be37b9f0a80580b9a328a303cda1da))
+
 ## [0.14.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.13.0...v0.14.0) (2026-10-30)
 
 
