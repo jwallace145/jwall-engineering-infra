@@ -157,18 +157,42 @@ def test_task_role_is_the_launch_role_for_the_bot_repository() -> None:
     assert "repository        = local.bots[each.key].repository" in block
     assert "repository_id     = local.bots[each.key].repository_id" in block
     assert _policies(block) == ["task/launch"]
-    assert "instance_types = each.value" in block
+    assert "instance_types = each.value, profiles = local.bot_task_profiles[each.key]" in block
     # No subjects override: the module's default trusts pull_request and main only.
     assert "subjects" not in block
 
 
-def test_task_instance_types_match_the_project_file() -> None:
+def _task_runner_fixture() -> dict[str, Any]:
     import yaml
 
     fixture = yaml.safe_load((FIXTURES / "bots" / "rusty-chess.yaml").read_text())
-    runner = next(c for c in fixture["components"] if c["kind"] == "task-runner")
-    assert _task_types() == {"rusty-chess": runner["instance_types"]}
+    runner: dict[str, Any] = next(c for c in fixture["components"] if c["kind"] == "task-runner")
+    return runner
+
+
+def test_task_instance_types_match_the_project_file() -> None:
+    runner = _task_runner_fixture()
+    expected = list(runner["instance_types"])
+    for profile in runner.get("profiles", {}).values():
+        expected += [t for t in profile["instance_types"] if t not in expected]
+    assert _task_types() == {"rusty-chess": expected}
     assert set(_task_types()) <= set(registry())
+
+
+def _task_profiles() -> dict[str, list[str]]:
+    text = BOTS_TF.read_text()
+    match = re.search(r"bot_task_profiles\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
+    assert match, "local.bot_task_profiles not found"
+    return {
+        key: re.findall(r'"([^"]+)"', names)
+        for key, names in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
+    }
+
+
+def test_task_profiles_match_the_project_file() -> None:
+    runner = _task_runner_fixture()
+    assert _task_profiles() == {"rusty-chess": ["cpu", *runner.get("profiles", {})]}
+    assert set(_task_profiles()) == set(_task_types())
 
 
 def test_bots_output_names_the_task_role() -> None:

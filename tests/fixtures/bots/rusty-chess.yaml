@@ -48,6 +48,19 @@ components:
     slot_wait_minutes: 30           # how long `task run` waits for a slot before exiting 3
     results_days: 7                 # task outputs expire from S3 after this
     log_retention_days: 14
+    profiles:                       # optional: more kinds of task instance; the fields above are `cpu`
+      gpu:                          # `task run --profile gpu`: <org>-<project>-task-gpu
+        instance_types: [g6.xlarge, g6.2xlarge, g6e.xlarge]  # NVIDIA L4, L4, L40S
+        default_instance_type: g6.xlarge  # 4 vCPUs: the account's 5-vCPU G and VT quota fits one
+        market: on-demand           # G and VT spot quota is 0
+        max_hours: 6
+        max_vcpus: 4                # this profile's own budget; it never waits on cpu tasks
+        image: deep-learning-gpu    # tasks.images in config.yaml: NVIDIA driver and CUDA
+        root_volume_gb: 200         # gp3; SCRATCH_DIR is on it
+        whole_cores: false          # G types run two threads per core
+        gpu: true                   # wait for nvidia-smi; record GPU, driver and CUDA
+        datasets:
+          nnue: { read: [selfplay/], write: [nets/] }  # data/selfplay/* in, data/nets/* out
 
   - kind: dataset                   # optional: a kept-forever, append-only S3 bucket (docs/datasets.md)
     name: nnue

@@ -21,7 +21,7 @@ from moto import mock_aws
 from jwall_engineering_sites import tasks
 from jwall_engineering_sites.errors import ConfigError, PreflightError, RunError
 from jwall_engineering_sites.project import Project
-from tests.test_tasks_launch import _spec
+from tests.test_tasks_launch import _gpu_spec, _spec
 
 LOG = logging.getLogger("test")
 
@@ -42,6 +42,23 @@ def _script(bot: Project, **overrides: Any) -> str:
 
 
 # --- the script --------------------------------------------------------------
+
+
+def test_every_task_gets_a_scratch_dir_and_names_its_profile(bot: Project) -> None:
+    script = _script(bot)
+    assert "mkdir -p /work/repo /work/out /work/scratch" in script
+    assert "SCRATCH_DIR=/work/scratch setsid" in script
+    assert 'echo "profile=cpu"' in script
+    assert "nvidia-smi" not in script
+
+
+def test_a_gpu_task_checks_the_driver_before_it_runs(bot: Project) -> None:
+    script = _gpu_spec(bot)
+    text = tasks.task_script(script, "jwall-engineering-rusty-chess-tasks", "tasks/")
+    assert 'echo "profile=gpu"' in text
+    assert "/usr/local/cuda/bin" in text
+    check = text.index("if ! nvidia-smi; then")
+    assert text.index("cat /etc/task-runner/ready") < check < text.index("git init")
 
 
 def test_commands_carry_the_script_encoded(bot: Project) -> None:
@@ -127,7 +144,7 @@ def test_script_steps_in_order(bot: Project) -> None:
         " 0123456789abcdef0123456789abcdef01234567",
         "git -C /work/repo checkout --quiet FETCH_HEAD",
         "aws sts get-caller-identity --query UserId --output text",
-        "OUT_DIR=$out setsid -w bash scripts/sprt.sh --games 200 &",
+        "OUT_DIR=$out SCRATCH_DIR=/work/scratch setsid -w bash scripts/sprt.sh --games 200 &",
         'timeout 50 aws s3 cp --recursive --only-show-errors --region us-east-1 "$out" "$dest"',
         'exit "$status"',
     ]
@@ -577,6 +594,35 @@ def test_run_task_refuses_an_smt_type(
     rec = Recorder(monkeypatch, instance_types_info={"c8a.16xlarge": (64, 2)})
     assert _run(bot, tmp_path) == 2
     assert "launch" not in rec.calls
+
+
+def test_run_task_gpu_profile_uses_its_template_and_budget(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def wait_for_slot(ec2: Any, spec: Any, vcpus: int, max_vcpus: int, *rest: Any) -> None:
+        seen["budget"] = (vcpus, max_vcpus)
+
+    def launch(ec2: Any, spec: Any, template: str, *rest: Any) -> tasks.Launched:
+        seen["template"] = template
+        return tasks.Launched("i-1", "us-east-1a", "ami-0f964da32f9793d2b", "on-demand")
+
+    rec = Recorder(
+        monkeypatch, instance_types_info={"g6.xlarge": (4, 2)}, wait_for_slot=wait_for_slot,
+        launch=launch,
+    )  # fmt: skip
+    session: Any = FakeSession()
+    code = tasks.run_task(session, _gpu_spec(bot), tmp_path / "out", LOG, write=lambda _: None)
+    assert code == 0
+    assert seen == {"budget": (4, 4), "template": "jwall-engineering-rusty-chess-task-gpu"}
+    assert rec.terminated == ["i-1"]
+
+
+def test_run_task_refuses_an_unknown_profile(bot: Project, tmp_path: Path) -> None:
+    session: Any = FakeSession()
+    spec = _spec(bot, profile="tpu")
+    assert tasks.run_task(session, spec, tmp_path, LOG, write=lambda _: None) == 2
 
 
 def test_run_task_agent_timeout_terminates(

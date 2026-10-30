@@ -77,6 +77,33 @@ def test_run_explicit_options(captured: dict[str, Any]) -> None:
     assert captured["out_dir"] == Path("results")
 
 
+def test_run_gpu_profile_takes_its_defaults(captured: dict[str, Any]) -> None:
+    result = _run("--profile", "gpu")
+    assert result.exit_code == 0, result.output
+    spec: tasks.TaskSpec = captured["spec"]
+    assert (spec.profile, spec.instance_type, spec.market) == ("gpu", "g6.xlarge", "on-demand")
+    assert (spec.whole_cores, spec.gpu, spec.max_hours) == (False, True, 6)
+
+
+def test_run_cpu_is_the_default_profile(captured: dict[str, Any]) -> None:
+    assert _run().exit_code == 0
+    spec: tasks.TaskSpec = captured["spec"]
+    assert (spec.profile, spec.whole_cores, spec.gpu, spec.market) == ("cpu", True, False, "spot")
+
+
+def test_run_refuses_an_unknown_profile(captured: dict[str, Any]) -> None:
+    result = _run("--profile", "tpu")
+    assert result.exit_code == 2
+    assert "not a task profile; use one of cpu, gpu" in result.output
+    assert "spec" not in captured
+
+
+def test_run_refuses_a_cpu_type_in_the_gpu_profile(captured: dict[str, Any]) -> None:
+    result = _run("--profile", "gpu", "--instance-type", "c8a.16xlarge")
+    assert result.exit_code == 2
+    assert "not allowed in the gpu profile" in result.output
+
+
 def test_run_refuses_a_type_outside_the_allow_list(captured: dict[str, Any]) -> None:
     result = _run("--instance-type", "c8a.48xlarge")
     assert result.exit_code == 2

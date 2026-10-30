@@ -52,3 +52,8 @@ output "dataset_uris" {
   description = "Where each dataset's data lives, by name: s3://<bucket>/<prefix>."
   value       = { for name, d in module.datasets : name => d.uri }
 }
+
+output "task_profile_launch_templates" {
+  description = "Launch template of each task profile beyond cpu, by profile name."
+  value       = { for name, p in module.task_profiles : name => p.launch_template_name }
+}

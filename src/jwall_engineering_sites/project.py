@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from .components import ContainerImage, Dataset, LichessBot, TaskRunner
+from .components import CPU_PROFILE, ContainerImage, Dataset, LichessBot, TaskRunner
 from .errors import ConfigError
 from .settings import Settings
 from .site import ENVIRONMENT, Site, SiteConfig
@@ -66,6 +66,13 @@ class Project(BaseModel):
                 )
             elif len(bucket) > 63:
                 problems.append(f"dataset {dataset.name}: bucket {bucket!r} exceeds 63 characters")
+        runner = config.task_runner
+        for name, profile in (runner.profiles if runner else {}).items():
+            if profile.image is not None and profile.image not in settings.tasks.images:
+                problems.append(
+                    f"task-runner profile {name}: image {profile.image!r} is not pinned in "
+                    "config.yaml tasks.images"
+                )
         if problems:
             raise ConfigError("; ".join(problems))
         return cls(
@@ -137,6 +144,11 @@ class Project(BaseModel):
     @property
     def task_template(self) -> str:
         return self.task_name
+
+    def profile_task_name(self, profile: str) -> str:
+        """A profile's launch template, instance role and profile: `cpu` is
+        `task_name`, every other `<task_name>-<profile>`."""
+        return self.task_name if profile == CPU_PROFILE else f"{self.task_name}-{profile}"
 
     @property
     def task_log_group(self) -> str:

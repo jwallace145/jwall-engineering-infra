@@ -127,6 +127,15 @@ class SiteConfig(_Model):
                 raise ValueError(
                     "a dataset with writers: [task-runner] needs a task-runner component"
                 )
+            runner = self.task_runner
+            known = {d.name for d in self.datasets}
+            for name, profile in (runner.profiles if runner else {}).items():
+                unknown = sorted(set(profile.datasets) - known)
+                if unknown:
+                    raise ValueError(
+                        f"task-runner profile {name}: datasets {', '.join(unknown)} are not "
+                        "dataset components of this file"
+                    )
         return self
 
     @property

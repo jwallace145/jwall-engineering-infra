@@ -108,6 +108,7 @@ def test_task_tags(bot: Project) -> None:
         **bot.config.tags,
         "Component": "task-runner",
         "Purpose": "ci-task",
+        "Profile": "cpu",
         "Name": "jwall-engineering-rusty-chess-task-123-1-sprt-0",
         "Workflow": "SPRT",
         "RunId": "123-1",
@@ -116,6 +117,11 @@ def test_task_tags(bot: Project) -> None:
         "Lifecycle": "spot",
         "PullRequest": "84",
     }
+
+
+def test_task_tags_carry_the_profile(bot: Project) -> None:
+    tags = tasks.task_tags(_spec(bot, profile="gpu"), "on-demand")
+    assert tags["Profile"] == "gpu" and tags["Purpose"] == "ci-task"
 
 
 def test_task_tags_without_a_pull_request(bot: Project) -> None:
@@ -211,9 +217,25 @@ def test_no_fallback_means_no_capacity(bot: Project) -> None:
 def test_the_account_vcpu_limit_is_no_capacity(bot: Project) -> None:
     """An account-wide quota: trying the next zone cannot help."""
     ec2 = FakeEC2({("subnet-a", "*"): "VcpuLimitExceeded"})
-    with pytest.raises(tasks.NoCapacity, match="vCPU limit"):
+    with pytest.raises(tasks.NoCapacity, match=r"'Running On-Demand Standard .*Service Quotas"):
         _launch(ec2, _spec(bot, market="on-demand"))
     assert len(ec2.calls) == 1
+
+
+def test_the_gpu_quota_is_named_with_how_to_raise_it(bot: Project) -> None:
+    """Acceptance 5: an exhausted G and VT quota fails at launch, naming it."""
+    ec2 = FakeEC2({("subnet-a", "*"): "VcpuLimitExceeded"})
+    with pytest.raises(tasks.NoCapacity) as error:
+        _launch(ec2, _spec(bot, instance_type="g6.xlarge", market="on-demand"))
+    message = str(error.value)
+    assert "'Running On-Demand G and VT instances'" in message
+    assert "Service Quotas console (Amazon EC2, us-east-1" in message
+    assert error.value.exit_code == 3
+
+
+def test_the_spot_quota_message_names_the_spot_quota() -> None:
+    message = tasks.quota_message("g6e.xlarge", "spot", "us-east-1")
+    assert "'All G and VT Spot Instance Requests'" in message
 
 
 def test_no_capacity_anywhere(bot: Project) -> None:
@@ -320,7 +342,7 @@ def test_price_plan_for_on_demand_skips_spot_lookups(bot: Project) -> None:
 class FakeTypesEC2:
     def describe_instance_types(self, InstanceTypes: list[str]) -> dict[str, Any]:  # noqa: N803
         table = {"c8a.16xlarge": (64, 1), "c8a.8xlarge": (32, 1), "c8a.xlarge": (4, 1),
-                 "c7i.16xlarge": (64, 2)}  # fmt: skip
+                 "c7i.16xlarge": (64, 2), "g6.xlarge": (4, 2)}  # fmt: skip
         return {"InstanceTypes": [
             {"InstanceType": t, "VCpuInfo": {"DefaultVCpus": table[t][0],
                                               "DefaultThreadsPerCore": table[t][1]}}
@@ -334,9 +356,58 @@ def test_instance_types_info() -> None:
 
 
 def _task(
-    i: int, type_: str = "c8a.16xlarge", run: str = "r", task: str = "t"
+    i: int, type_: str = "c8a.16xlarge", run: str = "r", task: str = "t", profile: str = "cpu"
 ) -> tasks.TaskInstance:
-    return tasks.TaskInstance(f"i-{i}", type_, "running", run, task, NOW, 6)
+    return tasks.TaskInstance(f"i-{i}", type_, "running", run, task, NOW, 6, profile)
+
+
+def _gpu_spec(bot: Project, **overrides: Any) -> tasks.TaskSpec:
+    values: dict[str, Any] = {"instance_type": "g6.xlarge", "market": "on-demand",
+                              "profile": "gpu", "whole_cores": False, "gpu": True}  # fmt: skip
+    values.update(overrides)
+    return _spec(bot, **values)
+
+
+def test_a_gpu_task_does_not_wait_on_cpu_tasks(
+    bot: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance 4: a full cpu budget leaves the gpu budget untouched."""
+    monkeypatch.setattr(tasks, "running_tasks", lambda ec2, p: [_task(i) for i in range(3)])
+    clock = Clock()
+    tasks.wait_for_slot(_any(FakeTypesEC2()), _gpu_spec(bot), 4, 4, 1800, LOG, clock.sleep, clock)
+    assert clock.sleeps == []
+
+
+def test_a_cpu_task_does_not_wait_on_gpu_tasks(
+    bot: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = [_task(1, "g6.xlarge", profile="gpu")]
+    monkeypatch.setattr(tasks, "running_tasks", lambda ec2, p: running)
+    clock = Clock()
+    tasks.wait_for_slot(_any(FakeTypesEC2()), _spec(bot), 64, 64, 1800, LOG, clock.sleep, clock)
+    assert clock.sleeps == []
+
+
+def test_gpu_tasks_share_the_gpu_budget(bot: Project, monkeypatch: pytest.MonkeyPatch) -> None:
+    running = [_task(1, "g6.xlarge", profile="gpu")]
+    monkeypatch.setattr(tasks, "running_tasks", lambda ec2, p: running)
+    clock = Clock()
+    with pytest.raises(PreflightError, match="4 of 4 gpu task vCPUs in use"):
+        tasks.wait_for_slot(_any(FakeTypesEC2()), _gpu_spec(bot), 4, 4, 60, LOG, clock.sleep, clock)
+
+
+def test_a_duplicate_task_id_is_refused_across_profiles(
+    bot: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = [_task(1, run="123-1", task="sprt-0")]
+    monkeypatch.setattr(tasks, "running_tasks", lambda ec2, p: running)
+    clock = Clock()
+    with pytest.raises(PreflightError, match="already running"):
+        tasks.wait_for_slot(_any(FakeTypesEC2()), _gpu_spec(bot), 4, 4, 0, LOG, clock.sleep, clock)
+
+
+def test_untagged_instances_count_as_cpu() -> None:
+    assert tasks.TaskInstance("i-1", "c8a.xlarge", "running", None, None, NOW, 6).profile == "cpu"
 
 
 def test_slot_free_returns_at_once(bot: Project, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,7 +428,7 @@ def test_slot_waits_until_one_frees(
             _any(FakeTypesEC2()), _spec(bot), 64, 192, 1800, LOG, clock.sleep, clock
         )
     assert len(clock.sleeps) == 2
-    assert "192 of 192 task vCPUs in use" in caplog.text
+    assert "192 of 192 cpu task vCPUs in use" in caplog.text
 
 
 def test_slot_wait_times_out(bot: Project, monkeypatch: pytest.MonkeyPatch) -> None:

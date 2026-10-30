@@ -299,6 +299,9 @@ def test_dataset_loads(bot: Project) -> None:
 def test_project_without_dataset_loads(tmp_path: Path, settings: Settings) -> None:
     raw = _raw()
     raw["components"] = [c for c in raw["components"] if c["kind"] != "dataset"]
+    for component in raw["components"]:
+        for profile in component.get("profiles", {}).values():
+            profile.pop("datasets", None)
     assert _load(tmp_path, raw, settings).datasets == ()
 
 
@@ -382,4 +385,103 @@ def test_two_datasets_with_one_name_fail(tmp_path: Path, settings: Settings) -> 
     raw = _raw()
     raw["components"].append(dict(_dataset(raw)))
     with pytest.raises(ConfigError, match="dataset names must be unique"):
+        _load(tmp_path, raw, settings)
+
+
+# -- task profiles ----------------------------------------------------------------
+
+
+def _gpu(raw: dict[str, Any]) -> dict[str, Any]:
+    profile: dict[str, Any] = _task_runner(raw)["profiles"]["gpu"]
+    return profile
+
+
+def test_the_gpu_profile_loads(bot: Project) -> None:
+    runner = bot.task_runner
+    assert runner is not None
+    assert runner.profile_names == ("cpu", "gpu")
+    gpu = runner.profile("gpu")
+    assert (gpu.default_instance_type, gpu.market, gpu.max_vcpus) == ("g6.xlarge", "on-demand", 4)
+    assert (gpu.image, gpu.root_volume_gb, gpu.whole_cores, gpu.gpu) == (
+        "deep-learning-gpu", 200, False, True,
+    )  # fmt: skip
+    assert gpu.datasets["nnue"].read == ("selfplay/",)
+    assert gpu.datasets["nnue"].write == ("nets/",)
+    assert bot.profile_task_name("gpu") == "jwall-engineering-rusty-chess-task-gpu"
+    assert bot.profile_task_name("cpu") == "jwall-engineering-rusty-chess-task"
+
+
+def test_the_cpu_profile_is_the_task_runners_own_fields(bot: Project) -> None:
+    runner = bot.task_runner
+    assert runner is not None
+    cpu = runner.profile("cpu")
+    assert cpu.instance_types == runner.instance_types
+    assert (cpu.market, cpu.max_vcpus, cpu.whole_cores, cpu.gpu, cpu.image) == (
+        "spot", 192, True, False, None,
+    )  # fmt: skip
+
+
+def test_the_allow_list_covers_every_profile(bot: Project) -> None:
+    runner = bot.task_runner
+    assert runner is not None
+    assert runner.all_instance_types == (
+        "c8a.xlarge", "c8a.8xlarge", "c8a.16xlarge", "g6.xlarge", "g6.2xlarge", "g6e.xlarge",
+    )  # fmt: skip
+
+
+def test_a_file_without_profiles_is_unchanged(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    del _task_runner(raw)["profiles"]
+    runner = _load(tmp_path, raw, settings).task_runner
+    assert runner is not None and runner.profile_names == ("cpu",)
+
+
+def test_cpu_is_not_a_listed_profile(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _task_runner(raw)["profiles"]["cpu"] = _gpu(raw)
+    with pytest.raises(ConfigError, match="cpu is the task-runner's own fields"):
+        _load(tmp_path, raw, settings)
+
+
+def test_a_profile_needs_a_pinned_image(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _gpu(raw)["image"] = "unpinned"
+    with pytest.raises(ConfigError, match="image 'unpinned' is not pinned"):
+        _load(tmp_path, raw, settings)
+
+
+def test_a_profile_may_only_reach_the_files_datasets(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _gpu(raw)["datasets"] = {"other": {"read": ["x/"]}}
+    with pytest.raises(ConfigError, match="datasets other are not dataset components"):
+        _load(tmp_path, raw, settings)
+
+
+@pytest.mark.parametrize("prefix", ["/selfplay/", "selfplay", "../nets/"])
+def test_dataset_access_takes_sub_prefixes(tmp_path: Path, settings: Settings, prefix: str) -> None:
+    raw = _raw()
+    _gpu(raw)["datasets"] = {"nnue": {"read": [prefix]}}
+    with pytest.raises(ConfigError, match="sub-prefix"):
+        _load(tmp_path, raw, settings)
+
+
+def test_dataset_access_grants_something(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _gpu(raw)["datasets"] = {"nnue": {}}
+    with pytest.raises(ConfigError, match="at least one read or write"):
+        _load(tmp_path, raw, settings)
+
+
+def test_a_profile_refuses_burstable_types(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _gpu(raw)["instance_types"] = ["t3.large"]
+    _gpu(raw)["default_instance_type"] = "t3.large"
+    with pytest.raises(ConfigError, match="burstable"):
+        _load(tmp_path, raw, settings)
+
+
+def test_a_profile_default_type_must_be_allowed(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _gpu(raw)["default_instance_type"] = "g6.12xlarge"
+    with pytest.raises(ConfigError, match="must be one of instance_types"):
         _load(tmp_path, raw, settings)

@@ -6,6 +6,11 @@ through SSM Run Command, streams its output from CloudWatch, copies its
 outputs from S3 and terminates it, on every exit path. Instances are spot
 under a price cap by default, falling back to on demand at launch only; a
 spot interruption is reported (exit 75), never read as a result.
+
+A task runs in one of the project's *profiles* (`cpu`, or one under
+`task-runner.profiles` such as `gpu`): each has its own launch template,
+instance types, market and vCPU budget, and instances carry it as the
+`Profile` tag.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from . import github
+from .components import CPU_PROFILE
 from .errors import ConfigError, PreflightError, RunError, SitesError
 from .log import annotate_warning
 from .project import Project
@@ -55,6 +61,15 @@ SPOT_CAPACITY_ERRORS = CAPACITY_ERRORS | {"SpotMaxPriceTooLow", "MaxSpotInstance
 SPOT_RETRY_SECONDS = 20
 #: How often `wait_for_slot` checks the running tasks again.
 SLOT_POLL_SECONDS = 30
+#: The EC2 vCPU quotas a launch can hit, by instance family class: their
+#: Service Quotas names (EC2, per region) for on demand and for spot.
+_QUOTAS = {
+    "gpu": ("Running On-Demand G and VT instances", "All G and VT Spot Instance Requests"),
+    "standard": (
+        "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances",
+        "All Standard (A, C, D, H, I, M, R, T, Z) Spot Instance Requests",
+    ),
+}
 
 _LIVE_STATES = ["pending", "running", "stopping"]
 _TAG_VALUE_UNSAFE = re.compile(r"[^A-Za-z0-9 +\-=._:/@]")
@@ -79,6 +94,11 @@ class TaskSpec:
     on_demand_fallback: bool = True
     spot_wait_minutes: int = 5
     pull_request: str | None = None
+    profile: str = CPU_PROFILE
+    #: Refuse types with more than one thread per core.
+    whole_cores: bool = True
+    #: The instance has an NVIDIA GPU, checked before the task starts.
+    gpu: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,6 +110,8 @@ class TaskInstance:
     task_id: str | None
     launched_at: datetime
     max_hours: int | None
+    #: Instances launched before profiles existed carry no tag: they are cpu.
+    profile: str = CPU_PROFILE
 
 
 @dataclass(frozen=True)
@@ -134,12 +156,13 @@ def _tag_value(value: str) -> str:
 def task_tags(spec: TaskSpec, lifecycle: str) -> dict[str, str]:
     """Every tag a task instance and its volume carry: the project's six
     tags (RunInstances does not apply the provider's default tags), the
-    launch template's two, and the run's."""
+    launch template's three, and the run's."""
     project = spec.project
     tags = {
         **project.config.tags,
         "Component": TASK_COMPONENT,
         "Purpose": TASK_PURPOSE,
+        "Profile": spec.profile,
         "Name": _tag_value(f"{project.task_name}-{spec.run_id}-{spec.task_id}"),
         "Workflow": _tag_value(spec.workflow),
         "RunId": _tag_value(spec.run_id),
@@ -181,6 +204,7 @@ def running_tasks(ec2: EC2Client, project: str) -> list[TaskInstance]:
                         task_id=tags.get("TaskId"),
                         launched_at=instance["LaunchTime"],
                         max_hours=int(hours) if hours.isdigit() else None,
+                        profile=tags.get("Profile", CPU_PROFILE),
                     )
                 )
     return sorted(found, key=lambda t: (t.launched_at, t.id))
@@ -223,9 +247,10 @@ def wait_for_slot(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> None:
-    """Wait until the project's running tasks leave room for `vcpus` under
-    `max_vcpus`, at most `wait_seconds`. A live instance with this task's
-    run and task ID is refused at once: matrix legs must not share an ID."""
+    """Wait until the running tasks of the spec's profile leave room for
+    `vcpus` under `max_vcpus`, at most `wait_seconds`; other profiles have
+    budgets of their own. A live instance with this task's run and task ID,
+    in any profile, is refused at once: matrix legs must not share an ID."""
     if vcpus > max_vcpus:
         raise PreflightError(
             f"{spec.instance_type} has {vcpus} vCPUs, more than max_vcpus ({max_vcpus})"
@@ -240,6 +265,7 @@ def wait_for_slot(
                 f"task {spec.task_id} of run {spec.run_id} is already running on "
                 f"{', '.join(twins)}; give each matrix leg its own task id"
             )
+        running = [t for t in running if t.profile == spec.profile]
         unknown = sorted({t.type for t in running} - set(sizes))
         if unknown:
             sizes.update({k: v[0] for k, v in instance_types_info(ec2, unknown).items()})
@@ -250,9 +276,13 @@ def wait_for_slot(
             listing = ", ".join(f"{t.id} ({t.type}, run {t.run_id})" for t in running)
             raise PreflightError(
                 f"no free slot after {wait_seconds / 60:.0f} minutes: {used} of {max_vcpus} "
-                f"task vCPUs in use ({listing}); re-run later or stop them with `task terminate`"
+                f"{spec.profile} task vCPUs in use ({listing}); re-run later or stop them "
+                "with `task terminate`"
             )
-        logger.info("%d of %d task vCPUs in use; waiting for room for %d", used, max_vcpus, vcpus)
+        logger.info(
+            "%d of %d %s task vCPUs in use; waiting for room for %d",
+            used, max_vcpus, spec.profile, vcpus,
+        )  # fmt: skip
         sleep(SLOT_POLL_SECONDS)
 
 
@@ -388,10 +418,8 @@ def _try_zones(
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
             if code == "VcpuLimitExceeded":
-                raise NoCapacity(
-                    f"the account's {lifecycle} vCPU limit is reached for {spec.instance_type}; "
-                    "re-run later or ask for a quota increase"
-                ) from exc
+                message = quota_message(spec.instance_type, lifecycle, spec.project.region)
+                raise NoCapacity(message) from exc
             if code not in errors:
                 raise
             logger.warning(
@@ -399,6 +427,19 @@ def _try_zones(
                 lifecycle, spec.instance_type, subnet.zone, code,
             )  # fmt: skip
     return None
+
+
+def quota_message(instance_type: str, lifecycle: str, region: str) -> str:
+    """Name the vCPU quota a launch hit and say how to raise it."""
+    family = instance_type.split(".", 1)[0]
+    kind = "gpu" if family.startswith(("g", "vt")) else "standard"
+    on_demand, spot = _QUOTAS[kind]
+    quota = spot if lifecycle == "spot" else on_demand
+    return (
+        f"the account's vCPU quota {quota!r} is used up, so no {lifecycle} {instance_type} "
+        f"can start; wait for running instances to end, or raise the quota in the Service "
+        f"Quotas console (Amazon EC2, {region}, {quota!r}), which can take a day"
+    )
 
 
 def launch(
@@ -507,12 +548,23 @@ def task_script(spec: TaskSpec, bucket: str, prefix: str) -> str:
     q = shlex.quote
     task = " ".join(q(part) for part in (spec.script, *spec.args))
     minutes = spec.max_hours * 60
+    gpu_check = (
+        """
+# A GPU profile runs nothing until the driver answers.
+if ! nvidia-smi; then
+  echo "task-runner: nvidia-smi failed: the GPU driver is not working on this instance"
+  exit 1
+fi
+"""
+        if spec.gpu
+        else ""
+    )
     region = spec.project.region
     url = f"https://github.com/{spec.repository}"
     return f"""set -uo pipefail
 exec 2>&1
 export HOME=/root
-export PATH=/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+export PATH=/root/.cargo/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 
 # cloud-init exits 2 on mere warnings; the ready file, written last by the
 # setup script under set -e, is what says setup finished.
@@ -528,11 +580,12 @@ shutdown -c 2>/dev/null || true
 shutdown -h +{minutes} 2>/dev/null
 
 echo "== task-runner environment"
+echo "profile={spec.profile}"
 cat /etc/task-runner/ready
 echo "=="
-
+{gpu_check}
 rm -rf /work
-mkdir -p /work/repo /work/out
+mkdir -p /work/repo /work/out /work/scratch
 git init --quiet /work/repo
 if ! git -C /work/repo fetch --quiet --depth 1 {q(url)} {q(spec.ref)}; then
   echo "task-runner: could not fetch {spec.ref} from {spec.repository}"
@@ -575,7 +628,7 @@ watch_spot() {{
 status=0
 # The arguments are quoted literals: `$` in them must not expand.
 # shellcheck disable=SC2016
-OUT_DIR=$out setsid -w bash {task} &
+OUT_DIR=$out SCRATCH_DIR=/work/scratch setsid -w bash {task} &
 task_pid=$!
 watch_spot "$task_pid" &
 watcher_pid=$!
@@ -915,6 +968,11 @@ def run_task(
     if runner is None:
         logger.error("%s has no task-runner component", project.project)
         return ConfigError.exit_code
+    if spec.profile not in runner.profile_names:
+        logger.error("%s has no task profile %s", project.project, spec.profile)
+        return ConfigError.exit_code
+    profile = runner.profile(spec.profile)
+    template = project.profile_task_name(spec.profile)
     try:
         script = task_commands(spec, project.task_bucket, project.task_prefix)
     except ConfigError as exc:
@@ -943,18 +1001,18 @@ def run_task(
         try:
             info = instance_types_info(ec2, [spec.instance_type])
             vcpus, threads = info[spec.instance_type]
-            if threads > 1:
+            if threads > 1 and spec.whole_cores:
                 raise ConfigError(
                     f"{spec.instance_type} runs {threads} threads per core; tasks need "
                     "whole cores (an SMT-off type such as c8a)"
                 )
             wait_for_slot(
-                ec2, spec, vcpus, runner.max_vcpus, runner.slot_wait_minutes * 60, logger,
+                ec2, spec, vcpus, profile.max_vcpus, profile.slot_wait_minutes * 60, logger,
                 sleep, clock,
             )  # fmt: skip
             plan = price_plan(ec2, pricing, spec, public_subnets(ec2, project.project), logger)
             launching = True
-            launched = launch(ec2, spec, project.task_template, plan, logger, sleep, clock)
+            launched = launch(ec2, spec, template, plan, logger, sleep, clock)
             instance_id = launched.id
             _log_launch(logger, spec, launched, plan)
             wait_for_agent(ssm, instance_id, sleep=sleep)
@@ -1018,8 +1076,8 @@ def _interrupted(logger: Logger, at: str) -> int:
 def _log_launch(logger: Logger, spec: TaskSpec, launched: Launched, plan: PricePlan) -> None:
     """The plain lines before the task's own output: what it runs on, and at what price."""
     logger.info(
-        "launched %s: %s, %s, in %s (spot placement score %s), image %s",
-        launched.id, spec.instance_type, launched.lifecycle, launched.zone,
+        "launched %s: %s profile, %s, %s, in %s (spot placement score %s), image %s",
+        launched.id, spec.profile, spec.instance_type, launched.lifecycle, launched.zone,
         plan.scores.get(launched.zone, "unknown"), launched.image,
     )  # fmt: skip
     on_demand = f"${plan.on_demand:.4f}/h" if plan.on_demand is not None else "unknown"
@@ -1033,7 +1091,8 @@ def _log_launch(logger: Logger, spec: TaskSpec, launched: Launched, plan: PriceP
         )  # fmt: skip
     else:
         logger.info("on-demand price: %s", on_demand)
-    logger.info("the CPU model and core count head the task's output; output follows")
+    hardware = "the GPU, driver, CUDA version, CPU model" if spec.gpu else "the CPU model"
+    logger.info("%s and core count head the task's output; output follows", hardware)
 
 
 def _cleanup(

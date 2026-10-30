@@ -64,6 +64,7 @@ module, in the bot stack.
 | Who | Write | Read | Delete |
 |---|---|---|---|
 | Task instances, when `writers: [task-runner]` | `PutObject` under the prefix (and `AbortMultipartUpload` for their own failed uploads) | `ListBucket` under the prefix only, never `GetObject` | no |
+| A task profile's instances, through its `datasets` grant | `PutObject` under each `write` sub-prefix | `GetObject` under each `read` sub-prefix; `ListBucket` limited to those sub-prefixes | no |
 | `readers` | no | `GetObject` and `ListBucket` under the prefix | no |
 | The task launch role (`ci-task`) | no | no | no |
 | The plan and apply roles (`ci-plan`, `ci-apply`) | the bucket's configuration only (`dataset/read`, `dataset/manage`) | no objects | no objects |
@@ -104,8 +105,38 @@ Downloads from Intelligent-Tiering's frequent, infrequent and archive
 instant access tiers are immediate. Only the optional archive tiers, which
 aren't enabled here, would need a restore.
 
-A future training job, such as a GPU task, gets its own role listed in
-`readers`. That role isn't built until a consumer needs it.
+## Nets: `nets/`
+
+Training jobs read the data and write nets through a GPU
+[task profile](remote-tasks.md#task-profiles-gpu-tasks). Its grant on the
+dataset names sub-prefixes of the dataset's `prefix`:
+
+```yaml
+profiles:
+  gpu:
+    datasets:
+      nnue: { read: [selfplay/], write: [nets/] }
+```
+
+So for rusty-chess:
+
+| Prefix | Cpu task instances | Gpu task instances |
+|---|---|---|
+| `data/selfplay/` | add | read |
+| `data/nets/` | add | add |
+| anything else under `data/` | add | nothing |
+
+Each trained net lives under its own ID and is never overwritten:
+
+```text
+data/nets/<net id>/net.nnue
+data/nets/<net id>/training.json   # data selection, λ, K, epochs, losses, GPU, image, commit
+data/nets/<net id>/log.txt
+data/nets/<net id>/checkpoints/    # for resuming an interrupted run
+```
+
+Nothing automated deletes, and a new run uses a new net ID, so earlier nets
+stay.
 
 ## Cost
 

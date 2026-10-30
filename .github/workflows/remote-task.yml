@@ -31,6 +31,8 @@ name: Remote task
 #         id-token: write
 #
 # In a matrix, give each leg its own artifact (it names the task too).
+# `profile: gpu` (or another of the project's task-runner.profiles) runs on
+# that profile's instances, image and vCPU budget; the default is cpu.
 
 on:
   workflow_call:
@@ -48,18 +50,23 @@ on:
         required: false
         type: string
         default: "[]"
+      profile:
+        description: The task profile, cpu or one of the project's task-runner.profiles (e.g. gpu). It picks the launch template, instance types, market and vCPU budget.
+        required: false
+        type: string
+        default: cpu
       instance-type:
-        description: One of the project's task-runner.instance_types; empty for its default_instance_type.
+        description: One of the profile's instance_types; empty for its default_instance_type.
         required: false
         type: string
         default: ""
       market:
-        description: spot or on-demand; empty for the project's task-runner.market. Spot falls back to on demand at launch only.
+        description: spot or on-demand; empty for the profile's market. Spot falls back to on demand at launch only.
         required: false
         type: string
         default: ""
       max-hours:
-        description: Hard limit in hours; 0 for the project's task-runner.max_hours. GitHub stops the job after 6 hours either way.
+        description: Hard limit in hours; 0 for the profile's max_hours. GitHub stops the job after 6 hours either way.
         required: false
         type: number
         default: 0
@@ -147,15 +154,19 @@ jobs:
         id: role
         env:
           PROJECT: ${{ inputs.project }}
+          PROFILE: ${{ inputs.profile }}
           MAX_HOURS: ${{ inputs.max-hours }}
           CONFIG: .jwall-engineering-infra/config.yaml
         run: |
           account=$(yq -r .aws.account_id "$CONFIG")
           organization=$(yq -r .context.organization "$CONFIG")
           [[ "$account" =~ ^[0-9]{12}$ && -n "$organization" && "$organization" != null ]] || { echo "::error::$CONFIG has no aws.account_id or context.organization"; exit 1; }
+          [[ "$PROFILE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || { echo "::error::profile must be kebab-case, got $PROFILE"; exit 2; }
           hours="$MAX_HOURS"
-          if [ "$hours" = "0" ]; then
+          if [ "$hours" = "0" ] && [ "$PROFILE" = "cpu" ]; then
             hours=$(yq -r '[.components[] | select(.kind == "task-runner") | .max_hours // 6][0] // 6' jwall-engineering-sites.yaml)
+          elif [ "$hours" = "0" ]; then
+            hours=$(PROFILE="$PROFILE" yq -r '[.components[] | select(.kind == "task-runner") | .profiles[strenv(PROFILE)].max_hours // 6][0] // 6' jwall-engineering-sites.yaml)
           fi
           [[ "$hours" =~ ^[0-9]+$ ]] || { echo "::error::max-hours must be a whole number, got $hours"; exit 1; }
           # One session covers the whole task, plus an hour for launch, setup and collection.
@@ -178,6 +189,7 @@ jobs:
         env:
           SCRIPT: ${{ inputs.script }}
           ARGS: ${{ inputs.args }}
+          PROFILE: ${{ inputs.profile }}
           INSTANCE_TYPE: ${{ inputs.instance-type }}
           MARKET: ${{ inputs.market }}
           PULL_REQUEST: ${{ github.event.pull_request.number }}
@@ -193,7 +205,7 @@ jobs:
           mapfile -t argv < <(jq -r '.[]' <<<"$ARGS")
           options=()
           if [ "$DEBUG" = "true" ]; then options+=(--debug); fi
-          flags=()
+          flags=(--profile "$PROFILE")
           if [ -n "$INSTANCE_TYPE" ]; then flags+=(--instance-type "$INSTANCE_TYPE"); fi
           if [ "$MAX_HOURS" != "0" ]; then flags+=(--max-hours "$MAX_HOURS"); fi
           if [ -n "$MARKET" ]; then flags+=(--market "$MARKET"); fi

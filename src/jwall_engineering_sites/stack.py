@@ -122,6 +122,22 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
         "task_results_days": runner.results_days,
         "task_log_retention_days": runner.log_retention_days,
         "task_rust_toolchain": settings.tasks.rust_toolchain,
+        # Profiles beyond cpu: one launch template and instance role each.
+        "task_profiles": [
+            {
+                "name": name,
+                "default_instance_type": profile.default_instance_type,
+                "max_hours": profile.max_hours,
+                "ami_name": settings.tasks.images[profile.image] if profile.image else None,
+                "root_volume_gb": profile.root_volume_gb,
+                "gpu": profile.gpu,
+                "datasets": [
+                    {"name": dataset, "read": list(access.read), "write": list(access.write)}
+                    for dataset, access in profile.datasets.items()
+                ],
+            }
+            for name, profile in runner.profiles.items()
+        ],
         "datasets": [
             {
                 "name": d.name,
