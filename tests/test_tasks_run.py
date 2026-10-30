@@ -35,6 +35,11 @@ LAUNCHED = datetime(2026, 10, 29, tzinfo=UTC)
 HOSTILE = "; rm -rf / $(reboot) `id` 'quoted' \"double\"\nTASK_RUNNER_EOF"
 
 
+def _gpu_script(bot: Project, **overrides: Any) -> str:
+    spec = _gpu_spec(bot, scratch="instance-store", **overrides)
+    return tasks.task_script(spec, "jwall-engineering-rusty-chess-tasks", "tasks/")
+
+
 def _script(bot: Project, **overrides: Any) -> str:
     return tasks.task_script(
         _spec(bot, **overrides), "jwall-engineering-rusty-chess-tasks", "tasks/"
@@ -50,6 +55,115 @@ def test_every_task_gets_a_scratch_dir_and_names_its_profile(bot: Project) -> No
     assert "SCRATCH_DIR=/work/scratch setsid" in script
     assert 'echo "profile=cpu"' in script
     assert "nvidia-smi" not in script
+
+
+# --- scratch: the instance store or the root volume ---------------------------
+
+FAKES = """
+calls=$(mktemp)
+log() { printf '%s\\n' "$*" >> "$calls"; }
+timeout() { shift; "$@"; }
+systemctl() { log systemctl "$@"; }
+findmnt() { log findmnt "$@"; [ -n "${DLAMI:-}" ]; }
+lsblk() {
+  log lsblk "$@"
+  if [ "$1" = -dnpo ]; then printf '%b' "${DISKS:-}"; else printf '%s' "${IN_USE:-}"; fi
+}
+mkdir() { log mkdir "$@"; }
+mkfs.xfs() { log mkfs.xfs "$@"; [ -z "${MKFS_FAILS:-}" ]; }
+mount() { log mount "$@"; }
+df() { printf 'Filesystem Size\\n%s\\n' "${DF:-/dev/nvme0n1p1 200G}"; }
+"""
+
+ROOT = "/dev/nvme0n1p1    Amazon Elastic Block Store\\n"
+STORE = "/dev/nvme1n1    Amazon EC2 NVMe Instance Storage\\n"
+
+
+def _run_scratch(script: str, **env: str) -> tuple[dict[str, str], list[str]]:
+    """Run the script's scratch section (after the /work reset, before the
+    environment block) against fakes; return its variables and the calls made."""
+    section = script[script.index("scratch=root-volume") : script.index('echo "== task-runner')]
+    probe = (
+        FAKES + section + 'printf "scratch=%s\\ndevice=%s\\nnote=%s\\n" '
+        '"$scratch" "$scratch_device" "$scratch_note"; cat "$calls"'
+    )
+    result = subprocess.run(
+        ["/bin/bash", "-c", probe],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"], **env},
+    )
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    values = dict(line.split("=", 1) for line in lines[:3])
+    return values, lines[3:]
+
+
+def test_a_cpu_task_keeps_scratch_on_the_root_volume(bot: Project) -> None:
+    script = _script(bot)
+    assert "mkfs" not in script and "mount_instance_store" not in script
+    values, calls = _run_scratch(script)
+    assert values == {"scratch": "root-volume", "device": "nvme0n1p1 200G", "note": ""}
+    assert calls == []
+
+
+def test_a_gpu_task_reuses_the_dlami_instance_store_mount(bot: Project) -> None:
+    values, calls = _run_scratch(_gpu_script(bot), DLAMI="1", DF="/dev/nvme1n1 233G")
+    assert values == {"scratch": "instance-store", "device": "nvme1n1 233G", "note": ""}
+    # Boot (and the AMI's own mount) finishes first; nothing is formatted.
+    assert calls[0] == "systemctl is-system-running --wait"
+    assert "mount --bind /opt/dlami/nvme/scratch /work/scratch" in calls
+    assert not any(c.startswith(("mkfs", "lsblk")) for c in calls)
+
+
+def test_a_gpu_task_formats_a_blank_instance_store_disk(bot: Project) -> None:
+    values, calls = _run_scratch(_gpu_script(bot), DISKS=ROOT + STORE, DF="/dev/nvme1n1 233G")
+    assert values == {"scratch": "instance-store", "device": "nvme1n1 233G", "note": ""}
+    # Never the EBS root: only the instance-store model is picked.
+    assert "mkfs.xfs -q -K /dev/nvme1n1" in calls
+    assert "mount -o noatime /dev/nvme1n1 /work/scratch" in calls
+    assert calls.index("mkfs.xfs -q -K /dev/nvme1n1") < calls.index(
+        "mount -o noatime /dev/nvme1n1 /work/scratch"
+    )
+
+
+def test_a_gpu_task_uses_the_first_of_several_disks(bot: Project) -> None:
+    second = "/dev/nvme2n1    Amazon EC2 NVMe Instance Storage\\n"
+    _, calls = _run_scratch(_gpu_script(bot), DISKS=ROOT + STORE + second)
+    assert [c for c in calls if c.startswith("mkfs")] == ["mkfs.xfs -q -K /dev/nvme1n1"]
+
+
+@pytest.mark.parametrize(
+    ("env", "reason"),
+    [
+        ({"DISKS": ROOT}, "this instance type has no instance store"),
+        ({"DISKS": ROOT + STORE, "IN_USE": "xfs /mnt"}, "/dev/nvme1n1 is not blank"),
+        ({"DISKS": ROOT + STORE, "MKFS_FAILS": "1"}, "no reason given"),
+    ],
+)
+def test_a_gpu_task_falls_back_to_the_root_volume_and_says_so(
+    bot: Project, env: dict[str, str], reason: str
+) -> None:
+    values, calls = _run_scratch(_gpu_script(bot), **env)
+    assert (values["scratch"], values["device"]) == ("root-volume", "nvme0n1p1 200G")
+    assert values["note"].startswith("task-runner: WARNING: the profile asks for scratch on")
+    assert reason in values["note"]
+    assert values["note"].endswith("SCRATCH_DIR is on the root volume")
+    if "IN_USE" in env:
+        assert not any(c.startswith("mkfs") for c in calls)
+    assert not any(c.startswith("mount") for c in calls)
+
+
+def test_the_environment_block_records_the_scratch(bot: Project) -> None:
+    script = _gpu_script(bot)
+    block = script[script.index('echo "== task-runner environment"') :]
+    block = block[: block.index('echo "=="')]
+    assert 'echo "scratch=$scratch"' in block
+    assert 'echo "scratch_device=$scratch_device"' in block
+    # The scratch is in place before the block and the task; a fallback is
+    # printed right after the block.
+    assert script.index("mount_instance_store") < script.index("== task-runner environment")
+    assert script.index('echo "$scratch_note"') < script.index("nvidia-smi")
 
 
 def test_a_gpu_task_checks_the_driver_before_it_runs(bot: Project) -> None:
@@ -125,8 +239,10 @@ def test_script_ends_with_the_marker_and_shuts_the_instance_down(
 
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
-def test_script_is_shellcheck_clean(bot: Project) -> None:
-    script = _script(bot, args=("--games", HOSTILE))
+@pytest.mark.parametrize("gpu", [False, True])
+def test_script_is_shellcheck_clean(bot: Project, gpu: bool) -> None:
+    render = _gpu_script if gpu else _script
+    script = render(bot, args=("--games", HOSTILE))
     result = subprocess.run(
         ["shellcheck", "--shell=bash", "-"], input=script, capture_output=True, text=True
     )

@@ -83,12 +83,14 @@ def test_run_gpu_profile_takes_its_defaults(captured: dict[str, Any]) -> None:
     spec: tasks.TaskSpec = captured["spec"]
     assert (spec.profile, spec.instance_type, spec.market) == ("gpu", "g6.xlarge", "on-demand")
     assert (spec.whole_cores, spec.gpu, spec.max_hours) == (False, True, 6)
+    assert spec.scratch == "instance-store"
 
 
 def test_run_cpu_is_the_default_profile(captured: dict[str, Any]) -> None:
     assert _run().exit_code == 0
     spec: tasks.TaskSpec = captured["spec"]
     assert (spec.profile, spec.whole_cores, spec.gpu, spec.market) == ("cpu", True, False, "spot")
+    assert spec.scratch == "root-volume"
 
 
 def test_run_refuses_an_unknown_profile(captured: dict[str, Any]) -> None:

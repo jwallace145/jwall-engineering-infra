@@ -133,9 +133,10 @@ variables or secrets. The workflow builds the role ARN from this tool's
   uploaded to S3 and copied into the job's artifact, whether the script
   succeeds, fails or is interrupted. Keep it small: results, summaries and
   logs, never a dataset.
-- **Scratch.** `SCRATCH_DIR` is an empty directory on the root volume for
-  large working files, such as downloaded training shards. It is not
-  uploaded, and it goes with the instance.
+- **Scratch.** `SCRATCH_DIR` is an empty directory for large working
+  files, such as downloaded training shards. It is not uploaded, and it goes
+  with the instance. Where it lives is the profile's `scratch`; see
+  [Scratch on the instance store](#scratch-on-the-instance-store).
 - **Toolchain.** `HOME=/root`, and `PATH` includes `/root/.cargo/bin`, so
   `cargo` and `rustc` are the pinned toolchain (`tasks.rust_toolchain` in
   this repository's `config.yaml`). `git`, `gcc`, `gcc-c++`, `make`, `tar`,
@@ -170,11 +171,15 @@ rust_toolchain=1.99.1
 rustc=rustc 1.99.1 (...)
 cpu_model=AMD EPYC 9R45
 physical_cores=64
+scratch=root-volume
+scratch_device=nvme0n1p1 40G
 ==
 ```
 
 A GPU profile adds `gpu_model`, `gpu_memory`, `nvidia_driver` and
-`cuda_version`, so every net records the hardware it trained on.
+`cuda_version`, so every net records the hardware it trained on. `scratch`
+and `scratch_device` record where `SCRATCH_DIR` was, so every result shows
+which disk its data was read from.
 
 ## Task profiles: GPU tasks
 
@@ -195,9 +200,10 @@ security group, the network and the results bucket.
         max_hours: 6                # 1-6
         max_vcpus: 4                # this profile's own running-vCPU budget
         image: deep-learning-gpu    # a key of tasks.images in config.yaml
-        root_volume_gb: 200         # 20-200, gp3; SCRATCH_DIR lives on it
+        root_volume_gb: 200         # 20-200, gp3
         whole_cores: false          # GPU types run two threads per core
         gpu: true                   # wait for the driver; record GPU, driver, CUDA
+        scratch: instance-store     # instance-store | root-volume; the default with gpu: true
         datasets:
           nnue: { read: [selfplay/], write: [nets/] }  # sub-prefixes of the dataset's prefix
 ```
@@ -205,7 +211,8 @@ security group, the network and the results bucket.
 A profile also takes `max_price_fraction`, `on_demand_fallback`,
 `spot_wait_minutes` and `slot_wait_minutes`, as the cpu profile does. The
 defaults are `market: on-demand`, `max_vcpus: 4`, `root_volume_gb: 40`,
-`whole_cores: true` and `gpu: false`, with no image (the bot's pinned Amazon
+`whole_cores: true`, `gpu: false` and `scratch: root-volume` (but
+`instance-store` with `gpu: true`), with no image (the bot's pinned Amazon
 Linux 2023 image) and no dataset access.
 
 Call it with `profile: gpu`:
@@ -229,6 +236,41 @@ jobs:
 repository add its types to `local.bot_task_types` and its name to
 `local.bot_task_profiles` in `foundation/bots.tf` (a test checks both
 against the project file). Release, then run **Bot apply** for the project.
+
+### Scratch on the instance store
+
+GPU tasks are disk-bound once their data outgrows memory: a `g6.xlarge`'s
+EBS bandwidth is 125 MB/s at baseline, whatever the gp3 volume is
+provisioned for. Every `g6` and `g6e` type has a local NVMe SSD (the
+*instance store*, 250 GB on a `g6.xlarge`) that reads at gigabytes a second
+and costs nothing extra. With `scratch: instance-store`, before the task
+starts:
+
+1. the script waits for boot to finish. The pinned Deep Learning AMI mounts
+   the instance store at `/opt/dlami/nvme` itself; if it did, its
+   `scratch` directory is bind-mounted on `/work/scratch`;
+2. otherwise it takes the first disk whose model is *Amazon EC2 NVMe
+   Instance Storage* (never the EBS root; with several, only the first),
+   and if it is blank, formats it with XFS and mounts it with `noatime` on
+   `/work/scratch`.
+
+If neither works (a type without an instance store, a disk that isn't
+blank, a failed format), the task still runs, on the root volume, and the
+output prints `task-runner: WARNING: ...` with the reason right after the
+environment block, which says `scratch=root-volume`.
+
+`SCRATCH_DIR` is `/work/scratch` either way. Instance-store data is lost
+when the instance stops, which is right for scratch: the instance terminates
+after the task. Keep `OUT_DIR` for what must survive.
+
+To check the speed, read a large file back from scratch in a task, for
+example in a smoke script (`iflag=direct` skips the page cache):
+
+```sh
+dd if=/dev/zero of="$SCRATCH_DIR/probe" bs=1M count=20480 oflag=direct
+dd if="$SCRATCH_DIR/probe" of=/dev/null bs=1M iflag=direct  # 1 GB/s or more on a g6.xlarge
+rm "$SCRATCH_DIR/probe"
+```
 
 **Budgets.** Each profile counts only its own running vCPUs against its
 `max_vcpus`, so a GPU task never waits behind SPRTs, nor they behind it.
