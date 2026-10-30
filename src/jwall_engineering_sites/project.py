@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from .components import ContainerImage, LichessBot, TaskRunner
+from .components import ContainerImage, Dataset, LichessBot, TaskRunner
 from .errors import ConfigError
 from .settings import Settings
 from .site import ENVIRONMENT, Site, SiteConfig
@@ -57,6 +57,15 @@ class Project(BaseModel):
                     f"secrets.{name} must not live under {own}bot/, "
                     "which the release role can write"
                 )
+        for dataset in config.datasets:
+            bucket = f"{organization}-{config.project}-{dataset.name}"
+            if dataset.bucket != bucket:
+                problems.append(
+                    f"dataset {dataset.name}: bucket must be {bucket!r} "
+                    f"(<Organization>-<project>-<name>), got {dataset.bucket!r}"
+                )
+            elif len(bucket) > 63:
+                problems.append(f"dataset {dataset.name}: bucket {bucket!r} exceeds 63 characters")
         if problems:
             raise ConfigError("; ".join(problems))
         return cls(
@@ -140,6 +149,14 @@ class Project(BaseModel):
     @property
     def task_prefix(self) -> str:
         return "tasks/"
+
+    @property
+    def datasets(self) -> tuple[Dataset, ...]:
+        self._require("bot")
+        return self.config.datasets
+
+    def dataset_bucket(self, name: str) -> str:
+        return f"{self.organization}-{self.project}-{name}"
 
     def parameter(self, name: str) -> str:
         return f"{self.parameter_prefix}/{name}"

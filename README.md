@@ -133,6 +133,10 @@ the task script contract, spot pricing and interruptions, the security
 model, the leak guards, costs and a runbook, is
 [docs/remote-tasks.md](docs/remote-tasks.md).
 
+`dataset` components keep data that must outlive a run, such as NNUE
+training data, in kept-forever, append-only S3 buckets that task instances
+can add to: [docs/datasets.md](docs/datasets.md).
+
 ### The pull request comments
 
 The plan and preview comments are the product's face in a site repository, so
@@ -285,8 +289,8 @@ bucket, readable by the plan role and writable by the apply role:
 
 | Role | Trusted for | Policies |
 | --- | --- | --- |
-| `jwall-engineering-<key>-ci-plan` | `pull_request` on this repository | `tfstate/read`, `container/read`, `task/read` |
-| `jwall-engineering-<key>-ci-apply` | `environment:prod` on this repository | `tfstate/write`, `container/read`, `container/manage`, `task/read`, `task/manage` |
+| `jwall-engineering-<key>-ci-plan` | `pull_request` on this repository | `tfstate/read`, `container/read`, `task/read`, and `dataset/read` with datasets |
+| `jwall-engineering-<key>-ci-apply` | `environment:prod` on this repository | `tfstate/write`, `container/read`, `container/manage`, `task/read`, `task/manage`, and `dataset/read`, `dataset/manage` with datasets |
 | `jwall-engineering-<key>-ci-release` | the bot repository's `v*` tags | `container/release` |
 | `jwall-engineering-<key>-ci-task` | the bot repository's `pull_request` and `main` (never forks) | `task/launch`: launch from the project's task template, run commands on and terminate its `Purpose=ci-task` instances |
 
@@ -412,6 +416,7 @@ Not automated; these need the owner's credentials or the GitHub UI.
 - For bot projects with a `task-runner`, after the release that creates the `ci-task` role:
   - run the **Bot apply** workflow (it creates the launch template and the task results bucket);
   - add the caller workflow to the bot repository ([docs/remote-tasks.md](docs/remote-tasks.md#the-caller)).
+- For bot projects with `dataset` components (listed in `local.bot_datasets`), after the release that grants `dataset/*` to their roles: run the **Bot apply** workflow; it creates the buckets ([docs/datasets.md](docs/datasets.md)).
 - Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
 
 ## License

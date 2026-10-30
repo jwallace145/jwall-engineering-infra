@@ -222,7 +222,9 @@ def test_task_runner_defaults(tmp_path: Path, settings: Settings) -> None:
 
 
 def test_project_without_task_runner_loads(tmp_path: Path, settings: Settings) -> None:
-    assert _load(tmp_path, _without_task_runner(_raw()), settings).task_runner is None
+    raw = _without_task_runner(_raw())
+    raw["components"] = [c for c in raw["components"] if c["kind"] != "dataset"]
+    assert _load(tmp_path, raw, settings).task_runner is None
 
 
 @pytest.mark.parametrize("bad", ["t3.large", "t4g.xlarge", "c8a xlarge", "C8A.xlarge"])
@@ -275,4 +277,109 @@ def test_task_runner_alone_is_not_a_bot_project(tmp_path: Path, settings: Settin
     raw = _raw()
     raw["components"] = [_task_runner(raw)]
     with pytest.raises(ConfigError, match="exactly one container-image"):
+        _load(tmp_path, raw, settings)
+
+
+def _dataset(raw: dict[str, Any]) -> dict[str, Any]:
+    component: dict[str, Any] = next(c for c in raw["components"] if c["kind"] == "dataset")
+    return component
+
+
+def test_dataset_loads(bot: Project) -> None:
+    (dataset,) = bot.datasets
+    assert dataset.name == "nnue"
+    assert dataset.bucket == "jwall-engineering-rusty-chess-nnue"
+    assert dataset.prefix == "data/"
+    assert dataset.writers == ("task-runner",)
+    assert dataset.readers == ()
+    assert dataset.transition_days == 0
+    assert bot.dataset_bucket("nnue") == "jwall-engineering-rusty-chess-nnue"
+
+
+def test_project_without_dataset_loads(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"] = [c for c in raw["components"] if c["kind"] != "dataset"]
+    assert _load(tmp_path, raw, settings).datasets == ()
+
+
+def test_dataset_bucket_must_be_the_derived_name(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _dataset(raw)["bucket"] = "my-own-bucket"
+    with pytest.raises(ConfigError, match="jwall-engineering-rusty-chess-nnue"):
+        _load(tmp_path, raw, settings)
+
+
+def test_dataset_bucket_is_required(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    del _dataset(raw)["bucket"]
+    with pytest.raises(ConfigError, match="bucket"):
+        _load(tmp_path, raw, settings)
+
+
+@pytest.mark.parametrize("bad", ["data", "/data/", "", "Data/", "data//", "../data/"])
+def test_dataset_prefix_shape(tmp_path: Path, settings: Settings, bad: str) -> None:
+    raw = _raw()
+    _dataset(raw)["prefix"] = bad
+    with pytest.raises(ConfigError, match="prefix"):
+        _load(tmp_path, raw, settings)
+
+
+def test_dataset_nested_prefix_loads(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _dataset(raw)["prefix"] = "data/selfplay=v1/"
+    assert _load(tmp_path, raw, settings).datasets[0].prefix == "data/selfplay=v1/"
+
+
+@pytest.mark.parametrize("bad", ["records", "tasks", "NNUE", "nn_ue", "-nnue"])
+def test_dataset_name_shape_and_reserved_names(
+    tmp_path: Path, settings: Settings, bad: str
+) -> None:
+    raw = _raw()
+    _dataset(raw)["name"] = bad
+    _dataset(raw)["bucket"] = f"jwall-engineering-rusty-chess-{bad}"
+    with pytest.raises(ConfigError, match="name"):
+        _load(tmp_path, raw, settings)
+
+
+def test_dataset_task_runner_writer_needs_a_task_runner(tmp_path: Path, settings: Settings) -> None:
+    raw = _without_task_runner(_raw())
+    with pytest.raises(ConfigError, match="task-runner"):
+        _load(tmp_path, raw, settings)
+
+
+def test_dataset_without_writers_needs_no_task_runner(tmp_path: Path, settings: Settings) -> None:
+    raw = _without_task_runner(_raw())
+    _dataset(raw)["writers"] = []
+    assert _load(tmp_path, raw, settings).datasets[0].writers == ()
+
+
+def test_dataset_unknown_writer_fails(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _dataset(raw)["writers"] = ["lichess-bot"]
+    with pytest.raises(ConfigError, match="writers"):
+        _load(tmp_path, raw, settings)
+
+
+def test_dataset_readers_are_role_arns(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _dataset(raw)["readers"] = ["*"]
+    with pytest.raises(ConfigError, match="readers"):
+        _load(tmp_path, raw, settings)
+    _dataset(raw)["readers"] = ["arn:aws:iam::123456789012:role/trainer"]
+    assert _load(tmp_path, raw, settings).datasets[0].readers == (
+        "arn:aws:iam::123456789012:role/trainer",
+    )
+
+
+def test_dataset_transition_days_bounds(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    _dataset(raw)["transition_days"] = -1
+    with pytest.raises(ConfigError, match="transition_days"):
+        _load(tmp_path, raw, settings)
+
+
+def test_two_datasets_with_one_name_fail(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"].append(dict(_dataset(raw)))
+    with pytest.raises(ConfigError, match="dataset names must be unique"):
         _load(tmp_path, raw, settings)

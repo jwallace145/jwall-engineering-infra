@@ -47,3 +47,8 @@ output "task_results_uri" {
   description = "Where task outputs land, as <uri><run>/<task>/, or null without a task runner."
   value       = var.task_runner_enabled ? module.tasks[0].results_uri : null
 }
+
+output "dataset_uris" {
+  description = "Where each dataset's data lives, by name: s3://<bucket>/<prefix>."
+  value       = { for name, d in module.datasets : name => d.uri }
+}

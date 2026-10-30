@@ -3,6 +3,7 @@
 # shipped to, and the instance that runs the bot. With a task-runner
 # component, also the task launch template and the task results bucket
 # (ephemeral CI task instances are launched by `task run`, never by Terraform).
+# With dataset components, one kept-forever, append-only bucket each.
 #
 # Changing the instance's inputs replaces the instance and ends the game in
 # progress: its image (pinned in config.yaml, bot.amis), its type, or its user
@@ -38,7 +39,7 @@ data "aws_ami" "pinned" {
 
 module "image" {
   source  = "jwallace145/jwall-engineering/aws//modules/ecr-repository"
-  version = "0.13.0"
+  version = "0.14.0"
 
   name                       = local.name
   keep_release_images        = var.keep_release_images
@@ -47,7 +48,7 @@ module "image" {
 
 module "network" {
   source  = "jwallace145/jwall-engineering/aws//modules/vpc"
-  version = "0.13.0"
+  version = "0.14.0"
 
   name               = local.name
   availability_zones = var.availability_zones
@@ -55,7 +56,7 @@ module "network" {
 
 module "records" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.13.0"
+  version = "0.14.0"
   count   = var.records_enabled ? 1 : 0
 
   name = "${local.name}-records"
@@ -63,7 +64,7 @@ module "records" {
 
 module "bot" {
   source  = "jwallace145/jwall-engineering/aws//modules/container-instance"
-  version = "0.13.0"
+  version = "0.14.0"
 
   name                 = "${local.name}-bot"
   project              = var.project
@@ -93,7 +94,7 @@ module "bot" {
 # back by `task run`. Expired after task_results_days.
 module "task_results" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.13.0"
+  version = "0.14.0"
   count   = var.task_runner_enabled ? 1 : 0
 
   name                           = "${local.name}-tasks"
@@ -102,7 +103,7 @@ module "task_results" {
 
 module "tasks" {
   source  = "jwallace145/jwall-engineering/aws//modules/task-runner"
-  version = "0.13.0"
+  version = "0.14.0"
   count   = var.task_runner_enabled ? 1 : 0
 
   name_root             = var.tags["Organization"]
@@ -114,4 +115,21 @@ module "tasks" {
   max_lifetime_hours    = var.task_max_lifetime_hours
   log_retention_days    = var.task_log_retention_days
   rust_toolchain        = var.task_rust_toolchain
+}
+
+# Kept-forever, append-only datasets (for example NNUE training data). Task
+# instances may add objects under the prefix when the dataset lists
+# task-runner as a writer; nothing automated may read or delete them.
+module "datasets" {
+  source   = "jwallace145/jwall-engineering/aws//modules/dataset-bucket"
+  version  = "0.14.0"
+  for_each = { for d in var.datasets : d.name => d }
+
+  name             = each.value.bucket
+  prefix           = each.value.prefix
+  transition_days  = each.value.transition_days
+  reader_role_arns = each.value.readers
+  writer_role_names = [
+    for w in each.value.writers : module.tasks[0].instance_role_name if w == "task-runner"
+  ]
 }

@@ -48,3 +48,9 @@ components:
     slot_wait_minutes: 30           # how long `task run` waits for a slot before exiting 3
     results_days: 7                 # task outputs expire from S3 after this
     log_retention_days: 14
+
+  - kind: dataset                   # optional: a kept-forever, append-only S3 bucket (docs/datasets.md)
+    name: nnue
+    bucket: jwall-engineering-rusty-chess-nnue  # <Organization>-<project>-<name>, written out for workflows
+    prefix: data/                   # everything the project writes lives under it
+    writers: [task-runner]          # task instances may add objects under the prefix, never read or delete
