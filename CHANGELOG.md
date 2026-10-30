@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.15.0...v0.15.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* bump the module library to 0.16.1 so bot applies keep the task role's description ([#79](https://github.com/jwallace145/jwall-engineering-infra/issues/79)) ([6ac7ae2](https://github.com/jwallace145/jwall-engineering-infra/commit/6ac7ae207284eea9556674aed844a2e99a5d8249))
+
 ## [0.15.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.14.0...v0.15.0) (2026-10-30)
 
 
