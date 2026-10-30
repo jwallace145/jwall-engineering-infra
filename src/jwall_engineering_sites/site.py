@@ -19,8 +19,13 @@ from .settings import Settings
 
 SITE_FILE = Path("jwall-engineering-sites.yaml")
 
-#: The tags every resource carries. The site file must state all of them.
-REQUIRED_TAGS = ("Organization", "Project", "Environment", "Repository", "ManagedBy", "Owner")
+#: The tags the site file must state. Every resource also carries ManagedBy.
+REQUIRED_TAGS = ("Organization", "Project", "Environment", "Repository", "Owner")
+
+#: The ManagedBy tag value. The tool owns it: a site file may leave it out, and
+#: the value project files stated before the tool owned it is still accepted.
+MANAGED_BY = "jwall-engineering-infra"
+LEGACY_MANAGED_BY = "terraform"
 
 ENVIRONMENT = "prod"
 PROD_PREFIX = "prod/"
@@ -83,6 +88,14 @@ class SiteConfig(_Model):
     preview: PreviewSection = PreviewSection()
     dev: DevSection | None = None
     components: tuple[Component, ...] = ()
+
+    @field_validator("tags")
+    @classmethod
+    def _managed_by(cls, value: dict[str, str]) -> dict[str, str]:
+        stated = value.get("ManagedBy", MANAGED_BY)
+        if stated not in (MANAGED_BY, LEGACY_MANAGED_BY):
+            raise ValueError(f"ManagedBy must be {MANAGED_BY!r} or left out, got {stated!r}")
+        return {**value, "ManagedBy": MANAGED_BY}
 
     @model_validator(mode="after")
     def _one_kind(self) -> SiteConfig:
@@ -148,7 +161,6 @@ class SiteConfig(_Model):
             "Project": self.project,
             "Environment": ENVIRONMENT,
             "Repository": self.repository,
-            "ManagedBy": "terraform",
         }
         mismatched = [
             f"{key} must be {value!r}, got {self.tags[key]!r}"

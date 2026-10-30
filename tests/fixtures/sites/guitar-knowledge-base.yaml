@@ -8,7 +8,6 @@ tags:
   Project: guitar-knowledge-base
   Environment: prod
   Repository: jwallace145/guitar-knowledge-base
-  ManagedBy: terraform
   Owner: jwallace145
 
 site:

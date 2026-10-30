@@ -8,7 +8,6 @@ tags:
   Project: cs-survival-guide
   Environment: prod
   Repository: jwallace145/cs-survival-guide
-  ManagedBy: terraform
   Owner: jwallace145
 
 site:

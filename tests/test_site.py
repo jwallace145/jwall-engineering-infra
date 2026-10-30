@@ -8,7 +8,13 @@ import yaml
 
 from jwall_engineering_sites.errors import ConfigError
 from jwall_engineering_sites.settings import Settings
-from jwall_engineering_sites.site import REQUIRED_TAGS, Site, SiteConfig, load_site_config
+from jwall_engineering_sites.site import (
+    MANAGED_BY,
+    REQUIRED_TAGS,
+    Site,
+    SiteConfig,
+    load_site_config,
+)
 from tests.conftest import FIXTURES
 
 GUITAR = FIXTURES / "sites" / "guitar-knowledge-base.yaml"
@@ -87,6 +93,13 @@ def test_each_required_tag_is_required(tmp_path: Path, tag: str) -> None:
 def test_cross_checked_tags(tmp_path: Path, tag: str, value: str) -> None:
     with pytest.raises(ConfigError, match=f"{tag} must be"):
         load_site_config(_write(tmp_path, _raw({f"tags.{tag}": value})))
+
+
+@pytest.mark.parametrize("stated", [None, MANAGED_BY, "terraform"])
+def test_the_tool_owns_managed_by(tmp_path: Path, stated: str | None) -> None:
+    raw = _raw() if stated is None else _raw({"tags.ManagedBy": stated})
+    config = load_site_config(_write(tmp_path, raw))
+    assert config.tags["ManagedBy"] == "jwall-engineering-infra"
 
 
 def test_empty_tag_value(tmp_path: Path) -> None:

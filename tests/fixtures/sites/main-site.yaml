@@ -8,7 +8,6 @@ tags:
   Project: main-site
   Environment: prod
   Repository: jwallace145/site
-  ManagedBy: terraform
   Owner: jwallace145
   CostCenter: personal # an extra tag, passed through
 

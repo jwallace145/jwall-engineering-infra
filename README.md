@@ -237,6 +237,21 @@ CLI and `config.yaml`, the tool configuration shared by the stack and the CLI
 | `docs/migration.md` | Legacy resources to retire after the move |
 | `scripts/apply-repo-settings.sh` | GitHub repository settings and the `main` ruleset |
 
+## Tags
+
+Every AWS resource this tool manages carries the same six tags, through the provider's `default_tags` (and set explicitly on task instances, which `RunInstances` does not tag by default):
+
+| Tag | Value | Links the resource to |
+| --- | --- | --- |
+| `Organization` | `jwall-engineering` | the umbrella all projects belong to |
+| `Project` | the project's kebab-case name, e.g. `rusty-chess`; `jwall-engineering-infra` for the foundation stack | the project that owns it (the CI roles' IAM policies also key on it) |
+| `Environment` | `prod` | the deployment environment |
+| `Repository` | the project's `owner/repo` | the repository whose code it serves |
+| `ManagedBy` | `jwall-engineering-infra` | this tool, which provisions and changes it |
+| `Owner` | `jwallace145` | the person responsible for it |
+
+Project files state the first five; the CLI cross-checks `Project`, `Repository`, `Environment` and `Organization` against the rest of the file and `config.yaml`, and adds `ManagedBy` itself. The foundation stack gets the same set from the library's `context` module. Components add `Component`, `Purpose` and `Lifecycle` where they apply.
+
 ## State bucket and key convention
 
 Every jwall-engineering stack keeps its state in `jwall-engineering-tfstate` under the key

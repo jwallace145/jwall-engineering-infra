@@ -33,7 +33,6 @@ tags:
   Project: rusty-chess
   Environment: prod
   Repository: jwallace145/rusty-chess-v2
-  ManagedBy: terraform
   Owner: jwallace145
 
 components:
@@ -69,7 +68,7 @@ A file is either a site (`domain` and `site`) or a bot project
 | `version` | `1` | File format version. |
 | `project` | kebab-case, ≤ 30 | The project; every name below is derived from it. |
 | `repository` | `owner/repo` | Where the releases are published. Must match `tags.Repository`. |
-| `tags` | six required keys | Applied to every AWS resource for cost allocation. `Project`, `Repository`, `Environment: prod` and `ManagedBy: terraform` are cross-checked; extra keys pass through. |
+| `tags` | five required keys | Applied to every AWS resource for cost allocation. `Project`, `Repository` and `Environment: prod` are cross-checked; extra keys pass through. The tool adds `ManagedBy: jwall-engineering-infra` itself, so leave it out (a legacy `ManagedBy: terraform` is accepted and replaced). |
 | `container-image.architecture` | `x86_64` \| `arm64`, `x86_64` | Must match the release asset. `arm64` also needs a `t4g` instance type. |
 | `container-image.artifact.asset` | file name with `{version}` | The release asset that holds the binary. `{version}` is the release tag. |
 | `container-image.artifact.checksum` | file name with `{version}` | Its `sha256sum` file. The build stops if the digest differs. |
