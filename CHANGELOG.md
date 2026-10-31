@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.16.0...v0.17.0) (2026-10-31)
+
+
+### Features
+
+* add cost report for monthly spend by project and component ([#83](https://github.com/jwallace145/jwall-engineering-infra/issues/83)) ([a5f4ec1](https://github.com/jwallace145/jwall-engineering-infra/commit/a5f4ec13c7d6ecc64d0dabb119be8faa86fbb1ae))
+
 ## [0.16.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.15.1...v0.16.0) (2026-10-30)
 
 
