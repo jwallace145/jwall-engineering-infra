@@ -399,7 +399,7 @@ def _gpu(raw: dict[str, Any]) -> dict[str, Any]:
 def test_the_gpu_profile_loads(bot: Project) -> None:
     runner = bot.task_runner
     assert runner is not None
-    assert runner.profile_names == ("cpu", "gpu")
+    assert runner.profile_names == ("cpu", "gpu", "sprt", "match", "datagen", "relabel")
     gpu = runner.profile("gpu")
     assert (gpu.default_instance_type, gpu.market, gpu.max_vcpus) == ("g6.xlarge", "on-demand", 4)
     assert (gpu.image, gpu.root_volume_gb, gpu.whole_cores, gpu.gpu) == (
@@ -419,6 +419,50 @@ def test_the_cpu_profile_is_the_task_runners_own_fields(bot: Project) -> None:
     assert (cpu.market, cpu.max_vcpus, cpu.whole_cores, cpu.gpu, cpu.image) == (
         "spot", 192, True, False, None,
     )  # fmt: skip
+
+
+@pytest.mark.parametrize("name", ["sprt", "match", "datagen", "relabel"])
+def test_a_cpu_workflow_profile_has_the_cpu_profiles_instance_setup(
+    bot: Project, name: str
+) -> None:
+    """No image and no gpu: the pinned Amazon Linux image, whole cores, the same disk."""
+    runner = bot.task_runner
+    assert runner is not None
+    cpu, profile = runner.profile("cpu"), runner.profile(name)
+    assert (profile.image, profile.gpu, profile.whole_cores) == (None, False, True)
+    assert (profile.root_volume_gb, profile.scratch) == (cpu.root_volume_gb, cpu.scratch)
+    assert profile.max_hours == cpu.max_hours
+
+
+@pytest.mark.parametrize(
+    ("name", "market", "max_vcpus"),
+    [
+        ("sprt", "on-demand", 128),
+        ("match", "on-demand", 64),
+        ("datagen", "spot", 192),
+        ("relabel", "spot", 192),
+    ],
+)
+def test_each_workflow_profile_has_its_market_and_budget(
+    bot: Project, name: str, market: str, max_vcpus: int
+) -> None:
+    runner = bot.task_runner
+    assert runner is not None
+    profile = runner.profile(name)
+    assert (profile.market, profile.max_vcpus) == (market, max_vcpus)
+    assert profile.default_instance_type == "c8a.16xlarge"
+    assert (profile.max_price_fraction, profile.on_demand_fallback) == (0.58, True)
+
+
+def test_the_workflow_profiles_dataset_grants(bot: Project) -> None:
+    """A gating or match task touches no data; relabel writes only its own part."""
+    runner = bot.task_runner
+    assert runner is not None
+    assert runner.profile("sprt").datasets == {} and runner.profile("match").datasets == {}
+    datagen = runner.profile("datagen").datasets["nnue"]
+    assert (datagen.read, datagen.write) == ((), ("selfplay/",))
+    relabel = runner.profile("relabel").datasets["nnue"]
+    assert (relabel.read, relabel.write) == (("selfplay/",), ("selfplay/relabel/",))
 
 
 def test_scratch_defaults_to_the_instance_store_for_gpu_profiles_only(bot: Project) -> None:

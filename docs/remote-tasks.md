@@ -22,7 +22,8 @@ It is a task, not a runner: the instance never registers with GitHub, holds
 no GitHub credential and exists only for the one script.
 
 A project can also run tasks on other kinds of instance, such as NVIDIA GPU
-instances for training, through [task profiles](#task-profiles-gpu-tasks).
+instances for training, or give each workflow its own market, budget and
+dataset access, through [task profiles](#task-profiles-gpu-tasks).
 
 ## Turning it on
 
@@ -96,7 +97,7 @@ jobs:
 | Input | Default |
 |---|---|
 | `args` | `[]` |
-| `profile` | `cpu`: the task-runner's own fields; or one of its `profiles`, such as `gpu` |
+| `profile` | `cpu`: the task-runner's own fields; or one of its `profiles`, such as `gpu` or `sprt` |
 | `instance-type` | empty: the profile's default type |
 | `market` | empty: the profile's `market` |
 | `max-hours` | 0: the profile's `max_hours` |
@@ -232,10 +233,61 @@ jobs:
       id-token: write
 ```
 
-**Turning a profile on.** Add it to the project file, then in this
-repository add its types to `local.bot_task_types` and its name to
-`local.bot_task_profiles` in `foundation/bots.tf` (a test checks both
-against the project file). Release, then run **Bot apply** for the project.
+**Turning a profile on.**
+
+1. In this repository, add its types to `local.bot_task_types` and its name
+   to `local.bot_task_profiles` in `foundation/bots.tf` (a test checks both
+   against the fixture project file), then release. The foundation apply lets
+   the launch role use the new profile.
+2. In the consumer, merge the profile into the project file on its default
+   branch. Leave the workflows as they are for now.
+3. Run **Bot apply** for the project. It reads the project file from the
+   default branch, so it creates nothing for a profile that isn't merged yet.
+4. In the consumer, name the profile in the workflows (`profile: <name>`).
+
+Those two lists are not derived from the project file, on purpose. The launch
+role is assumed by the consumer's pull requests, so the lists bound what that
+repository's code can start and which instance roles it can use. They stay a
+reviewed change here, and the consumer's own file cannot widen them.
+
+### Workflow profiles
+
+A profile needs no GPU or image. Leave out `image` and `gpu`, and it gets the
+cpu profile's instance setup: the bot's pinned Amazon Linux 2023 image, the
+pinned Rust toolchain, a 40 GB root volume, and whole cores with SMT refused.
+So each kind of workflow can have its own market, budget and dataset access:
+
+```yaml
+    profiles:
+      sprt:
+        instance_types: [c8a.xlarge, c8a.8xlarge, c8a.16xlarge]
+        default_instance_type: c8a.16xlarge
+        market: on-demand           # both legs gate; a reclamation leaves no verdict
+        max_hours: 6
+        max_vcpus: 128              # both legs at once
+      relabel:
+        instance_types: [c8a.16xlarge]
+        default_instance_type: c8a.16xlarge
+        market: spot
+        max_price_fraction: 0.58
+        on_demand_fallback: true
+        max_hours: 6
+        max_vcpus: 192
+        datasets:
+          nnue: { read: [selfplay/], write: [selfplay/relabel/] }
+```
+
+rusty-chess has one per workflow:
+
+| Profile | Workflow | Market | `max_vcpus` | Dataset access (under `data/`) |
+|---|---|---|--:|---|
+| `sprt` | SPRT, both legs | on demand | 128 | none |
+| `match` | Match | on demand | 64 | none |
+| `datagen` | Datagen | spot, capped at 0.58, on-demand fallback at launch | 192 | write `selfplay/` |
+| `relabel` | Relabel | spot, capped at 0.58, on-demand fallback at launch | 192 | read `selfplay/`, write `selfplay/relabel/` |
+| `gpu` | Train, GPU smoke | on demand | 4 | read `selfplay/`, write `nets/` |
+
+A caller that names no profile still gets `cpu`.
 
 ### Scratch on the instance store
 
@@ -276,6 +328,11 @@ rm "$SCRATCH_DIR/probe"
 `max_vcpus`, so a GPU task never waits behind SPRTs, nor they behind it.
 Instances launched before profiles existed carry no `Profile` tag and count
 as cpu. A run and task ID may run only once across all profiles.
+
+Budgets are per profile, but the EC2 quotas are per account, so the budgets
+can add up to more than a quota allows. When that happens, the launch fails
+with exit 3 and names the quota. See [Lifecycle and leak
+guards](#lifecycle-and-leak-guards) for the standard quotas.
 
 **The image.** GPU tasks run on the AWS *Deep Learning Base OSS Nvidia
 Driver GPU AMI (Amazon Linux 2023)*, which has the NVIDIA driver and the CUDA
@@ -391,7 +448,8 @@ own.
   instance is out of its reach. It can read prices and placement scores,
   and no secret.
 - **What the instance can do.** Task code is pull request code, so the
-  instance role can only write.
+  instance role can only write, apart from the `read` sub-prefixes of its
+  profile's `datasets` grant.
   - **Results:** objects under its own prefix, `tasks/<role-id>:<instance-id>/`,
     so no task can touch another's results.
   - **Logs:** the task log group, which the project's tasks share. Rest a

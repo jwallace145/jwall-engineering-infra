@@ -126,6 +126,11 @@ So for rusty-chess:
 | `data/nets/` | add | add |
 | anything else under `data/` | add | nothing |
 
+The `datagen` and `relabel` profiles are narrower still. `datagen` only adds
+under `data/selfplay/`. `relabel` reads `data/selfplay/` and adds only under
+`data/selfplay/relabel/`, so it can't touch the games and positions it reads.
+Neither can delete.
+
 Each trained net lives under its own ID and is never overwritten:
 
 ```text

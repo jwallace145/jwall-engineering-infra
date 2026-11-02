@@ -37,8 +37,14 @@ locals {
   # Their task profiles: cpu (the task-runner's own fields), then the
   # project file's task-runner.profiles. The launch role may pass each
   # profile's instance role, <org>-<key>-task[-<profile>].
+  #
+  # This list and bot_task_types stay here rather than being read from the
+  # project file. The launch role is assumed by the consumer's pull requests,
+  # so these lists bound what that repository's code can start and which
+  # roles it can use, and the consumer's own file must not be able to widen
+  # them. A change to them is a reviewed change in this repository.
   bot_task_profiles = {
-    rusty-chess = ["cpu", "gpu"]
+    rusty-chess = ["cpu", "gpu", "sprt", "match", "datagen", "relabel"]
   }
 
   # Bots with dataset components, and their buckets: the project file's
