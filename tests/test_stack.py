@@ -126,7 +126,45 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
                 "root_volume_gb": 200,
                 "gpu": True,
                 "datasets": [{"name": "nnue", "read": ["selfplay/"], "write": ["nets/"]}],
-            }
+            },
+            {
+                "name": "sprt",
+                "default_instance_type": "c8a.16xlarge",
+                "max_hours": 6,
+                "ami_name": None,
+                "root_volume_gb": 40,
+                "gpu": False,
+                "datasets": [],
+            },
+            {
+                "name": "match",
+                "default_instance_type": "c8a.16xlarge",
+                "max_hours": 6,
+                "ami_name": None,
+                "root_volume_gb": 40,
+                "gpu": False,
+                "datasets": [],
+            },
+            {
+                "name": "datagen",
+                "default_instance_type": "c8a.16xlarge",
+                "max_hours": 6,
+                "ami_name": None,
+                "root_volume_gb": 40,
+                "gpu": False,
+                "datasets": [{"name": "nnue", "read": [], "write": ["selfplay/"]}],
+            },
+            {
+                "name": "relabel",
+                "default_instance_type": "c8a.16xlarge",
+                "max_hours": 6,
+                "ami_name": None,
+                "root_volume_gb": 40,
+                "gpu": False,
+                "datasets": [
+                    {"name": "nnue", "read": ["selfplay/"], "write": ["selfplay/relabel/"]}
+                ],
+            },
         ],
         "datasets": [
             {

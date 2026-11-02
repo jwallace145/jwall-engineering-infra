@@ -61,6 +61,38 @@ components:
         gpu: true                   # wait for nvidia-smi; record GPU, driver and CUDA; SCRATCH_DIR on the NVMe
         datasets:
           nnue: { read: [selfplay/], write: [nets/] }  # data/selfplay/* in, data/nets/* out
+      sprt:
+        instance_types: [c8a.xlarge, c8a.8xlarge, c8a.16xlarge]
+        default_instance_type: c8a.16xlarge
+        market: on-demand           # both legs gate; a reclamation leaves no verdict
+        max_hours: 6
+        max_vcpus: 128              # both legs at once
+      match:
+        instance_types: [c8a.xlarge, c8a.8xlarge, c8a.16xlarge]
+        default_instance_type: c8a.16xlarge
+        market: on-demand
+        max_hours: 6
+        max_vcpus: 64
+      datagen:
+        instance_types: [c8a.xlarge, c8a.8xlarge, c8a.16xlarge]
+        default_instance_type: c8a.16xlarge
+        market: spot                # an interruption only loses the shards in progress
+        max_price_fraction: 0.58
+        on_demand_fallback: true
+        max_hours: 6
+        max_vcpus: 192              # three tasks at once
+        datasets:
+          nnue: { write: [selfplay/] }
+      relabel:
+        instance_types: [c8a.16xlarge]
+        default_instance_type: c8a.16xlarge
+        market: spot
+        max_price_fraction: 0.58
+        on_demand_fallback: true
+        max_hours: 6
+        max_vcpus: 192
+        datasets:
+          nnue: { read: [selfplay/], write: [selfplay/relabel/] }
 
   - kind: dataset                   # optional: a kept-forever, append-only S3 bucket (docs/datasets.md)
     name: nnue

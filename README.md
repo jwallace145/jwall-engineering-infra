@@ -134,7 +134,8 @@ the task script contract, spot pricing and interruptions, the security
 model, the leak guards, costs and a runbook, is
 [docs/remote-tasks.md](docs/remote-tasks.md). Task **profiles** add other
 kinds of instance with their own image, disk, market and vCPU budget, such
-as on-demand NVIDIA GPU instances for training (`profile: gpu`).
+as on-demand NVIDIA GPU instances for training (`profile: gpu`), or one
+profile per workflow (`profile: sprt`).
 
 `dataset` components keep data that must outlive a run, such as NNUE
 training data, in kept-forever, append-only S3 buckets that task instances

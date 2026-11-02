@@ -86,6 +86,20 @@ def test_run_gpu_profile_takes_its_defaults(captured: dict[str, Any]) -> None:
     assert spec.scratch == "instance-store"
 
 
+@pytest.mark.parametrize(
+    ("profile", "market"),
+    [("sprt", "on-demand"), ("match", "on-demand"), ("datagen", "spot"), ("relabel", "spot")],
+)
+def test_run_cpu_workflow_profile_takes_its_defaults(
+    captured: dict[str, Any], profile: str, market: str
+) -> None:
+    result = _run("--profile", profile)
+    assert result.exit_code == 0, result.output
+    spec: tasks.TaskSpec = captured["spec"]
+    assert (spec.profile, spec.instance_type, spec.market) == (profile, "c8a.16xlarge", market)
+    assert (spec.whole_cores, spec.gpu, spec.scratch) == (True, False, "root-volume")
+
+
 def test_run_cpu_is_the_default_profile(captured: dict[str, Any]) -> None:
     assert _run().exit_code == 0
     spec: tasks.TaskSpec = captured["spec"]
@@ -96,7 +110,7 @@ def test_run_cpu_is_the_default_profile(captured: dict[str, Any]) -> None:
 def test_run_refuses_an_unknown_profile(captured: dict[str, Any]) -> None:
     result = _run("--profile", "tpu")
     assert result.exit_code == 2
-    assert "not a task profile; use one of cpu, gpu" in result.output
+    assert "not a task profile; use one of cpu, gpu, sprt" in result.output
     assert "spec" not in captured
 
 
