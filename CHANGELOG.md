@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.17.0...v0.18.0) (2026-11-02)
+
+
+### Features
+
+* register one task profile per rusty-chess workflow ([#85](https://github.com/jwallace145/jwall-engineering-infra/issues/85)) ([af70052](https://github.com/jwallace145/jwall-engineering-infra/commit/af7005220e6f166caff557b49b3d144cbd63fc78))
+
 ## [0.17.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.16.0...v0.17.0) (2026-10-31)
 
 
