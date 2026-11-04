@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import boto3
 import typer
@@ -1258,6 +1258,10 @@ def cost_report(
             "--months", min=1, max=costs.MAX_MONTHS, help="Calendar months, this one included."
         ),
     ] = 3,
+    by: Annotated[
+        str,
+        typer.Option("--by", help="With --project, split task spend by workflow or profile."),
+    ] = "workflow",
 ) -> None:
     """Monthly spend by project and component. Run with the owner's credentials:
     Cost Explorer is account-wide, so no CI role may read it. Each Cost Explorer
@@ -1266,6 +1270,10 @@ def cost_report(
     def body(run: Run) -> None:
         if project is not None and not costs.PROJECT_NAME.match(project):
             raise ConfigError(f"--project must be a kebab-case project name: {project!r}")
+        if by not in ("workflow", "profile"):
+            raise ConfigError(f"--by must be workflow or profile: {by!r}")
+        if project is None and by != "workflow":
+            raise ConfigError("--by needs --project")
         start, end = costs.period(datetime.now(UTC).date(), months)
         session = boto3.session.Session(region_name=costs.CE_REGION)
         with phase("preflight"):
@@ -1273,7 +1281,8 @@ def cost_report(
             run.logger.info("running as %s", arn)
         ce = session.client("ce")
         if project is not None:
-            print(costs.render(costs.project_table(ce, project, start, end)))
+            split: Literal["workflow", "profile"] = "profile" if by == "profile" else "workflow"
+            print(costs.render(costs.project_table(ce, project, start, end, by=split)))
         else:
             print(costs.render(costs.account_table(ce, start, end)))
             print()
