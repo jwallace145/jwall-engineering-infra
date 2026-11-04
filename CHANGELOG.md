@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.18.0...v0.19.0) (2026-11-04)
+
+
+### Features
+
+* support standalone research projects with central guardrails and a cost ceiling ([#87](https://github.com/jwallace145/jwall-engineering-infra/issues/87)) ([77633f4](https://github.com/jwallace145/jwall-engineering-infra/commit/77633f4d9ecf7ed15c4276ef04faf99af07eef71))
+
 ## [0.18.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.17.0...v0.18.0) (2026-11-02)
 
 
