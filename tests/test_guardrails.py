@@ -46,6 +46,10 @@ def _config(raw: dict[str, Any]) -> SiteConfig:
 
 def _central(settings: Settings, **retention: Any) -> Settings:
     """The fixture's central entry with the dataset's retention replaced."""
+    if retention.get("write_once") or retention.get("expire_prefixes"):
+        retention.setdefault("prefix", "data/")
+    if retention.get("expire_noncurrent_days") is not None:
+        retention.setdefault("prefix", "data/")
     entry = settings.projects["rusty-chess"]
     return with_guardrails(
         settings,
@@ -249,6 +253,7 @@ def test_versioning_matching_central_passes(settings: Settings) -> None:
 
 
 def _protect(settings: Settings, *prefixes: str, **retention: Any) -> Settings:
+    retention.setdefault("prefix", "data/")
     return _central(settings, write_once=prefixes, **retention)
 
 
@@ -272,7 +277,7 @@ def test_a_profile_cannot_write_below_a_protected_prefix(settings: Settings) -> 
     assert "runs/x/" in problem
 
 
-def test_a_profile_cannot_write_above_a_protected_prefix(settings: Settings) -> None:
+def test_non_overlapping_prefixes_pass(settings: Settings) -> None:
     raw = _raw()
     _no_task_runner_writer(raw)
     _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = {"write": ["r/"]}
@@ -402,3 +407,67 @@ def test_root_volume_keeps_its_schema_bound() -> None:
     _runner(raw)["profiles"]["gpu"]["root_volume_gb"] = 201
     with pytest.raises(ValidationError, match="root_volume_gb"):
         _config(raw)
+
+
+# A parent of a protected prefix overlaps it too
+
+
+def test_a_profile_cannot_write_a_parent_of_a_protected_prefix(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = {"write": ["runs/"]}
+    (problem,) = _problems(raw, _protect(settings, "runs/x/"))
+    assert "runs/" in problem and "runs/x/" in problem
+
+
+def test_expiry_on_a_parent_of_a_protected_prefix_is_refused(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    _component(raw, "dataset")["expire_prefixes"] = {"runs/": 1}
+    central = _protect(settings, "runs/x/", expire_prefixes={"runs/": 1})
+    (problem,) = _problems(raw, central)
+    assert "expire_prefixes" in problem and "runs/x/" in problem
+
+
+def test_consumer_write_once_on_a_parent_is_not_covered(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = {"write_once": ["runs/"]}
+    (problem,) = _problems(raw, _protect(settings, "runs/x/"))
+    assert "write_once" in problem and "'runs/'" in problem
+
+
+# The dataset's prefix is centrally approved when retention depends on it
+
+
+def test_a_deeper_prefix_cannot_dodge_write_once(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    dataset = _component(raw, "dataset")
+    dataset["prefix"] = "data/runs/"
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = {"write": ["x/"]}
+    (problem,) = _problems(raw, _protect(settings, "runs/"))
+    assert "prefix" in problem and "data/runs/" in problem and "data/" in problem
+    assert "config.yaml" in problem
+
+
+def test_a_deeper_prefix_cannot_move_expiry(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    dataset = _component(raw, "dataset")
+    dataset["prefix"] = "data/runs/"
+    dataset["expire_prefixes"] = {"tmp/": 1}
+    (problem,) = _problems(raw, _central(settings, expire_prefixes={"tmp/": 1}))
+    assert "prefix" in problem and "config.yaml" in problem
+
+
+def test_the_approved_prefix_passes(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    assert _problems(raw, _protect(settings, "runs/")) == []
+
+
+def test_an_empty_central_entry_imposes_no_prefix(settings: Settings) -> None:
+    raw = _raw()
+    _component(raw, "dataset")["prefix"] = "anything/"
+    assert _problems(raw, settings) == []

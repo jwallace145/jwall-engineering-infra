@@ -110,6 +110,11 @@ def _dataset_problems(config: SiteConfig, approved: ProjectGuardrails) -> list[s
 def _retention_problems(dataset: Dataset, retention: DatasetRetention) -> list[str]:
     where = f"dataset {dataset.name} ({dataset.bucket})"
     problems: list[str] = []
+    if retention.prefix is not None and dataset.prefix != retention.prefix:
+        problems.append(
+            f"{where}: prefix {dataset.prefix!r} must equal the {retention.prefix!r} approved "
+            "in config.yaml, which its write_once and expire_prefixes are relative to"
+        )
     if dataset.expire_prefixes != retention.expire_prefixes:
         problems.append(
             f"{where}: expire_prefixes {dataset.expire_prefixes} must equal the "

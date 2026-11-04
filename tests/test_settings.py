@@ -241,6 +241,7 @@ def test_dataset_retention_is_typed(tmp_path: Path) -> None:
             "math-prover": {
                 "datasets": {
                     "b": {
+                        "prefix": "data/",
                         "write_once": ["runs/", "models/"],
                         "expire_prefixes": {"tmp/": 30},
                         "expire_noncurrent_days": 90,
@@ -256,3 +257,46 @@ def test_dataset_retention_is_typed(tmp_path: Path) -> None:
     assert retention.expire_prefixes == {"tmp/": 30}
     assert retention.expire_noncurrent_days == 90
     assert retention.versioning is True
+    assert retention.prefix == "data/"
+
+
+@pytest.mark.parametrize(
+    "retention",
+    [
+        {"write_once": ["runs/"]},
+        {"expire_prefixes": {"tmp/": 1}},
+        {"expire_noncurrent_days": 30, "versioning": True},
+    ],
+)
+def test_central_retention_must_name_the_dataset_prefix(
+    tmp_path: Path, retention: dict[str, object]
+) -> None:
+    path = _with_projects(tmp_path, {"p": {"datasets": {"b": retention}}})
+    with pytest.raises(ConfigError, match=r"prefix"):
+        load_settings(path, environ={})
+    path = _with_projects(tmp_path, {"p": {"datasets": {"b": {**retention, "prefix": "data/"}}}})
+    assert load_settings(path, environ={}).projects["p"].datasets["b"].prefix == "data/"
+
+
+def test_an_empty_central_entry_needs_no_prefix(settings: Settings) -> None:
+    entry = settings.projects["rusty-chess"].datasets["jwall-engineering-rusty-chess-nnue"]
+    assert entry.prefix is None
+
+
+@pytest.mark.parametrize(
+    "retention",
+    [
+        {"prefix": "/data/"},
+        {"prefix": "data"},
+        {"prefix": "data/", "write_once": ["/runs/"]},
+        {"prefix": "data/", "write_once": ["runs"]},
+        {"prefix": "data/", "expire_prefixes": {"/tmp/": 1}},
+        {"prefix": "data/", "expire_prefixes": {"tmp": 1}},
+    ],
+)
+def test_central_prefixes_have_the_component_format(
+    tmp_path: Path, retention: dict[str, object]
+) -> None:
+    path = _with_projects(tmp_path, {"p": {"datasets": {"b": retention}}})
+    with pytest.raises(ConfigError, match=r"prefix|sub-prefix"):
+        load_settings(path, environ={})

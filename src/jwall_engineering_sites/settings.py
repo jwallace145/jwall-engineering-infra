@@ -13,8 +13,16 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
+from .components import check_prefixes
 from .errors import ConfigError
 
 ENV_CONFIG_PATH = "JES_CONFIG"
@@ -164,10 +172,42 @@ class DatasetRetention(_Section):
     A consumer's dataset component must request exactly these values.
     """
 
+    #: The dataset's `prefix` that `write_once` and `expire_prefixes` are
+    #: relative to. Required when any retention is set; the file's own prefix
+    #: must then equal it. An empty entry imposes no prefix.
+    prefix: str | None = None
     write_once: tuple[str, ...] = ()
     expire_prefixes: dict[str, int] = {}
     expire_noncurrent_days: int | None = None
     versioning: bool = False
+
+    @field_validator("prefix")
+    @classmethod
+    def _prefix(cls, value: str | None) -> str | None:
+        if value is not None:
+            check_prefixes((value,))
+        return value
+
+    @field_validator("write_once")
+    @classmethod
+    def _write_once(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return check_prefixes(value)
+
+    @field_validator("expire_prefixes")
+    @classmethod
+    def _expire_prefixes(cls, value: dict[str, int]) -> dict[str, int]:
+        check_prefixes(tuple(value))
+        return value
+
+    @model_validator(mode="after")
+    def _retention_needs_a_prefix(self) -> DatasetRetention:
+        relative = self.write_once or self.expire_prefixes
+        if (relative or self.expire_noncurrent_days is not None) and self.prefix is None:
+            raise ValueError(
+                "prefix is required when write_once, expire_prefixes or "
+                "expire_noncurrent_days is set: the dataset prefix they apply to"
+            )
+        return self
 
 
 class ProjectGuardrails(_Section):

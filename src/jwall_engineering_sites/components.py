@@ -140,7 +140,7 @@ def _check_instance_types(value: tuple[str, ...]) -> tuple[str, ...]:
     return value
 
 
-def _check_prefixes(value: tuple[str, ...]) -> tuple[str, ...]:
+def check_prefixes(value: tuple[str, ...]) -> tuple[str, ...]:
     for prefix in value:
         if not _PREFIX.match(prefix):
             raise ValueError(
@@ -163,7 +163,7 @@ class DatasetAccess(_Model):
     @field_validator("read", "write", "write_once")
     @classmethod
     def _prefixes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _check_prefixes(value)
+        return check_prefixes(value)
 
     @model_validator(mode="after")
     def _something(self) -> DatasetAccess:
@@ -349,7 +349,7 @@ class Dataset(_Model):
     @field_validator("expire_prefixes")
     @classmethod
     def _expire_prefixes(cls, value: dict[str, int]) -> dict[str, int]:
-        _check_prefixes(tuple(value))
+        check_prefixes(tuple(value))
         for prefix, days in value.items():
             if days < 1:
                 raise ValueError(f"{prefix!r}: days must be at least 1")
