@@ -16,6 +16,8 @@ from jwall_engineering_sites.stack import (
     PLAN_CHANGES,
     PLAN_NO_CHANGES,
     Terraform,
+    dataset_bucket_addresses,
+    dataset_names,
     default_stack_dir,
     render_backend,
     render_tfvars,
@@ -705,3 +707,58 @@ def test_prepare_renders_a_research_project_into_the_bot_stack(
         assert json.loads((workdir / "terraform.tfvars.json").read_text())["bot_enabled"] is False
     finally:
         terraform.cleanup(failed=False)
+
+
+# -- releasing dataset buckets from state --------------------------------------
+
+
+def test_dataset_bucket_addresses_keeps_the_buckets_and_leaves_the_grants() -> None:
+    bucket = 'module.datasets["nnue"].aws_s3_bucket.this'
+    policy = 'module.datasets["nnue"].aws_s3_bucket_policy.this'
+    lifecycle = 'module.datasets["nnue"].aws_s3_bucket_lifecycle_configuration.this'
+    state = [
+        "aws_s3_bucket.outside_the_module",
+        "module.records[0].aws_s3_bucket.this",
+        'module.datasets_old["nnue"].aws_s3_bucket.this',
+        lifecycle,
+        'module.datasets["nnue"].aws_iam_role_policy.grant["x"]',
+        'module.datasets["nnue"].aws_iam_role_policy.writer["x"]',
+        'module.datasets["nnue"].data.aws_s3_bucket.lookup',
+        bucket,
+        policy,
+    ]
+    assert dataset_bucket_addresses(state) == [lifecycle, bucket, policy]
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        # A role whose name holds the type, in the instance key.
+        'module.datasets["nnue"].aws_iam_role_policy.grant["aws_s3_bucket.this"]',
+        # A dataset whose name holds the type, or looks like an address.
+        'module.datasets["aws_s3_bucket"].aws_iam_role_policy.grant["x"]',
+        'module.datasets["a.aws_s3_bucket.b"].aws_iam_role_policy.writer["x"]',
+        'module.datasets["a\\"].aws_s3_bucket.b"].aws_iam_role_policy.grant["x"]',
+    ],
+)
+def test_dataset_bucket_addresses_ignores_names_holding_the_type(address: str) -> None:
+    assert dataset_bucket_addresses([address]) == []
+
+
+def test_dataset_bucket_addresses_finds_a_bucket_of_a_dataset_named_like_one() -> None:
+    address = 'module.datasets["aws_s3_bucket_x"].aws_s3_bucket.this'
+    assert dataset_bucket_addresses([address]) == [address]
+
+
+def test_dataset_bucket_addresses_of_nothing() -> None:
+    assert dataset_bucket_addresses([]) == []
+
+
+def test_dataset_names_are_those_with_a_released_bucket() -> None:
+    state = [
+        'module.datasets["b"].aws_s3_bucket.this',
+        'module.datasets["a"].aws_s3_bucket.this',
+        'module.datasets["a"].aws_s3_bucket_policy.this',
+        'module.datasets["c"].aws_iam_role_policy.grant["x"]',
+    ]
+    assert dataset_names(dataset_bucket_addresses(state)) == ["a", "b"]

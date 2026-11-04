@@ -127,7 +127,25 @@ def _module(name: str) -> str:
     return match.group(1)
 
 
+_RESEARCH_CHOICE = re.compile(
+    r"^\s*policies\s*=\s*concat\(\s*contains\(local\.research_projects, each\.key\)"
+    r"\s*\?\s*\[([^\]]*)\]\s*:\s*\[([^\]]*)\]",
+    re.MULTILINE,
+)
+
+
+def _research_policies(block: str) -> list[str]:
+    """The base policies when the project is a research project."""
+    match = _RESEARCH_CHOICE.search(block)
+    assert match, "the role does not choose its base policies by research_projects"
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
 def _policies(block: str) -> list[str]:
+    # A role choosing by kind: what a bot gets.
+    choice = _RESEARCH_CHOICE.search(block)
+    if choice:
+        return re.findall(r'"([^"]+)"', choice.group(2))
     # The first list: the policies every bot gets, before any concat()ed extras.
     match = re.search(r"^\s*policies\s*=\s*(?:concat\(\s*)?\[([^\]]*)\]", block, re.MULTILINE)
     assert match, "no policies list"
@@ -226,3 +244,51 @@ def test_foundation_reads_lists_from_config() -> None:
         assert match and "local.tool_config.projects" in match.group(1), name
     assert set(_projects()) <= set(registry())
     assert set(_task_profiles()) == set(_task_types())
+
+
+def test_no_real_research_project_is_registered() -> None:
+    assert re.search(r"^\s+research_projects\s*=\s*toset\(\[\]\)$", BOTS_TF.read_text(), re.M)
+
+
+def test_foundation_gives_research_projects_no_release_role() -> None:
+    match = re.search(r"^\s*for_each\s*=\s*(.+)$", _module("bot_ci_release"), re.MULTILINE)
+    assert match, "bot_ci_release has no for_each"
+    comprehension = re.fullmatch(
+        r"\{\s*for (\w+), (\w+) in local\.bots\s*:\s*\1\s*=>\s*\2\s*"
+        r"if !contains\(local\.research_projects,\s*\1\)\s*\}",
+        match.group(1).strip(),
+    )
+    assert comprehension, f"for_each must filter research out, keeping keys: {match.group(1)}"
+
+
+def test_foundation_gives_research_projects_compute_and_bots_container() -> None:
+    plan, apply = _module("bot_ci_plan"), _module("bot_ci_apply")
+    # Same order as before research existed: reordering would churn rusty-chess's attachments.
+    assert _policies(plan) == ["tfstate/read", "container/read", "task/read"]
+    assert _research_policies(plan) == ["tfstate/read", "compute/read", "task/read"]
+    assert _policies(apply) == [
+        "tfstate/write",
+        "container/read",
+        "container/manage",
+        "task/read",
+        "task/manage",
+    ]
+    assert _research_policies(apply) == [
+        "tfstate/write",
+        "compute/read",
+        "compute/manage",
+        "task/read",
+        "task/manage",
+    ]
+
+
+def test_outputs_do_not_reach_for_a_research_projects_release_role() -> None:
+    outputs = (REPO_ROOT / "foundation" / "outputs.tf").read_text()
+    match = re.search(r"^\s*release_role_arn\s*=\s*(.+)$", outputs, re.MULTILINE)
+    assert match
+    assert match.group(1).strip() == (
+        "contains(local.research_projects, key) ? null : module.bot_ci_release[key].role_arn"
+    )
+    # Plan and apply roles exist for every project, so the state policy needs no change.
+    state = (REPO_ROOT / "foundation" / "state.tf").read_text()
+    assert "bot_ci_release" not in state

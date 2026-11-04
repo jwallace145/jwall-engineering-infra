@@ -10,10 +10,13 @@ import pytest
 from typer.testing import CliRunner
 
 from jwall_engineering_sites import cli, tasks
-from tests.test_cli import BOT_PLAN_ROLE, _as_role
+from tests.test_cli import BOT_PLAN_ROLE, RESEARCH_PLAN_ROLE, _as_role
 
 runner = CliRunner()
 TASK_ROLE = "arn:aws:sts::650503560686:assumed-role/jwall-engineering-rusty-chess-ci-task/s"
+RESEARCH_TASK_ROLE = (
+    "arn:aws:sts::650503560686:assumed-role/jwall-engineering-math-prover-ci-task/s"
+)
 SHA = "0123456789abcdef0123456789abcdef01234567"
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
 
@@ -271,3 +274,83 @@ def test_a_refusal_before_launch_still_reports_failed(
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     assert _run("--instance-type", "c8a.48xlarge").exit_code == 2
     assert "outcome=failed" in output.read_text()
+
+
+# -- research projects ---------------------------------------------------------------
+
+
+@pytest.fixture
+def research_fleet(monkeypatch: pytest.MonkeyPatch, research_workspace: Path) -> list[str]:
+    """Running instances for math-prover only; anything else is the wrong project."""
+    terminated: list[str] = []
+
+    def running(ec2: Any, project: str) -> list[tasks.TaskInstance]:
+        assert project == "math-prover"
+        return _instances()
+
+    monkeypatch.setattr(tasks, "running_tasks", running)
+    monkeypatch.setattr(tasks, "terminate", lambda ec2, i, logger: terminated.append(i))
+    monkeypatch.setattr(cli, "_now", lambda: NOW)
+    return terminated
+
+
+def test_task_list_works_on_research(research_fleet: list[str]) -> None:
+    with _as_role(RESEARCH_PLAN_ROLE):
+        result = runner.invoke(cli.app, ["task", "list"])
+    assert result.exit_code == 0, result.output
+    assert "i-run2" in result.output
+
+
+def test_task_list_refuses_another_projects_role_on_research(research_fleet: list[str]) -> None:
+    with _as_role(BOT_PLAN_ROLE):
+        result = runner.invoke(cli.app, ["task", "list"])
+    assert result.exit_code == 3
+    assert "jwall-engineering-math-prover-ci-plan" in result.output
+
+
+def test_task_terminate_and_sweep_work_on_research(research_fleet: list[str]) -> None:
+    with _as_role(RESEARCH_TASK_ROLE):
+        terminate = runner.invoke(cli.app, ["task", "terminate", "--run-id", "2-1"])
+        assert terminate.exit_code == 0, terminate.output
+        assert research_fleet == ["i-run", "i-run2"]
+        research_fleet.clear()
+        sweep = runner.invoke(cli.app, ["task", "sweep"])
+    assert sweep.exit_code == 0, sweep.output
+    assert research_fleet == ["i-old", "i-untagged"]
+
+
+def test_task_run_on_research_takes_the_profile_from_its_file(
+    research_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, tasks.TaskSpec] = {}
+
+    def run_task(session: Any, spec: tasks.TaskSpec, out_dir: Path, logger: Any, **kw: Any) -> int:
+        seen["spec"] = spec
+        return 0
+
+    monkeypatch.setattr(tasks, "run_task", run_task)
+    with _as_role(RESEARCH_TASK_ROLE):
+        result = runner.invoke(
+            cli.app, ["task", "run", "--script", "train.sh", "--ref", SHA, "--profile", "train"]
+        )
+    assert result.exit_code == 0, result.output
+    spec = seen["spec"]
+    assert spec.project.project == "math-prover"
+    assert spec.repository == "jwallace145/math-prover"
+    assert (spec.profile, spec.instance_type, spec.gpu) == ("train", "g6e.xlarge", True)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["task", "list"],
+        ["task", "terminate", "--all"],
+        ["task", "sweep"],
+        ["task", "run", "--script", "s.sh", "--ref", SHA],
+    ],
+    ids=" ".join,
+)
+def test_task_commands_refuse_sites(workspace: Path, command: list[str]) -> None:
+    result = runner.invoke(cli.app, command)
+    assert result.exit_code == 3, result.output
+    assert "is a site" in result.output and "bot and research projects" in result.output

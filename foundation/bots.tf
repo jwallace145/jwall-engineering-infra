@@ -5,9 +5,11 @@
 #
 #   jwall-engineering-<key>-ci-plan     trusted for pull_request on THIS repo     tfstate/read, container/read, task/read
 #                                                                                 (+ dataset/read with datasets)
+#                                                                                 (compute/read for container/read on research)
 #   jwall-engineering-<key>-ci-apply    trusted for environment:prod on THIS repo tfstate/write, container/read, container/manage, task/read, task/manage
 #                                                                                 (+ dataset/read, dataset/manage with datasets)
-#   jwall-engineering-<key>-ci-release  trusted for the bot repo's v* tags only   container/release
+#                                                                                 (compute/* for container/* on research)
+#   jwall-engineering-<key>-ci-release  trusted for the bot repo's v* tags only   container/release (none on research)
 #   jwall-engineering-<key>-ci-task     trusted for the bot repo's pull_request   task/launch, for every task profile
 #                                       and main only (never forks)
 #
@@ -26,6 +28,10 @@ locals {
   bots = {
     rusty-chess = { repository = "jwallace145/rusty-chess-v2", repository_id = "1435162673" }
   }
+
+  # The entries of `bots` without a bot or an image (kind research): their plan
+  # and apply roles get compute/* for container/*, and they have no release role.
+  research_projects = toset([])
 
   # The guardrails come from config.yaml's `projects`, not from the project
   # file. The launch role is assumed by the consumer's pull requests, so
@@ -66,7 +72,7 @@ module "bot_ci_plan" {
   oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
 
   policies = concat(
-    ["tfstate/read", "container/read", "task/read"],
+    contains(local.research_projects, each.key) ? ["tfstate/read", "compute/read", "task/read"] : ["tfstate/read", "container/read", "task/read"],
     contains(keys(local.bot_datasets), each.key) ? ["dataset/read"] : [],
   )
 
@@ -89,7 +95,7 @@ module "bot_ci_apply" {
   environment       = "prod"
 
   policies = concat(
-    ["tfstate/write", "container/read", "container/manage", "task/read", "task/manage"],
+    contains(local.research_projects, each.key) ? ["tfstate/write", "compute/read", "compute/manage", "task/read", "task/manage"] : ["tfstate/write", "container/read", "container/manage", "task/read", "task/manage"],
     contains(keys(local.bot_datasets), each.key) ? ["dataset/read", "dataset/manage"] : [],
   )
 
@@ -100,7 +106,7 @@ module "bot_ci_apply" {
 }
 
 module "bot_ci_release" {
-  for_each = local.bots
+  for_each = { for key, bot in local.bots : key => bot if !contains(local.research_projects, key) }
   source   = "jwallace145/jwall-engineering/aws//modules/ci-release-role"
   version  = "0.17.0"
 

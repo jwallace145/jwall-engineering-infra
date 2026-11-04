@@ -51,6 +51,11 @@ PLAN_CHANGES = 2
 
 _LOCK_INFO = re.compile(r"Lock Info:\n((?:\s{2,}\S.*\n?)+)")
 
+#: One resource of a dataset in `terraform state list`: its dataset's name (a
+#: quoted key, which may hold anything) and the segment after it, the resource type.
+_DATASET_RESOURCE = re.compile(r'^module\.datasets\["((?:[^"\\]|\\.)*)"\]\.([a-z0-9_]+)\.')
+_BUCKET_TYPE_PREFIX = "aws_s3_bucket"
+
 
 def render_tfvars(target: Target, settings: Settings | None = None) -> dict[str, Any]:
     """The stack's input variables. Pure, so it can be tested.
@@ -188,6 +193,22 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
             for d in project.datasets
         ],
     }
+
+
+def dataset_bucket_addresses(state: list[str]) -> list[str]:
+    """The dataset buckets' resources in `state`, in its order: what a destroy
+    releases to keep them. The datasets' IAM grants stay, to go with their roles."""
+    return [
+        address
+        for address in state
+        if (found := _DATASET_RESOURCE.match(address))
+        and found.group(2).startswith(_BUCKET_TYPE_PREFIX)
+    ]
+
+
+def dataset_names(addresses: list[str]) -> list[str]:
+    """The datasets these addresses belong to, sorted, each once."""
+    return sorted({found.group(1) for a in addresses if (found := _DATASET_RESOURCE.match(a))})
 
 
 def render_backend(site: Target) -> str:
