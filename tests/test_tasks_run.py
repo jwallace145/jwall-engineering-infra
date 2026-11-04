@@ -657,7 +657,9 @@ def test_terminate_reports_other_failures() -> None:
 class Recorder:
     """Stands in for the AWS steps of run_task and records what ran."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, **behaviour: Any) -> None:
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, *, real: tuple[str, ...] = (), **behaviour: Any
+    ) -> None:
         self.calls: list[str] = []
         self.behaviour = behaviour
         self.terminated: list[str] = []
@@ -665,7 +667,8 @@ class Recorder:
                      "launch", "wait_for_agent", "send", "stream", "results_location",
                      "collect", "interruption", "terminate", "running_tasks",
                      "check_ceiling"):  # fmt: skip
-            monkeypatch.setattr(tasks, name, self._step(name))
+            if name not in real:
+                monkeypatch.setattr(tasks, name, self._step(name))
 
     def _step(self, name: str) -> Any:
         def step(*args: Any, **kwargs: Any) -> Any:
@@ -1086,7 +1089,8 @@ def test_an_interruption_on_an_error_path_is_still_75(
         if step == "wait_for_agent"
         else ClientError({"Error": {"Code": "InvalidInstanceId"}}, "SendCommand")
     )
-    rec = Recorder(monkeypatch, **{step: error, "interruption": "2026-10-29T12:00:05Z"})
+    behaviour: dict[str, Any] = {step: error, "interruption": "2026-10-29T12:00:05Z"}
+    rec = Recorder(monkeypatch, **behaviour)
     assert _run(bot, tmp_path) == 75
     assert rec.terminated == ["i-1"]
     assert _outputs(github_output)["outcome"] == "interrupted"
@@ -1155,3 +1159,140 @@ def test_run_task_checks_the_ceiling_before_waiting_for_a_slot(
     spec = _spec(bot, max_run_cost_usd=50.0)
     assert tasks.run_task(session, spec, tmp_path / "out", LOG, write=lambda _: None) == 0
     assert rec.calls.index("check_ceiling") < rec.calls.index("wait_for_slot")
+
+
+# --- the ceiling, priced for real -------------------------------------------------
+
+
+class ScriptedPricing:
+    """The Pricing API: each call takes the next answer, a price or None for an error."""
+
+    def __init__(self, *answers: str | None) -> None:
+        self.answers = list(answers)
+        self.calls = 0
+
+    def get_products(self, **_: Any) -> dict[str, Any]:
+        answer = self.answers[min(self.calls, len(self.answers) - 1)]
+        self.calls += 1
+        if answer is None:
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "GetProducts")
+        dimension = {"pricePerUnit": {"USD": answer}}
+        term = {"priceDimensions": {"d": dimension}}
+        return {"PriceList": [json.dumps({"terms": {"OnDemand": {"t": term}}})]}
+
+
+class LaunchEC2:
+    """What the real `price_plan` and `launch` call on EC2."""
+
+    def __init__(self) -> None:
+        self.launches: list[dict[str, Any]] = []
+
+    def describe_spot_price_history(self, **_: Any) -> dict[str, Any]:
+        return {"SpotPriceHistory": []}
+
+    def get_spot_placement_scores(self, **_: Any) -> dict[str, Any]:
+        return {"SpotPlacementScores": []}
+
+    def run_instances(self, **kwargs: Any) -> dict[str, Any]:
+        self.launches.append(kwargs)
+        return {"Instances": [{"InstanceId": "i-1", "ImageId": "ami-1"}]}
+
+
+class PricedSession:
+    def __init__(self, ec2: LaunchEC2, pricing: ScriptedPricing) -> None:
+        self.clients: dict[str, object] = {"ec2": ec2, "pricing": pricing}
+
+    def client(self, name: str, **kwargs: Any) -> object:
+        return self.clients.get(name, object())
+
+
+def _priced_run(
+    bot: Project,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pricing: ScriptedPricing,
+    **spec: Any,
+) -> tuple[int, LaunchEC2]:
+    """`run_task` with the real ceiling, price plan and launch; only the rest is stubbed."""
+    Recorder(monkeypatch, real=("check_ceiling", "price_plan", "launch"))
+    ec2 = LaunchEC2()
+    session: Any = PricedSession(ec2, pricing)
+    code = tasks.run_task(
+        session, _spec(bot, **spec), tmp_path / "out", LOG, write=lambda _: None,
+        sleep=lambda _: None,
+    )  # fmt: skip
+    return code, ec2
+
+
+def _max_price(launched: dict[str, Any]) -> str | None:
+    options: dict[str, Any] = launched["InstanceMarketOptions"]["SpotOptions"]
+    return options.get("MaxPrice")
+
+
+C8A = "3.44864"  # c8a.16xlarge on demand: $20.69 for six hours, $12.00 at the 0.58 spot cap
+
+
+def test_a_spot_only_task_keeps_its_cap_when_pricing_fails_after_the_check(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ceiling priced this task at the cap, so it must launch under that cap."""
+    pricing = ScriptedPricing(C8A, None)
+    code, ec2 = _priced_run(
+        bot, tmp_path, monkeypatch, pricing, on_demand_fallback=False, max_run_cost_usd=15.0
+    )
+    assert code == 0
+    assert [_max_price(launched) for launched in ec2.launches] == ["2.0002"]
+    assert pricing.calls == 1
+
+
+def test_a_task_with_a_ceiling_asks_the_pricing_api_once(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pricing = ScriptedPricing(C8A)
+    code, ec2 = _priced_run(
+        bot, tmp_path, monkeypatch, pricing, market="on-demand", max_run_cost_usd=50.0
+    )
+    assert code == 0 and pricing.calls == 1
+    assert "InstanceMarketOptions" not in ec2.launches[0]
+
+
+def test_a_spot_only_task_over_the_ceiling_never_launches(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    code, ec2 = _priced_run(
+        bot, tmp_path, monkeypatch, ScriptedPricing(C8A), on_demand_fallback=False,
+        max_run_cost_usd=10.0,
+    )  # fmt: skip
+    assert code == 2 and ec2.launches == []
+    assert _outputs(github_output)["outcome"] == "failed"
+
+
+def test_a_fallback_is_priced_at_on_demand_and_refused_over_the_ceiling(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the ceiling at the spot cap, over it at the on-demand price it may fall back to."""
+    code, ec2 = _priced_run(
+        bot, tmp_path, monkeypatch, ScriptedPricing(C8A), on_demand_fallback=True,
+        max_run_cost_usd=15.0,
+    )  # fmt: skip
+    assert code == 2 and ec2.launches == []
+
+
+def test_a_task_with_a_ceiling_and_no_price_never_launches(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    pricing = ScriptedPricing(None)
+    code, ec2 = _priced_run(
+        bot, tmp_path, monkeypatch, pricing, on_demand_fallback=False, max_run_cost_usd=15.0
+    )
+    assert code == 3 and ec2.launches == []
+    assert pricing.calls == tasks.PRICE_ATTEMPTS
+    assert _outputs(github_output)["outcome"] == "no-price"
+
+
+def test_a_task_without_a_ceiling_still_launches_when_pricing_fails(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, ec2 = _priced_run(bot, tmp_path, monkeypatch, ScriptedPricing(None))
+    assert code == 0
+    assert [_max_price(launched) for launched in ec2.launches] == [None]

@@ -318,15 +318,44 @@ def test_price_plan_caps_spot_and_orders_zones(bot: Project) -> None:
     assert [s.zone for s in plan.subnets] == ["us-east-1d", "us-east-1b", "us-east-1a"]
 
 
-def test_price_plan_without_the_pricing_api_lets_aws_cap_at_on_demand(
+def test_price_plan_without_a_ceiling_or_a_price_lets_aws_cap_at_on_demand(
     bot: Project, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Only a spec with no ceiling may do this; the CLI always sets one."""
+    spec = _spec(bot, max_run_cost_usd=None)
     with caplog.at_level(logging.WARNING):
-        plan = tasks.price_plan(
-            _any(FakePriceEC2()), _any(FakePricing(None)), _spec(bot), THREE, LOG
-        )
+        plan = tasks.price_plan(_any(FakePriceEC2()), _any(FakePricing(None)), spec, THREE, LOG)
     assert plan.max_price is None and plan.on_demand is None
     assert "capped at the on-demand price" in caplog.text
+
+
+def test_price_plan_with_a_ceiling_never_plans_spot_without_a_cap(bot: Project) -> None:
+    spec = _spec(bot, max_run_cost_usd=50.0)
+    with pytest.raises(tasks.NoPrice, match=r"c8a\.16xlarge"):
+        tasks.price_plan(_any(FakePriceEC2()), _any(FakePricing(None)), spec, THREE, LOG)
+
+
+def test_price_plan_with_a_ceiling_may_plan_on_demand_without_a_price(bot: Project) -> None:
+    """On demand has no cap to lose; `check_ceiling` has already priced it in a real run."""
+    spec = _spec(bot, market="on-demand", max_run_cost_usd=50.0)
+    plan = tasks.price_plan(_any(object()), _any(FakePricing(None)), spec, THREE, LOG)
+    assert plan.max_price is None and plan.on_demand is None
+
+
+def test_price_plan_reuses_a_price_it_is_given(bot: Project) -> None:
+    pricing = FakePricing("9.99")
+    plan = tasks.price_plan(
+        _any(FakePriceEC2()), _any(pricing), _spec(bot), THREE, LOG, on_demand=3.44864
+    )
+    assert pricing.calls == []
+    assert plan.max_price == "2.0002" and plan.on_demand == 3.44864
+
+
+def test_price_plan_for_on_demand_reuses_a_price_it_is_given(bot: Project) -> None:
+    pricing = FakePricing("9.99")
+    spec = _spec(bot, market="on-demand")
+    plan = tasks.price_plan(_any(object()), _any(pricing), spec, THREE, LOG, on_demand=3.44864)
+    assert pricing.calls == [] and plan.on_demand == 3.44864
 
 
 def test_price_plan_for_on_demand_skips_spot_lookups(bot: Project) -> None:
@@ -630,6 +659,12 @@ def test_no_price_after_three_attempts_fails_closed(bot: Project, api_fails: boo
         _ceiling(bot, pricing, sleeps=sleeps, market="on-demand")
     assert len(pricing.calls) == 3 and sleeps == [5, 5]
     assert caught.value.exit_code == 3 and isinstance(caught.value, PreflightError)
+
+
+def test_the_check_returns_the_price_it_read(bot: Project) -> None:
+    spec = _spec(bot, max_run_cost_usd=50.0, market="on-demand")
+    found = tasks.check_ceiling(_any(FakePricing("3.44864")), spec, LOG, sleep=lambda _: None)
+    assert found == 3.44864
 
 
 def test_no_ceiling_skips_the_check(bot: Project) -> None:

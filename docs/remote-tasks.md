@@ -453,9 +453,11 @@ own.
   `max_price_fraction` × the on-demand price from the Pricing API, rounded
   down. For a `c8a.16xlarge` that is 0.58 × $3.4486 = $2.0002 an hour, which
   guarantees a test never costs more than 58% of on demand. The log shows
-  the cap next to the current price. If the Pricing API is unavailable,
-  the launch is refused first by the [cost ceiling](#cost-ceiling)
-  (`outcome = no-price`), so no spot request is made without a price.
+  the cap next to the current price. The [cost ceiling](#cost-ceiling) reads
+  the on-demand price once and the cap reuses it, so the launch runs under the
+  cap the estimate assumed. If the Pricing API is unavailable, the ceiling
+  refuses the launch (`outcome = no-price`), so `task run` never makes a spot
+  request without a cap.
 - **Capacity interruptions** are the common kind. AWS reclaims spot capacity
   whatever you pay. The CLI reduces them in two ways:
   - It tries the zones in order of their spot placement score, then the

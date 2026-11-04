@@ -341,12 +341,14 @@ def check_ceiling(
     spec: TaskSpec,
     logger: Logger,
     sleep: Callable[[float], None] = time.sleep,
-) -> None:
+) -> float | None:
     """Refuse a task whose worst-case cost (rate x `max_hours`) is over
-    `max_run_cost_usd`. Fails closed: an unknown price is `NoPrice`."""
+    `max_run_cost_usd`. Fails closed: an unknown price is `NoPrice`. Returns
+    the on-demand price it read, for `price_plan` to cap spot with: the cap is
+    what the estimate assumed. Without a ceiling, reads nothing and returns None."""
     ceiling = spec.max_run_cost_usd
     if ceiling is None:
-        return
+        return None
     region = spec.project.region
     on_demand: float | None = None
     failure = "the Pricing API returned no price"
@@ -381,24 +383,37 @@ def check_ceiling(
             f"${ceiling:.2f} ceiling; lower --max-hours, pick a smaller --instance-type, or "
             "raise tasks.max_run_cost_usd (or the project's max_run_cost_usd)"
         )
+    return on_demand
 
 
 def price_plan(
-    ec2: EC2Client, pricing: PricingClient, spec: TaskSpec, subnets: list[Subnet], logger: Logger
+    ec2: EC2Client,
+    pricing: PricingClient,
+    spec: TaskSpec,
+    subnets: list[Subnet],
+    logger: Logger,
+    on_demand: float | None = None,
 ) -> PricePlan:
     """Resolve the spot cap and order the zones: best spot placement score
-    first, then the cheapest current spot price. Lookups that fail are
-    logged; launching never depends on them, except the cap."""
+    first, then the cheapest current spot price. `on_demand` is the price
+    `check_ceiling` already read; only without it is the Pricing API asked.
+    Lookups that fail are logged; launching never depends on them, except the
+    cap: a task with a ceiling never plans a spot launch without one (`NoPrice`)."""
     region = spec.project.region
-    try:
-        on_demand = on_demand_price(pricing, spec.instance_type, region)
-    except (ClientError, BotoCoreError) as exc:
-        logger.warning("the Pricing API failed: %s", exc)
-        on_demand = None
+    if on_demand is None:
+        try:
+            on_demand = on_demand_price(pricing, spec.instance_type, region)
+        except (ClientError, BotoCoreError) as exc:
+            logger.warning("the Pricing API failed: %s", exc)
     if spec.market != "spot":
         return PricePlan(subnets=subnets, max_price=None, on_demand=on_demand, spot={}, scores={})
     max_price: str | None = None
     if on_demand is None:
+        if spec.max_run_cost_usd is not None:
+            raise NoPrice(
+                f"no on-demand price for {spec.instance_type}, so no spot cap; a task with a "
+                "cost ceiling never launches without one, so nothing was launched"
+            )
         logger.warning(
             "no on-demand price for %s; spot is capped at the on-demand price by AWS",
             spec.instance_type,
@@ -1145,8 +1160,9 @@ def run_task(
 
     with _interruptible() as shield:
         try:
+            on_demand = None
             if spec.max_run_cost_usd is not None:
-                check_ceiling(pricing, spec, logger, sleep)
+                on_demand = check_ceiling(pricing, spec, logger, sleep)
             info = instance_types_info(ec2, [spec.instance_type])
             vcpus, threads = info[spec.instance_type]
             if threads > 1 and spec.whole_cores:
@@ -1158,7 +1174,8 @@ def run_task(
                 ec2, spec, vcpus, profile.max_vcpus, profile.slot_wait_minutes * 60, logger,
                 sleep, clock,
             )  # fmt: skip
-            plan = price_plan(ec2, pricing, spec, public_subnets(ec2, project.project), logger)
+            subnets = public_subnets(ec2, project.project)
+            plan = price_plan(ec2, pricing, spec, subnets, logger, on_demand)
             launching = True
             launched = launch(ec2, spec, template, plan, logger, sleep, clock)
             instance_id = launched.id
