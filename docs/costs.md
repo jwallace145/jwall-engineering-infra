@@ -8,6 +8,7 @@ runs from the owner's shell.
 
 ```sh
 jwall-engineering-sites cost report --project rusty-chess   # one project, by component
+jwall-engineering-sites cost report --project rusty-chess --by profile  # task spend by profile, not workflow
 jwall-engineering-sites cost report                         # every project, then the untagged spend
 jwall-engineering-sites cost report --months 6              # 1-13 calendar months, this one included (default 3)
 ```
@@ -17,7 +18,9 @@ jwall-engineering-sites cost report --months 6              # 1-13 calendar mont
 **One project** (`--project`): the project's spend by its `Component` tag.
 Task instances are all `Component=task-runner`, so task spend is split by
 the `Workflow` tag, the calling workflow's name: what the tasks were for,
-not only where they ran.
+not only where they ran. `--by profile` splits it by the `Profile` tag
+instead (`cpu`, `gpu`, `train`, ...). `--by workflow` is the default, and
+`--by` needs `--project`. A research project reports the same way.
 
 ```text
 rusty-chess by component  2026-08  2026-09  2026-10*
@@ -67,7 +70,8 @@ backfill from 2025-11-01:
 |---|---|
 | `Project` | the account report; the project filter |
 | `Component` | the project report's rows |
-| `Workflow` | task spend by workflow |
-| `Purpose`, `Profile`, `Lifecycle`, `RunId`, `TaskId` | active for Cost Explorer and later reports (per-run cost) |
+| `Workflow` | task spend by workflow (`--by workflow`, the default) |
+| `Profile` | task spend by profile (`--by profile`) |
+| `Purpose`, `Lifecycle`, `RunId`, `TaskId` | active for Cost Explorer and later reports (per-run cost) |
 
 A new tag a component adds must be activated by the owner before it shows.

@@ -1,4 +1,4 @@
-# One bot project: the image repository its releases are pushed to, a VPC
+# One bot or research project. A bot project: the image repository its releases are pushed to, a VPC
 # with public subnets (egress only, no NAT), the records bucket the games are
 # shipped to, and the instance that runs the bot. With a task-runner
 # component, also the task launch template and the task results bucket
@@ -6,6 +6,10 @@
 # Each further task profile (task-runner.profiles, e.g. gpu) adds its own
 # launch template and instance role. With dataset components, one
 # kept-forever, append-only bucket each.
+#
+# A research project shares this stack with bot_enabled false: no image
+# repository and no bot instance. Its network exists only with a task runner, so
+# a project of datasets alone has no VPC.
 #
 # Changing the instance's inputs replaces the instance and ends the game in
 # progress: its image (pinned in config.yaml, bot.amis), its type, or its user
@@ -15,7 +19,8 @@
 # The CI roles live in the foundation stack (foundation/bots.tf).
 
 locals {
-  name = "${var.tags["Organization"]}-${var.project}"
+  name            = "${var.tags["Organization"]}-${var.project}"
+  network_enabled = var.bot_enabled || var.task_runner_enabled
 }
 
 # The pinned image, resolved from its readable name. Names are unique among
@@ -61,24 +66,36 @@ data "aws_ami" "task_profile" {
 
 module "image" {
   source  = "jwallace145/jwall-engineering/aws//modules/ecr-repository"
-  version = "0.16.1"
+  version = "0.17.0"
+  count   = var.bot_enabled ? 1 : 0
 
   name                       = local.name
   keep_release_images        = var.keep_release_images
   expire_untagged_after_days = var.expire_untagged_after_days
 }
 
+moved {
+  from = module.image
+  to   = module.image[0]
+}
+
 module "network" {
   source  = "jwallace145/jwall-engineering/aws//modules/vpc"
-  version = "0.16.1"
+  version = "0.17.0"
+  count   = local.network_enabled ? 1 : 0
 
   name               = local.name
   availability_zones = var.availability_zones
 }
 
+moved {
+  from = module.network
+  to   = module.network[0]
+}
+
 module "records" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.16.1"
+  version = "0.17.0"
   count   = var.records_enabled ? 1 : 0
 
   name = "${local.name}-records"
@@ -86,18 +103,19 @@ module "records" {
 
 module "bot" {
   source  = "jwallace145/jwall-engineering/aws//modules/container-instance"
-  version = "0.16.1"
+  version = "0.17.0"
+  count   = var.bot_enabled ? 1 : 0
 
   name                 = "${local.name}-bot"
   project              = var.project
   name_root            = var.tags["Organization"]
-  image_repository_url = module.image.url
-  image_repository_arn = module.image.arn
+  image_repository_url = module.image[0].url
+  image_repository_arn = module.image[0].arn
   instance_type        = var.instance_type
   architecture         = var.architecture
   ami_id               = var.ami_name == null ? null : data.aws_ami.pinned[0].id
-  vpc_id               = module.network.vpc_id
-  subnet_id            = module.network.public_subnet_ids[0]
+  vpc_id               = module.network[0].vpc_id
+  subnet_id            = module.network[0].public_subnet_ids[0]
 
   secret_parameters     = var.secret_parameters
   container_environment = var.container_environment
@@ -112,11 +130,16 @@ module "bot" {
   health_seconds     = var.health_seconds
 }
 
+moved {
+  from = module.bot
+  to   = module.bot[0]
+}
+
 # Task outputs, written by task instances under tasks/<run>/<task>/ and copied
 # back by `task run`. Expired after task_results_days.
 module "task_results" {
   source  = "jwallace145/jwall-engineering/aws//modules/private-bucket"
-  version = "0.16.1"
+  version = "0.17.0"
   count   = var.task_runner_enabled ? 1 : 0
 
   name                           = "${local.name}-tasks"
@@ -125,32 +148,32 @@ module "task_results" {
 
 module "tasks" {
   source  = "jwallace145/jwall-engineering/aws//modules/task-runner"
-  version = "0.16.1"
+  version = "0.17.0"
   count   = var.task_runner_enabled ? 1 : 0
 
   name_root             = var.tags["Organization"]
   project               = var.project
-  vpc_id                = module.network.vpc_id
+  vpc_id                = module.network[0].vpc_id
   architecture          = var.architecture
   ami_id                = var.ami_name == null ? null : data.aws_ami.pinned[0].id
   default_instance_type = var.task_instance_type
   max_lifetime_hours    = var.task_max_lifetime_hours
   log_retention_days    = var.task_log_retention_days
-  rust_toolchain        = var.task_rust_toolchain
+  rust_toolchain        = var.task_rust ? var.task_rust_toolchain : null
 }
 
 # The other task profiles: their own template, image, disk and instance role;
 # the cpu profile's log group, security group and results bucket.
 module "task_profiles" {
   source   = "jwallace145/jwall-engineering/aws//modules/task-runner"
-  version  = "0.16.1"
+  version  = "0.17.0"
   for_each = { for p in var.task_profiles : p.name => p }
 
   name_root             = var.tags["Organization"]
   project               = var.project
   profile               = each.key
   shared                = module.tasks[0].shared
-  vpc_id                = module.network.vpc_id
+  vpc_id                = module.network[0].vpc_id
   architecture          = var.architecture
   ami_id                = each.value.ami_name == null ? (var.ami_name == null ? null : data.aws_ami.pinned[0].id) : data.aws_ami.task_profile[each.key].id
   default_instance_type = each.value.default_instance_type
@@ -158,7 +181,7 @@ module "task_profiles" {
   gpu                   = each.value.gpu
   max_lifetime_hours    = each.value.max_hours
   log_retention_days    = var.task_log_retention_days
-  rust_toolchain        = var.task_rust_toolchain
+  rust_toolchain        = each.value.rust ? var.task_rust_toolchain : null
 }
 
 # Kept-forever, append-only datasets (for example NNUE training data). Task
@@ -167,20 +190,24 @@ module "task_profiles" {
 # granted a dataset reads and adds only under its own sub-prefixes.
 module "datasets" {
   source   = "jwallace145/jwall-engineering/aws//modules/dataset-bucket"
-  version  = "0.16.1"
+  version  = "0.17.0"
   for_each = { for d in var.datasets : d.name => d }
 
-  name             = each.value.bucket
-  prefix           = each.value.prefix
-  transition_days  = each.value.transition_days
-  reader_role_arns = each.value.readers
+  name                   = each.value.bucket
+  prefix                 = each.value.prefix
+  transition_days        = each.value.transition_days
+  versioning             = each.value.versioning
+  expire_noncurrent_days = each.value.expire_noncurrent_days
+  expire_prefixes        = each.value.expire_prefixes
+  reader_role_arns       = each.value.readers
   writer_role_names = [
     for w in each.value.writers : module.tasks[0].instance_role_name if w == "task-runner"
   ]
   role_grants = {
     for p in var.task_profiles : module.task_profiles[p.name].instance_role_name => {
-      read  = one([for d in p.datasets : d.read if d.name == each.key])
-      write = one([for d in p.datasets : d.write if d.name == each.key])
+      read       = one([for d in p.datasets : d.read if d.name == each.key])
+      write      = one([for d in p.datasets : d.write if d.name == each.key])
+      write_once = one([for d in p.datasets : d.write_once if d.name == each.key])
     } if contains([for d in p.datasets : d.name], each.key)
   }
 }

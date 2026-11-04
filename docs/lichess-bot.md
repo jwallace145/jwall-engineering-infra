@@ -223,7 +223,7 @@ as `bot status` and `bot logs`. `bot secrets` needs no role.
 | `validate` | none | Validate the file and the bot stack offline |
 | `plan` | `ci-plan` | Plan `stacks/bot`, with the plan comment |
 | `apply` | `ci-apply` | Apply `stacks/bot` |
-| `destroy --yes` | `ci-apply` | Destroy the stack. It refuses while images remain; the records bucket is released from state and kept, and the secret stays |
+| `destroy --yes` | `ci-apply` | Destroy the stack. It refuses while images remain or tasks run; the records, dataset and task results buckets are released from state and kept, and the secret stays |
 | `bot build --version vX.Y.Z` | none | Download, verify, build and smoke-test locally (Docker) |
 | `bot push --version vX.Y.Z` | `ci-release` | Push a built image; refuses an existing tag |
 | `bot deploy --version vX.Y.Z [--restart]` | `ci-release` | Roll the bot to a pushed tag and follow the swap |
@@ -360,15 +360,17 @@ failed run once they are attached.
    to run.
 2. Run Bot apply with `destroy`, or `destroy --yes` with the apply role.
 
-The records bucket is released from Terraform state first, because its
-`prevent_destroy` would otherwise reject the whole plan. The bucket and its
-games are kept, along with the secret parameter.
+The records bucket, and any dataset and task results buckets, are released
+from Terraform state first, because `prevent_destroy` would otherwise reject
+the whole plan. The buckets and their data are kept, along with the secret
+parameter.
 
 ## Remote tasks
 
 A bot project can also run CI tasks, such as an SPRT, on dedicated,
 ephemeral EC2 instances by adding a `task-runner` component. See
-[remote-tasks.md](remote-tasks.md).
+[remote-tasks.md](remote-tasks.md). The same components work without a bot, as
+a [research project](research-projects.md).
 
 ## Datasets
 

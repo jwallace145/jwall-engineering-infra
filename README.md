@@ -8,7 +8,7 @@ The foundation stack for every [jwall.engineering](https://jwall.engineering) si
 - for each site in the `projects` registry, an S3 bucket and three CI roles
 - its own plan and apply CI roles
 - the `jwall-engineering-sites` CLI that every site repository's CI runs to plan, preview, apply and publish, its image in a private ECR repository, and the reusable workflows that run it
-- bot projects: for each entry in the `bots` registry, three CI roles, and the bot stack (`stacks/bot`) that runs a repository's GitHub releases as a permanent Lichess bot ([guide](docs/lichess-bot.md))
+- bot and research projects: for each entry in the `bots` registry, CI roles (a research project has no release role), and the bot stack (`stacks/bot`) that runs a repository's GitHub releases as a permanent Lichess bot ([guide](docs/lichess-bot.md))
 
 Everything is in `us-east-1`, managed with Terraform `>= 1.11` and the AWS provider `~> 6.0`. The shared building blocks are consumed from the public Terraform Registry, see [Shared modules](#shared-modules-from-the-terraform-registry). Releases are cut and applied by [Release Please](#releases-and-applies). Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the rules for coding agents are in [AGENTS.md](AGENTS.md).
 
@@ -35,7 +35,7 @@ reusable workflows this repository publishes. The design is in
 | `release --dist DIR` | `ci-apply` | `apply` then `publish` |
 | `outputs`, `config show` | `ci-plan` / none | Stack outputs as JSON; the effective tool configuration |
 | `report plan-comment --exit-code N --plan FILE --subject S` | none | Render the branded plan comment from a saved plan log (this repo's own CI uses it) |
-| `destroy --yes` | `ci-apply` | Bot projects only: destroy the stack (the records and task results buckets and the secret are kept; refuses while tasks run) |
+| `destroy --yes` | `ci-apply` | Bot and research projects: destroy the stack (the records, dataset and task results buckets and the secret are kept; refuses while tasks run) |
 | `bot build --version vX.Y.Z` | none | Bot projects: download and verify the release asset, build and smoke-test the image (Docker) |
 | `bot push --version vX.Y.Z` | `ci-release` | Push the image under the release tag; refuses an existing tag |
 | `bot deploy --version vX.Y.Z [--restart]` | `ci-release` | Roll the bot to a pushed tag and follow the swap (waits for the game in progress) |
@@ -43,10 +43,10 @@ reusable workflows this repository publishes. The design is in
 | `bot status` | `ci-plan` or `ci-release` | Instance, versions and rollout status |
 | `bot logs [--since D] [--follow]` | `ci-plan` | The container's CloudWatch logs |
 | `bot secrets set\|check NAME` | the owner's shell | Write (no echo) or check a SecureString secret |
-| `task run --script P --ref SHA [--profile NAME] [--instance-type T] [--market spot\|on-demand] [--max-hours N] [--out DIR] -- ARGS...` | `ci-task` | Bot projects with a `task-runner`: run one script on a fresh instance (spot under a price cap by default, on demand only as a launch fallback), stream it, copy its outputs, always terminate; exits with the script's code, or 75 on a spot interruption |
+| `task run --script P --ref SHA [--profile NAME] [--instance-type T] [--market spot\|on-demand] [--max-hours N] [--out DIR] -- ARGS...` | `ci-task` | Bot and research projects with a `task-runner`: refuse a worst-case cost over the ceiling, then run one script on a fresh instance (spot under a price cap by default, on demand only as a launch fallback), stream it, copy its outputs, always terminate; exits with the script's code, or 75 on a spot interruption |
 | `task list` | `ci-plan` or `ci-task` | The project's running task instances (read-only) |
 | `task terminate (--instance ID \| --run-id ID [--task-id ID] \| --all)`, `task sweep [--dry-run]` | `ci-task` | Terminate task instances; sweep those past their lifetime (by hand: there is no scheduled sweeper) |
-| `cost report [--project NAME] [--months N]` | the owner's shell | Monthly spend from Cost Explorer: one project by component (task spend split by workflow), or every project plus the untagged spend by service ([docs/costs.md](docs/costs.md)) |
+| `cost report [--project NAME [--by workflow\|profile]] [--months N]` | the owner's shell | Monthly spend from Cost Explorer: one project by component (task spend split by workflow or profile), or every project plus the untagged spend by service ([docs/costs.md](docs/costs.md)) |
 
 Every command checks that the credentials are the role it expects, that the
 built site and bucket exist, and that the Terraform in the image is the
@@ -139,7 +139,19 @@ profile per workflow (`profile: sprt`).
 
 `dataset` components keep data that must outlive a run, such as NNUE
 training data, in kept-forever, append-only S3 buckets that task instances
-can add to: [docs/datasets.md](docs/datasets.md).
+can add to: [docs/datasets.md](docs/datasets.md). A dataset can also be
+versioned, expire named prefixes, and protect prefixes from overwriting, all
+as approved in `config.yaml`.
+
+### Research projects
+
+A repository with only `dataset` and `task-runner` components (no image, no
+bot) is a research project, such as a GPU training project. It uses the same
+stack with the bot parts switched off, and its CI roles get `compute/*`
+instead of `container/*`. What it may ask for, and the $50 per-task cost
+ceiling, are central guardrails in `config.yaml`. Onboarding, the
+`task-artifact` helper, resuming a training across runs, costs and destroy:
+[docs/research-projects.md](docs/research-projects.md).
 
 ### The pull request comments
 
@@ -227,13 +239,14 @@ CLI and `config.yaml`, the tool configuration shared by the stack and the CLI
 | `dns.tf` | The hosted zone, its CAA record and the zone owner's TXT records (`hosted-zone` module) |
 | `ci-roles.tf` | This repo's own plan and apply roles (`ci-plan-role` and `ci-apply-role` modules) |
 | `ecr.tf` | The ECR repository for the sites CLI image, configured from `config.yaml` at the repository root |
-| `config.yaml` (root) | Tool configuration for the sites CLI and the foundation stack: Terraform version, library pin, state bucket, DNS zone, ECR lifecycle, sync headers |
+| `config.yaml` (root) | Tool configuration for the sites CLI and the foundation stack: Terraform version, library pin, state bucket, DNS zone, ECR lifecycle, sync headers, and the central guardrails (`tasks.limits`, `tasks.max_run_cost_usd`, and per project the instance types, task profiles and dataset retention) |
 | `src/jwall_engineering_sites/`, `tests/`, `pyproject.toml` | The sites CLI, its tests and its `uv` project |
 | `stacks/site/` | The site stack the CLI renders for each site, pinned to the library like any consumer |
-| `stacks/bot/` | The bot stack the CLI renders for each bot project: ECR repository, VPC, records bucket, bot instance |
+| `stacks/bot/` | The bot stack the CLI renders for each bot or research project: ECR repository, VPC, records bucket, bot instance (the image and bot are off for a research project), task runner and dataset buckets |
 | `src/jwall_engineering_sites/kinds/lichess_bot/` | The harness Dockerfile and entrypoint of the bot image |
-| `bots.tf` | The `bots` map: one entry per bot project, each with plan, apply and release roles |
+| `bots.tf` | The `bots` map: one entry per bot or research project, each with plan and apply roles, a release role for bots, and a task role where `config.yaml` lists instance types |
 | `docs/lichess-bot.md`, `docs/consumer-note.md` | The bot projects guide and the note a bot repository links to |
+| `docs/remote-tasks.md`, `docs/datasets.md`, `docs/research-projects.md`, `docs/costs.md` | Task instances, dataset buckets, research projects, and cost reports |
 | `Dockerfile` | The CLI image: a pinned Terraform, the stack with modules and providers vendored, `config.yaml` |
 | `.github/actions/terraform-init` | `terraform init` with a retry for the registry's lag after a library release |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` modules |
@@ -296,14 +309,18 @@ The zone itself is owned here; every other record is owned by the project repos.
 
 ## Bot projects registry
 
-`local.bots` in `bots.tf` is the single list of bot projects:
+`local.bots` in `bots.tf` is the single list of bot and research projects. A
+research project (a `dataset` or `task-runner` and no bot) is also in
+`local.research_projects`; it gets `compute/*` instead of `container/*` and no
+release role ([docs/research-projects.md](docs/research-projects.md)):
 
 | Key | Repository |
 | --- | --- |
 | `rusty-chess` | `jwallace145/rusty-chess-v2` |
 
-Each entry gets three roles, and a fourth when the project is in
-`local.bot_task_types` (a `task-runner` component). Their state is `project=<key>/` in the shared
+Each entry gets three roles (two for a research project), and a fourth when
+the project lists `instance_types` under `projects` in `config.yaml` (a
+`task-runner` component). Their state is `project=<key>/` in the shared
 bucket, readable by the plan role and writable by the apply role:
 
 | Role | Trusted for | Policies |
@@ -436,7 +453,8 @@ Not automated; these need the owner's credentials or the GitHub UI.
 - For bot projects with a `task-runner`, after the release that creates the `ci-task` role:
   - run the **Bot apply** workflow (it creates the launch template and the task results bucket);
   - add the caller workflow to the bot repository ([docs/remote-tasks.md](docs/remote-tasks.md#the-caller)).
-- For bot projects with `dataset` components (listed in `local.bot_datasets`), after the release that grants `dataset/*` to their roles: run the **Bot apply** workflow; it creates the buckets ([docs/datasets.md](docs/datasets.md)).
+- For projects with `dataset` components (listed under `projects.<name>.datasets` in `config.yaml`), after the release that grants `dataset/*` to their roles: run the **Bot apply** workflow; it creates the buckets ([docs/datasets.md](docs/datasets.md)). A versioned bucket needs the foundation apply that grants `s3:PutBucketVersioning` first.
+- For a new research project, follow the onboarding order in [docs/research-projects.md](docs/research-projects.md#onboarding-a-research-project).
 - Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
 
 ## License

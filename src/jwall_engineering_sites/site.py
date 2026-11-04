@@ -73,10 +73,12 @@ class DevSection(_Model):
 class SiteConfig(_Model):
     """jwall-engineering-sites.yaml, validated on its own.
 
-    A file describes either a site (`domain` and `site`) or a bot project
-    (`components`: one container image and one Lichess bot). Rules that need
-    config.yaml (the DNS zone, the organisation) live in `Site.from_config`
-    and `Project.from_config`, so that this model can be checked without it.
+    A file describes a site (`domain` and `site`), a bot project (`components`:
+    one container image and one Lichess bot, and optionally datasets and a task
+    runner) or a research project (`components`: only datasets and a task
+    runner). Rules that need config.yaml (the DNS zone, the organisation) live
+    in `Site.from_config` and `Project.from_config`, so that this model can be
+    checked without it.
     """
 
     version: Literal[1]
@@ -100,23 +102,29 @@ class SiteConfig(_Model):
     @model_validator(mode="after")
     def _one_kind(self) -> SiteConfig:
         is_site = self.domain is not None and self.site is not None and not self.components
-        is_bot = (
+        has_components = (
             bool(self.components)
             and self.domain is None
             and self.site is None
             and self.dev is None
             and "preview" not in self.model_fields_set
         )
-        if not (is_site or is_bot):
+        if not (is_site or has_components):
             raise ValueError(
-                "a file describes either a site (domain and site, no components) or a bot "
-                "project (components, without domain, site, dev or preview)"
+                "a file describes either a site (domain and site, no components), a bot "
+                "project (components: a container-image and a lichess-bot) or a research "
+                "project (components: a dataset and a task-runner), without domain, site, "
+                "dev or preview"
             )
-        if is_bot:
-            for kind in ("container-image", "lichess-bot"):
-                count = sum(1 for c in self.components if c.kind == kind)
-                if count != 1:
-                    raise ValueError(f"components must hold exactly one {kind}, got {count}")
+        if has_components:
+            counts = {
+                kind: sum(1 for c in self.components if c.kind == kind)
+                for kind in ("container-image", "lichess-bot")
+            }
+            if any(counts.values()):  # both zero is a research project
+                for kind, count in counts.items():
+                    if count != 1:
+                        raise ValueError(f"components must hold exactly one {kind}, got {count}")
             runners = sum(1 for c in self.components if c.kind == "task-runner")
             if runners > 1:
                 raise ValueError(f"components may hold at most one task-runner, got {runners}")
@@ -139,8 +147,10 @@ class SiteConfig(_Model):
         return self
 
     @property
-    def kind(self) -> Literal["site", "bot"]:
-        return "bot" if self.components else "site"
+    def kind(self) -> Literal["site", "bot", "research"]:
+        if not self.components:
+            return "site"
+        return "bot" if any(isinstance(c, LichessBot) for c in self.components) else "research"
 
     @property
     def image(self) -> ContainerImage:
@@ -228,7 +238,8 @@ class Site(_Model):
     def from_config(cls, config: SiteConfig, settings: Settings) -> Site:
         if config.kind != "site":
             raise ConfigError(
-                f"{config.project} is a bot project, not a site; this command works on sites only"
+                f"{config.project} is a {config.kind} project, not a site; "
+                "this command works on sites only"
             )
         problems = []
         if config.tags["Organization"] != settings.context.organization:

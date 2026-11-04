@@ -1,8 +1,8 @@
 # Tool-level configuration for jwall-engineering-sites, the CLI that provisions
 # and publishes the sites. One top-level knob for everything about how the tool
 # runs, as opposed to what one site is (that lives in each site repository's
-# jwall-engineering-sites.yaml). The foundation stack reads the `ecr` section
-# with yamldecode; the CLI reads the whole file. Design:
+# jwall-engineering-sites.yaml). The foundation stack reads the `aws`, `ecr` and
+# `projects` sections with yamldecode; the CLI reads the whole file. Design:
 # https://github.com/jwallace145/jwall-engineering-infra/pull/26
 
 tool:
@@ -16,7 +16,7 @@ terraform:
 
 library:
   source: jwallace145/jwall-engineering/aws
-  version: 0.16.1 # the one module pin the whole fleet shares (sites and bots)
+  version: 0.17.0 # the one module pin the whole fleet shares (sites and bots)
 
 state:
   bucket: jwall-engineering-tfstate
@@ -80,3 +80,22 @@ tasks:
   images:
     # NVIDIA driver and CUDA toolkit installed; ami-0f964da32f9793d2b (2026-10-28).
     deep-learning-gpu: Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20261027
+  limits: # what any project file may ask for
+    max_hours: 6 # GitHub stops a job at six hours; the launch role allows seven
+    max_vcpus: 256
+    root_volume_gb: 200 # the task-runner module's own upper bound is 200
+  max_run_cost_usd: 50 # worst-case cost of one task; above it, the launch is refused
+
+# Reviewed here; a project's own file cannot widen any of it. foundation/bots.tf
+# reads the lists into the task launch role and the dataset policies, so they
+# are the hard limit on what the project's pull requests can start. The
+# allow-list of instance types is the hard limit on hourly cost, so review a
+# new type's price with it. A `datasets` value is the bucket's approved
+# retention: write_once, expire_prefixes, expire_noncurrent_days, versioning.
+projects:
+  rusty-chess:
+    instance_types: [c8a.xlarge, c8a.8xlarge, c8a.16xlarge, g6.xlarge, g6.2xlarge, g6e.xlarge]
+    task_profiles: [cpu, gpu, sprt, match, datagen, relabel]
+    datasets:
+      jwall-engineering-rusty-chess-nnue: {}
+    # max_run_cost_usd: 80 # optional per-project override of tasks.max_run_cost_usd

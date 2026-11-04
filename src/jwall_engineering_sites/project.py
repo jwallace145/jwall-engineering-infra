@@ -1,4 +1,4 @@
-"""A project file of either kind, with everything derived from it.
+"""A project file of any kind, with everything derived from it.
 
 Sites keep using `Site` (site.py) for their commands. `Project` is the view
 the kind-aware commands (validate, plan, apply, destroy) and the bot
@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from . import guardrails
 from .components import CPU_PROFILE, ContainerImage, Dataset, LichessBot, TaskRunner
 from .errors import ConfigError
 from .settings import Settings
@@ -31,7 +32,11 @@ class Project(BaseModel):
     zone_id: str | None
 
     @classmethod
-    def from_config(cls, config: SiteConfig, settings: Settings) -> Project:
+    def from_config(
+        cls, config: SiteConfig, settings: Settings, check_guardrails: bool = True
+    ) -> Project:
+        """`check_guardrails=False` is for the commands that only find and stop
+        instances: an instance must stay stoppable after a guardrail change."""
         if config.kind == "site":
             site = Site.from_config(config, settings)
             return cls(
@@ -49,14 +54,15 @@ class Project(BaseModel):
                 f"tags.Organization must be {organization!r}, got {config.tags['Organization']!r}"
             )
         own = f"/{organization}/{config.project}/"
-        for name, parameter in config.bot.secrets.items():
-            if not parameter.startswith(own):
-                problems.append(f"secrets.{name} must start with {own}, got {parameter!r}")
-            elif parameter.startswith(f"{own}bot/"):
-                problems.append(
-                    f"secrets.{name} must not live under {own}bot/, "
-                    "which the release role can write"
-                )
+        if config.kind == "bot":  # a research project has no lichess-bot to hold secrets
+            for name, parameter in config.bot.secrets.items():
+                if not parameter.startswith(own):
+                    problems.append(f"secrets.{name} must start with {own}, got {parameter!r}")
+                elif parameter.startswith(f"{own}bot/"):
+                    problems.append(
+                        f"secrets.{name} must not live under {own}bot/, "
+                        "which the release role can write"
+                    )
         for dataset in config.datasets:
             bucket = f"{organization}-{config.project}-{dataset.name}"
             if dataset.bucket != bucket:
@@ -73,6 +79,8 @@ class Project(BaseModel):
                     f"task-runner profile {name}: image {profile.image!r} is not pinned in "
                     "config.yaml tasks.images"
                 )
+        if check_guardrails:
+            problems += guardrails.check(config, settings)
         if problems:
             raise ConfigError("; ".join(problems))
         return cls(
@@ -89,8 +97,18 @@ class Project(BaseModel):
         return self.config.project
 
     @property
-    def kind(self) -> Literal["site", "bot"]:
+    def kind(self) -> Literal["site", "bot", "research"]:
         return self.config.kind
+
+    @property
+    def has_components(self) -> bool:
+        """Bot and research projects are made of components; a site is not."""
+        return self.config.kind != "site"
+
+    @property
+    def stack_kind(self) -> Literal["site", "bot"]:
+        """The Terraform stack that provisions it: research projects use the bot stack."""
+        return "site" if self.config.kind == "site" else "bot"
 
     @property
     def image(self) -> ContainerImage:
@@ -133,7 +151,7 @@ class Project(BaseModel):
 
     @property
     def task_runner(self) -> TaskRunner | None:
-        self._require("bot")
+        self._require_components()
         return self.config.task_runner
 
     @property
@@ -164,7 +182,7 @@ class Project(BaseModel):
 
     @property
     def datasets(self) -> tuple[Dataset, ...]:
-        self._require("bot")
+        self._require_components()
         return self.config.datasets
 
     def dataset_bucket(self, name: str) -> str:
@@ -184,3 +202,7 @@ class Project(BaseModel):
     def _require(self, kind: Literal["site", "bot"]) -> None:
         if self.kind != kind:
             raise ConfigError(f"{self.project} is not a {kind} project")
+
+    def _require_components(self) -> None:
+        if not self.has_components:
+            raise ConfigError(f"{self.project} has no components (it is a site project)")

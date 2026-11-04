@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import boto3
 import typer
@@ -55,7 +55,7 @@ secrets_app = typer.Typer(
     no_args_is_help=True,
 )
 task_app = typer.Typer(
-    help="Remote CI tasks on ephemeral, on-demand EC2 instances (bot projects with a task-runner).",
+    help="Remote CI tasks on ephemeral EC2 instances (projects with a task-runner).",
     no_args_is_help=True,
 )
 cost_app = typer.Typer(
@@ -86,14 +86,18 @@ class Run:
     site_file: Path
     artifacts: Path
     logger: logging.Logger
+    #: Off for the cleanup commands (`_cleanup_project`).
+    check_guardrails: bool = True
     _site: Site | None = None
     _project: Project | None = None
 
     @property
     def project(self) -> Project:
-        """The project file of either kind. Kind-aware commands use this."""
+        """The project file of any kind. Kind-aware commands use this."""
         if self._project is None:
-            self._project = Project.from_config(load_site_config(self.site_file), self.settings)
+            self._project = Project.from_config(
+                load_site_config(self.site_file), self.settings, self.check_guardrails
+            )
             self.logger.debug(
                 "project %s (%s), state key %s",
                 self._project.project,
@@ -157,7 +161,7 @@ def _command(body: Callable[[Run], None]) -> Callable[[typer.Context], None]:
 
 def _terraform(run: Run) -> stack.Terraform:
     """Terraform for the project's stack: the site stack for a site (exactly as
-    before) or the bot stack for a bot project."""
+    before) or the bot stack for a bot or research project."""
     target: stack.Target = run.site if run.project.kind == "site" else run.project
     return stack.Terraform(target, run.settings, run.logger)
 
@@ -167,8 +171,8 @@ def _preflight(run: Run, role: Role, prefix: str | None) -> None:
         project = run.project
         session = boto3.session.Session(region_name=project.region)
         aws.check_role(session.client("sts"), project.role_name(role), run.logger)
-        if project.kind == "bot":
-            run.logger.info("bot %s: state %s", project.project, project.state_key)
+        if project.has_components:
+            run.logger.info("%s %s: state %s", project.kind, project.project, project.state_key)
             return
         site = run.site
         if prefix is not None:
@@ -187,7 +191,9 @@ def _check_site_bucket(session: boto3.session.Session, site: Site, prefix: str, 
 
 
 def _dist_path(run: Run, dist: Path | None) -> Path:
-    path = dist if dist is not None else Path(run.site.site_section.output_dir)
+    # First, so that a project without a site is refused before `release` applies it.
+    site = run.site
+    path = dist if dist is not None else Path(site.site_section.output_dir)
     if not path.is_dir():
         raise PreflightError(f"built site not found at {path}; pass --dist or build first")
     return path
@@ -243,6 +249,9 @@ def validate(ctx: typer.Context) -> None:
                 site = run.site
                 run.logger.info("site file ok: project %s, domain %s", site.project, site.domain)
                 run.logger.info("derived: bucket %s, state key %s", site.bucket, site.state_key)
+            elif project.kind == "research":
+                run.logger.info("project file ok: project %s, kind research", project.project)
+                run.logger.info("derived: state key %s", project.state_key)
             else:
                 run.logger.info(
                     "project file ok: project %s, kind bot, image %s, instance %s",
@@ -289,7 +298,8 @@ def plan(ctx: typer.Context) -> None:
                 run.settings.plan.comment_max_bytes,
                 run.project.config.domain or run.project.project,
                 github.provenance(tool_version()),
-                applied_by="Bot apply" if run.project.kind == "bot" else None,
+                # The workflow that applies every bot-stack project, research too.
+                applied_by="Bot apply" if run.project.has_components else None,
             )
             (run.artifacts / "plan-comment.md").write_text(comment)
             github.write_output("result", report.plan_result_name(exit_code))
@@ -499,28 +509,57 @@ def release(
     _command(body)(ctx)
 
 
+def _destroy_warning(project: Project) -> str:
+    """What `destroy` does to this project, for the refusal without --yes."""
+    if project.kind == "bot":
+        deleted = "its instance, VPC and image repository are deleted"
+    elif project.task_runner is not None:
+        deleted = "its task launch templates, instance roles, logs and VPC are deleted"
+    else:
+        deleted = "Terraform stops managing it"
+    return f"{deleted}; its buckets and their data are kept"
+
+
+def _destroy_summary(project: Project, released: list[str]) -> str:
+    """What is left after `destroy`. `released` are the buckets it let go of here."""
+    kept = [f"the bucket {bucket} (no longer managed by Terraform)" for bucket in released]
+    if project.kind == "bot":
+        kept = [
+            f"the records bucket {project.records_bucket} (no longer managed by Terraform)",
+            *kept,
+            "the secret parameters, which Terraform never owned",
+        ]
+    return f"destroyed {project.project}" + (f"; kept: {'; '.join(kept)}" if kept else "")
+
+
+def _image_tags(session: boto3.session.Session, project: Project) -> set[str]:
+    """The tags that would stop a destroy. Only a bot has an image repository."""
+    if project.kind != "bot":
+        return set()
+    try:
+        return image.present_tags(session.client("ecr"), project.image_repository)
+    except RunError:
+        return set()  # no repository (never applied, or already destroyed)
+
+
 @app.command()
 def destroy(
     ctx: typer.Context,
     yes: Annotated[bool, typer.Option("--yes", help="Confirm: destroy the stack.")] = False,
 ) -> None:
-    """Destroy a bot project's stack. The records bucket and the secret are kept."""
+    """Destroy a bot or research project's stack. Its buckets and any secrets are kept."""
 
     def body(run: Run) -> None:
         project = run.project
-        if project.kind != "bot":
+        if not project.has_components:
             raise PreflightError("destroy is not supported for sites")
         if not yes:
             raise PreflightError(
-                f"pass --yes to destroy {project.project}: its instance, VPC and image "
-                "repository are deleted"
+                f"pass --yes to destroy {project.project}: {_destroy_warning(project)}"
             )
         _preflight(run, "apply", prefix=None)
         session = boto3.session.Session(region_name=project.region)
-        try:
-            tags = image.present_tags(session.client("ecr"), project.image_repository)
-        except RunError:
-            tags = set()  # no repository (never applied, or already destroyed)
+        tags = _image_tags(session, project)
         running = tasks.running_tasks(session.client("ec2"), project.project)
         if running:
             ids = ", ".join(t.id for t in running)
@@ -538,12 +577,15 @@ def destroy(
                 f'{project.image_repository} --query imageIds --output json)"'
             )
 
+        released: list[str] = []
+
         def tf(terraform: stack.Terraform) -> None:
             with phase("init"):
                 terraform.init()
+            state = terraform.state_list()
             # The records bucket has prevent_destroy, which would reject the whole
             # plan. Releasing it from state keeps the bucket and its games.
-            if any(a.startswith("module.records") for a in terraform.state_list()):
+            if any(a.startswith("module.records") for a in state):
                 with phase("keep records"):
                     terraform.state_rm("module.records")
                     run.logger.info(
@@ -551,23 +593,33 @@ def destroy(
                         project.records_bucket,
                     )
             # The task results bucket too; it expires its own contents.
-            if any(a.startswith("module.task_results") for a in terraform.state_list()):
+            if any(a.startswith("module.task_results") for a in state):
                 with phase("keep task results"):
                     terraform.state_rm("module.task_results")
                     run.logger.info(
                         "released %s from Terraform state; it expires its contents on its own",
                         project.task_bucket,
                     )
+                    released.append(project.task_bucket)
+            # Datasets too, but only their buckets: the IAM grants sit on the task
+            # roles, so released grants would block deleting those roles.
+            dataset_addresses = stack.dataset_bucket_addresses(state)
+            if dataset_addresses:
+                with phase("keep datasets"):
+                    for address in dataset_addresses:
+                        terraform.state_rm(address)
+                    for name in stack.dataset_names(dataset_addresses):
+                        bucket = project.dataset_bucket(name)
+                        run.logger.info(
+                            "released %s from Terraform state; the bucket and its data are kept",
+                            bucket,
+                        )
+                        released.append(bucket)
             with phase("destroy"):
                 terraform.destroy()
 
         _with_terraform(run, tf)
-        run.logger.info(
-            "destroyed %s; kept: the records bucket %s (no longer managed by Terraform) and "
-            "the secret parameters, which Terraform never owned",
-            project.project,
-            project.records_bucket,
-        )
+        run.logger.info("%s", _destroy_summary(project, released))
 
     _command(body)(ctx)
 
@@ -596,19 +648,39 @@ def config_show(ctx: typer.Context) -> None:
     print(json.dumps(run.settings.model_dump(mode="json"), indent=2, sort_keys=True))
 
 
-# -- bot projects ----------------------------------------------------------------
+# -- bot and research projects -------------------------------------------------------
 
 
 def _bot_project(run: Run) -> Project:
     project = run.project
     if project.kind != "bot":
-        raise PreflightError(f"{project.project} is a site; the bot commands work on bot projects")
+        raise PreflightError(
+            f"{project.project} is a {project.kind} project; the bot commands work on bot projects"
+        )
     return project
 
 
-def _bot_session(run: Run, roles: list[Role] | None) -> boto3.session.Session:
+def _component_project(run: Run) -> Project:
+    """A project made of components, for the commands a bot and a research project share."""
+    project = run.project
+    if not project.has_components:
+        raise PreflightError(
+            f"{project.project} is a site; this command works on bot and research projects"
+        )
+    return project
+
+
+def _cleanup_project(run: Run) -> Project:
+    """`_component_project` without the central guardrails, for the commands that
+    only find and stop instances: a guardrail change must not strand one. Every
+    other load error still applies. `destroy` keeps the check."""
+    run.check_guardrails = False
+    return _component_project(run)
+
+
+def _project_session(run: Run, roles: list[Role] | None) -> boto3.session.Session:
     """A session in the project's region, after checking the role when `roles` is given."""
-    project = _bot_project(run)
+    project = _component_project(run)
     session = boto3.session.Session(region_name=project.region)
     with phase("preflight"):
         if roles is None:
@@ -643,7 +715,7 @@ def secrets_set(
     def body(run: Run) -> None:
         project = _bot_project(run)
         parameter = _secret_parameter(project, name)
-        session = _bot_session(run, roles=None)
+        session = _project_session(run, roles=None)
         value = typer.prompt(f"{name}", hide_input=True)
         if not value.strip():
             raise PreflightError(f"{name} must not be empty")
@@ -665,7 +737,7 @@ def secrets_check(
     def body(run: Run) -> None:
         project = _bot_project(run)
         parameter = _secret_parameter(project, name)
-        session = _bot_session(run, roles=None)
+        session = _project_session(run, roles=None)
         if not botlib.secret_exists(session.client("ssm"), parameter):
             raise PreflightError(f"{name} ({parameter}) is not set")
         run.logger.info("%s (%s) is set", name, parameter)
@@ -679,7 +751,7 @@ def bot_status(ctx: typer.Context) -> None:
 
     def body(run: Run) -> None:
         project = _bot_project(run)
-        session = _bot_session(run, roles=["plan", "release"])
+        session = _project_session(run, roles=["plan", "release"])
         print(botlib.render_status(botlib.status(session, project)))
 
     _command(body)(ctx)
@@ -701,7 +773,7 @@ def bot_logs(
             seconds = parse_duration(since)
         except ValueError as exc:
             raise ConfigError(f"--since: {exc}") from exc
-        session = _bot_session(run, roles=["plan"])
+        session = _project_session(run, roles=["plan"])
         for line in botlib.tail_logs(
             session.client("logs"), project.log_group, seconds, follow, run.logger
         ):
@@ -850,7 +922,7 @@ def bot_push(ctx: typer.Context, version: VersionOption) -> None:
 
     def body(run: Run) -> None:
         project = _bot_project(run)
-        session = _bot_session(run, roles=["release"])
+        session = _project_session(run, roles=["release"])
         _push(run, project, session, version)
 
     _command(body)(ctx)
@@ -869,7 +941,7 @@ def bot_deploy(
 
     def body(run: Run) -> None:
         project = _bot_project(run)
-        session = _bot_session(run, roles=["release"])
+        session = _project_session(run, roles=["release"])
         _deploy(run, project, session, version, restart)
 
     _command(body)(ctx)
@@ -893,7 +965,7 @@ def bot_reconcile(
         project = _bot_project(run)
         if version is not None:
             _version(version)
-        session = _bot_session(run, roles=None if dry_run else ["release"])
+        session = _project_session(run, roles=None if dry_run else ["release"])
         found = releases.list_releases(project.config.repository)
         present = image.present_tags(session.client("ecr"), project.image_repository)
         running = botlib.get_parameters(
@@ -1000,7 +1072,7 @@ def task_run(
         # Until the task reports otherwise, any refusal reads as failed.
         github.write_output("outcome", "failed")
         github.write_output("interrupted-at", "")
-        project = _bot_project(run)
+        project = _component_project(run)
         runner = _task_runner(project)
         if profile_name not in runner.profile_names:
             known = ", ".join(runner.profile_names)
@@ -1049,8 +1121,9 @@ def task_run(
             whole_cores=profile.whole_cores,
             gpu=profile.gpu,
             scratch=profile.scratch,
+            max_run_cost_usd=run.settings.run_cost_ceiling(project.project),
         )
-        session = _bot_session(run, roles=["task"])
+        session = _project_session(run, roles=["task"])
         run.logger.info(
             "task %s/%s: %s on %s %s, %s profile (at most %dh)",
             spec.run_id, spec.task_id, script, chosen, chosen_market, profile_name, hours,
@@ -1089,8 +1162,8 @@ def task_list(ctx: typer.Context) -> None:
     """List the project's running task instances. Read-only."""
 
     def body(run: Run) -> None:
-        project = _bot_project(run)
-        session = _bot_session(run, roles=["plan", "task"])
+        project = _cleanup_project(run)
+        session = _project_session(run, roles=["plan", "task"])
         print(_render_tasks(tasks.running_tasks(session.client("ec2"), project.project)))
 
     _command(body)(ctx)
@@ -1111,12 +1184,12 @@ def task_terminate(
     """Terminate task instances. Only instances tagged Purpose=ci-task of this project match."""
 
     def body(run: Run) -> None:
-        project = _bot_project(run)
+        project = _cleanup_project(run)
         if sum([instance is not None, run_id is not None, all_]) != 1 or (
             task_id is not None and run_id is None
         ):
             raise ConfigError("give exactly one of --instance, --run-id [--task-id] or --all")
-        session = _bot_session(run, roles=["task"])
+        session = _project_session(run, roles=["task"])
         ec2 = session.client("ec2")
         running = tasks.running_tasks(ec2, project.project)
         if instance is not None:
@@ -1151,9 +1224,9 @@ def task_sweep(
     own shutdown all terminate), so there is no scheduled sweeper."""
 
     def body(run: Run) -> None:
-        project = _bot_project(run)
+        project = _cleanup_project(run)
         runner = _task_runner(project)
-        session = _bot_session(run, roles=["task"])
+        session = _project_session(run, roles=["task"])
         ec2 = session.client("ec2")
         now = _now()
         expired = [
@@ -1197,6 +1270,10 @@ def cost_report(
             "--months", min=1, max=costs.MAX_MONTHS, help="Calendar months, this one included."
         ),
     ] = 3,
+    by: Annotated[
+        str,
+        typer.Option("--by", help="With --project, split task spend by workflow or profile."),
+    ] = "workflow",
 ) -> None:
     """Monthly spend by project and component. Run with the owner's credentials:
     Cost Explorer is account-wide, so no CI role may read it. Each Cost Explorer
@@ -1205,6 +1282,10 @@ def cost_report(
     def body(run: Run) -> None:
         if project is not None and not costs.PROJECT_NAME.match(project):
             raise ConfigError(f"--project must be a kebab-case project name: {project!r}")
+        if by not in ("workflow", "profile"):
+            raise ConfigError(f"--by must be workflow or profile: {by!r}")
+        if project is None and by != "workflow":
+            raise ConfigError("--by needs --project")
         start, end = costs.period(datetime.now(UTC).date(), months)
         session = boto3.session.Session(region_name=costs.CE_REGION)
         with phase("preflight"):
@@ -1212,7 +1293,8 @@ def cost_report(
             run.logger.info("running as %s", arn)
         ce = session.client("ce")
         if project is not None:
-            print(costs.render(costs.project_table(ce, project, start, end)))
+            split: Literal["workflow", "profile"] = "profile" if by == "profile" else "workflow"
+            print(costs.render(costs.project_table(ce, project, start, end, by=split)))
         else:
             print(costs.render(costs.account_table(ce, start, end)))
             print()

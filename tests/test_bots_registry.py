@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from jwall_engineering_sites.site import load_site_config
 from tests.conftest import FIXTURES, REPO_ROOT
 
 BOTS_TF = REPO_ROOT / "foundation" / "bots.tf"
@@ -18,15 +19,24 @@ def registry() -> dict[str, tuple[str, str]]:
     return {m[0]: (m[1], m[2]) for m in _ENTRY.findall(BOTS_TF.read_text())}
 
 
+def project_file(project: str) -> dict[str, Any]:
+    """tests/fixtures/bots/<project>.yaml, the copy of the file onboarding adds."""
+    import yaml
+
+    path = FIXTURES / "bots" / f"{project}.yaml"
+    assert path.is_file(), f"{project} is registered: add its project file as {path.name}"
+    raw: dict[str, Any] = yaml.safe_load(path.read_text())
+    return raw
+
+
 def test_registry_lists_rusty_chess() -> None:
-    assert registry() == {"rusty-chess": ("jwallace145/rusty-chess-v2", "1435162673")}
+    assert registry()["rusty-chess"] == ("jwallace145/rusty-chess-v2", "1435162673")
 
 
-def test_registry_matches_the_bot_fixture() -> None:
-    fixture = (FIXTURES / "bots" / "rusty-chess.yaml").read_text()
+def test_registry_matches_each_projects_file() -> None:
     for project, (repository, _) in registry().items():
-        assert f"project: {project}\n" in fixture
-        assert f"repository: {repository}\n" in fixture
+        file = project_file(project)
+        assert (file["project"], file["repository"]) == (project, repository)
 
 
 def test_bot_state_prefixes_are_in_the_state_bucket_policy() -> None:
@@ -127,21 +137,41 @@ def _module(name: str) -> str:
     return match.group(1)
 
 
+_RESEARCH_CHOICE = re.compile(
+    r"^\s*policies\s*=\s*concat\(\s*contains\(local\.research_projects, each\.key\)"
+    r"\s*\?\s*\[([^\]]*)\]\s*:\s*\[([^\]]*)\]",
+    re.MULTILINE,
+)
+
+
+def _research_policies(block: str) -> list[str]:
+    """The base policies when the project is a research project."""
+    match = _RESEARCH_CHOICE.search(block)
+    assert match, "the role does not choose its base policies by research_projects"
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
 def _policies(block: str) -> list[str]:
+    # A role choosing by kind: what a bot gets.
+    choice = _RESEARCH_CHOICE.search(block)
+    if choice:
+        return re.findall(r'"([^"]+)"', choice.group(2))
     # The first list: the policies every bot gets, before any concat()ed extras.
     match = re.search(r"^\s*policies\s*=\s*(?:concat\(\s*)?\[([^\]]*)\]", block, re.MULTILINE)
     assert match, "no policies list"
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
+def _projects() -> dict[str, Any]:
+    """The reviewed guardrails: config.yaml's `projects`, as foundation decodes it."""
+    import yaml
+
+    projects: dict[str, Any] = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())["projects"]
+    return projects
+
+
 def _task_types() -> dict[str, list[str]]:
-    text = BOTS_TF.read_text()
-    match = re.search(r"bot_task_types\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
-    assert match, "local.bot_task_types not found"
-    return {
-        key: re.findall(r'"([^"]+)"', types)
-        for key, types in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
-    }
+    return {k: list(p["instance_types"]) for k, p in _projects().items() if p.get("instance_types")}
 
 
 def test_bot_plan_and_apply_carry_the_task_policies() -> None:
@@ -162,36 +192,40 @@ def test_task_role_is_the_launch_role_for_the_bot_repository() -> None:
     assert "subjects" not in block
 
 
-def _task_runner_fixture() -> dict[str, Any]:
-    import yaml
+def _task_runners() -> dict[str, dict[str, Any]]:
+    """Each registered project's task-runner component, if it has one."""
+    runners: dict[str, dict[str, Any]] = {}
+    for project in registry():
+        for component in project_file(project)["components"]:
+            if component["kind"] == "task-runner":
+                runners[project] = component
+    return runners
 
-    fixture = yaml.safe_load((FIXTURES / "bots" / "rusty-chess.yaml").read_text())
-    runner: dict[str, Any] = next(c for c in fixture["components"] if c["kind"] == "task-runner")
-    return runner
 
-
-def test_task_instance_types_match_the_project_file() -> None:
-    runner = _task_runner_fixture()
+def _instance_types(runner: dict[str, Any]) -> list[str]:
     expected = list(runner["instance_types"])
     for profile in runner.get("profiles", {}).values():
         expected += [t for t in profile["instance_types"] if t not in expected]
-    assert _task_types() == {"rusty-chess": expected}
+    return expected
+
+
+def test_task_instance_types_match_the_project_files() -> None:
+    expected = {project: _instance_types(runner) for project, runner in _task_runners().items()}
+    assert "rusty-chess" in expected
+    assert _task_types() == expected
     assert set(_task_types()) <= set(registry())
 
 
 def _task_profiles() -> dict[str, list[str]]:
-    text = BOTS_TF.read_text()
-    match = re.search(r"bot_task_profiles\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
-    assert match, "local.bot_task_profiles not found"
-    return {
-        key: re.findall(r'"([^"]+)"', names)
-        for key, names in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
+    return {k: list(p["task_profiles"]) for k, p in _projects().items() if p.get("task_profiles")}
+
+
+def test_task_profiles_match_the_project_files() -> None:
+    expected = {
+        project: ["cpu", *runner.get("profiles", {})] for project, runner in _task_runners().items()
     }
-
-
-def test_task_profiles_match_the_project_file() -> None:
-    runner = _task_runner_fixture()
-    assert _task_profiles() == {"rusty-chess": ["cpu", *runner.get("profiles", {})]}
+    assert "rusty-chess" in expected
+    assert _task_profiles() == expected
     assert set(_task_profiles()) == set(_task_types())
 
 
@@ -201,21 +235,18 @@ def test_bots_output_names_the_task_role() -> None:
 
 
 def _bot_datasets() -> dict[str, list[str]]:
-    text = BOTS_TF.read_text()
-    match = re.search(r"bot_datasets\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
-    assert match, "local.bot_datasets not found"
-    return {
-        key: re.findall(r'"([^"]+)"', buckets)
-        for key, buckets in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
-    }
+    return {k: list(p["datasets"]) for k, p in _projects().items() if p.get("datasets")}
 
 
-def test_dataset_buckets_match_the_project_file() -> None:
-    import yaml
-
-    fixture = yaml.safe_load((FIXTURES / "bots" / "rusty-chess.yaml").read_text())
-    buckets = [c["bucket"] for c in fixture["components"] if c["kind"] == "dataset"]
-    assert _bot_datasets() == {"rusty-chess": buckets}
+def test_dataset_buckets_match_the_project_files() -> None:
+    expected = {}
+    for project in registry():
+        components = project_file(project)["components"]
+        buckets = [c["bucket"] for c in components if c["kind"] == "dataset"]
+        if buckets:
+            expected[project] = buckets
+    assert "rusty-chess" in expected
+    assert _bot_datasets() == expected
     assert set(_bot_datasets()) <= set(registry())
 
 
@@ -226,3 +257,77 @@ def test_bot_plan_and_apply_carry_the_dataset_policies() -> None:
     for block in (plan, apply):
         assert "contains(keys(local.bot_datasets), each.key)" in block
         assert "bucket_names = local.bot_datasets[each.key]" in block
+
+
+def test_foundation_reads_lists_from_config() -> None:
+    text = BOTS_TF.read_text()
+    assert not re.search(r"\b(?:c8a|g6e?|p[345])\.\w+", text), "instance types live in config.yaml"
+    for name in ("bot_task_types", "bot_task_profiles", "bot_datasets"):
+        match = re.search(rf"^\s+{name}\s*=\s*(.*)$", text, re.MULTILINE)
+        assert match and "local.tool_config.projects" in match.group(1), name
+    assert set(_projects()) <= set(registry())
+    assert set(_task_profiles()) == set(_task_types())
+
+
+def _research_projects() -> set[str]:
+    match = re.search(r"^\s+research_projects\s*=\s*toset\(\[(.*)\]\)$", BOTS_TF.read_text(), re.M)
+    assert match, "research_projects is not a one-line toset([...])"
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def test_research_projects_are_registered() -> None:
+    assert _research_projects() <= set(registry())
+
+
+def test_research_projects_are_exactly_the_files_of_that_kind() -> None:
+    """A file of the wrong kind would get the wrong policies: compute/* or container/*."""
+    research = {
+        project
+        for project in registry()
+        if load_site_config(FIXTURES / "bots" / f"{project}.yaml").kind == "research"
+    }
+    assert _research_projects() == research
+
+
+def test_foundation_gives_research_projects_no_release_role() -> None:
+    match = re.search(r"^\s*for_each\s*=\s*(.+)$", _module("bot_ci_release"), re.MULTILINE)
+    assert match, "bot_ci_release has no for_each"
+    comprehension = re.fullmatch(
+        r"\{\s*for (\w+), (\w+) in local\.bots\s*:\s*\1\s*=>\s*\2\s*"
+        r"if !contains\(local\.research_projects,\s*\1\)\s*\}",
+        match.group(1).strip(),
+    )
+    assert comprehension, f"for_each must filter research out, keeping keys: {match.group(1)}"
+
+
+def test_foundation_gives_research_projects_compute_and_bots_container() -> None:
+    plan, apply = _module("bot_ci_plan"), _module("bot_ci_apply")
+    # Same order as before research existed: reordering would churn rusty-chess's attachments.
+    assert _policies(plan) == ["tfstate/read", "container/read", "task/read"]
+    assert _research_policies(plan) == ["tfstate/read", "compute/read", "task/read"]
+    assert _policies(apply) == [
+        "tfstate/write",
+        "container/read",
+        "container/manage",
+        "task/read",
+        "task/manage",
+    ]
+    assert _research_policies(apply) == [
+        "tfstate/write",
+        "compute/read",
+        "compute/manage",
+        "task/read",
+        "task/manage",
+    ]
+
+
+def test_outputs_do_not_reach_for_a_research_projects_release_role() -> None:
+    outputs = (REPO_ROOT / "foundation" / "outputs.tf").read_text()
+    match = re.search(r"^\s*release_role_arn\s*=\s*(.+)$", outputs, re.MULTILINE)
+    assert match
+    assert match.group(1).strip() == (
+        "contains(local.research_projects, key) ? null : module.bot_ci_release[key].role_arn"
+    )
+    # Plan and apply roles exist for every project, so the state policy needs no change.
+    state = (REPO_ROOT / "foundation" / "state.tf").read_text()
+    assert "bot_ci_release" not in state

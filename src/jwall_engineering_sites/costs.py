@@ -1,7 +1,7 @@
 """Monthly spend from Cost Explorer, by the tags every managed resource carries.
 
 `cost report` asks Cost Explorer for the account's spend grouped by the
-cost allocation tags (`Project`, `Component`, `Workflow`), so the bill comes
+cost allocation tags (`Project`, `Component`, `Workflow`, `Profile`), so the bill comes
 back already aggregated: no Cost and Usage Report to parse. Spend with no
 `Project` tag (resources this tool does not manage, public IPv4, tax) is
 reported as untagged rather than dropped. Each Cost Explorer request costs
@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from botocore.exceptions import ClientError
 
@@ -122,19 +122,27 @@ def _fill(table: Table, results: Iterator[Any], label: Any) -> Table:
     return table
 
 
-def project_table(ce: CostExplorerClient, project: str, start: date, end: date) -> Table:
+def project_table(
+    ce: CostExplorerClient,
+    project: str,
+    start: date,
+    end: date,
+    by: Literal["workflow", "profile"] = "workflow",
+) -> Table:
     """One project's spend by component; task-runner spend split by its `Workflow` tag
-    (Train, Datagen, SPRT, ...), so what the tasks were for shows, not only where they ran."""
+    (Train, Datagen, SPRT, ...), so what the tasks were for shows, not only where they ran.
+    With `by="profile"` the split is by the `Profile` tag (the instance profile) instead."""
+    split = by.capitalize()
 
     def label(keys: list[str]) -> str:
         component = _tag_value(keys[0]) or NO_COMPONENT
-        workflow = _tag_value(keys[1])
-        return f"{component}: {workflow}" if workflow else component
+        value = _tag_value(keys[1])
+        return f"{component}: {value}" if value else component
 
     request = _request(
         start,
         end,
-        [{"Type": "TAG", "Key": "Component"}, {"Type": "TAG", "Key": "Workflow"}],
+        [{"Type": "TAG", "Key": "Component"}, {"Type": "TAG", "Key": split}],
         Filter={"Tags": {"Key": "Project", "Values": [project], "MatchOptions": ["EQUALS"]}},
     )
     table = Table(title=f"{project} by component", months=_month_keys(start, end))

@@ -189,6 +189,23 @@ jobs:
           tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
           tflint --config "$GITHUB_WORKSPACE/.tflint.hcl"
 
+  stack-plans:
+    name: Stack plans against a mock provider
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.7" # exact: the same version the CLI requires
+          terraform_wrapper: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: scripts/test-stack-plans.sh
+
   image:
     name: Image build and smoke test
     runs-on: ubuntu-latest

@@ -16,6 +16,7 @@ instance types, market and vCPU budget, and instances carry it as the
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import math
 import re
@@ -101,6 +102,8 @@ class TaskSpec:
     gpu: bool = False
     #: Where SCRATCH_DIR lives: `instance-store` or `root-volume`.
     scratch: str = "root-volume"
+    #: Refuse to launch above this worst-case cost; `None` skips the check.
+    max_run_cost_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -313,22 +316,104 @@ def on_demand_price(pricing: PricingClient, instance_type: str, region: str) -> 
     return None
 
 
+class NoPrice(PreflightError):  # noqa: N818 (an outcome, read as `no-price`)
+    """The on-demand price is unknown, so the cost ceiling cannot be checked."""
+
+
+PRICE_ATTEMPTS = 3
+PRICE_RETRY_SECONDS = 5.0
+
+
+def worst_case_rate(spec: TaskSpec, on_demand: float) -> float:
+    """The most an hour can cost: on demand, unless spot is the only market
+    allowed, when it is capped at the fraction of on demand."""
+    if spec.market == "spot" and not spec.on_demand_fallback:
+        return on_demand * spec.max_price_fraction
+    return on_demand
+
+
+def _trimmed(value: float) -> str:
+    return f"{value:.10f}".rstrip("0").rstrip(".")
+
+
+def check_ceiling(
+    pricing: PricingClient,
+    spec: TaskSpec,
+    logger: Logger,
+    sleep: Callable[[float], None] = time.sleep,
+) -> float | None:
+    """Refuse a task whose worst-case cost (rate x `max_hours`) is over
+    `max_run_cost_usd`. Fails closed: an unknown price is `NoPrice`. Returns
+    the on-demand price it read, for `price_plan` to cap spot with: the cap is
+    what the estimate assumed. Without a ceiling, reads nothing and returns None."""
+    ceiling = spec.max_run_cost_usd
+    if ceiling is None:
+        return None
+    region = spec.project.region
+    on_demand: float | None = None
+    failure = "the Pricing API returned no price"
+    for attempt in range(PRICE_ATTEMPTS):
+        if attempt:
+            sleep(PRICE_RETRY_SECONDS)
+        try:
+            on_demand = on_demand_price(pricing, spec.instance_type, region)
+        except (ClientError, BotoCoreError) as exc:
+            failure = f"the Pricing API failed: {exc}"
+            continue
+        if on_demand is not None:
+            break
+        failure = "the Pricing API returned no price"
+    if on_demand is None:
+        raise NoPrice(
+            f"no on-demand price for {spec.instance_type} after {PRICE_ATTEMPTS} attempts "
+            f"({failure}); the cost check fails closed, so nothing was launched"
+        )
+    rate = worst_case_rate(spec, on_demand)
+    cost = rate * spec.max_hours
+    if rate == on_demand:
+        basis = f"{spec.instance_type} on-demand ${_trimmed(on_demand)}/h"
+    else:
+        basis = f"{spec.instance_type} spot cap ${rate:.2f}/h"
+    logger.info(
+        "worst-case cost: $%.2f (%s x %d h); ceiling $%.2f", cost, basis, spec.max_hours, ceiling
+    )
+    if cost > ceiling:
+        raise ConfigError(
+            f"worst-case cost ${cost:.2f} ({basis} x {spec.max_hours} h) is over the "
+            f"${ceiling:.2f} ceiling; lower --max-hours, pick a smaller --instance-type, or "
+            "raise tasks.max_run_cost_usd (or the project's max_run_cost_usd)"
+        )
+    return on_demand
+
+
 def price_plan(
-    ec2: EC2Client, pricing: PricingClient, spec: TaskSpec, subnets: list[Subnet], logger: Logger
+    ec2: EC2Client,
+    pricing: PricingClient,
+    spec: TaskSpec,
+    subnets: list[Subnet],
+    logger: Logger,
+    on_demand: float | None = None,
 ) -> PricePlan:
     """Resolve the spot cap and order the zones: best spot placement score
-    first, then the cheapest current spot price. Lookups that fail are
-    logged; launching never depends on them, except the cap."""
+    first, then the cheapest current spot price. `on_demand` is the price
+    `check_ceiling` already read; only without it is the Pricing API asked.
+    Lookups that fail are logged; launching never depends on them, except the
+    cap: a task with a ceiling never plans a spot launch without one (`NoPrice`)."""
     region = spec.project.region
-    try:
-        on_demand = on_demand_price(pricing, spec.instance_type, region)
-    except (ClientError, BotoCoreError) as exc:
-        logger.warning("the Pricing API failed: %s", exc)
-        on_demand = None
+    if on_demand is None:
+        try:
+            on_demand = on_demand_price(pricing, spec.instance_type, region)
+        except (ClientError, BotoCoreError) as exc:
+            logger.warning("the Pricing API failed: %s", exc)
     if spec.market != "spot":
         return PricePlan(subnets=subnets, max_price=None, on_demand=on_demand, spot={}, scores={})
     max_price: str | None = None
     if on_demand is None:
+        if spec.max_run_cost_usd is not None:
+            raise NoPrice(
+                f"no on-demand price for {spec.instance_type}, so no spot cap; a task with a "
+                "cost ceiling never launches without one, so nothing was launched"
+            )
         logger.warning(
             "no on-demand price for %s; spot is capped at the on-demand price by AWS",
             spec.instance_type,
@@ -573,6 +658,28 @@ but it could not be mounted (${why:-no reason given}); SCRATCH_DIR is on the roo
 fi"""
 
 
+#: Where the task-artifact helper lands on the instance, on the task's PATH.
+ARTIFACT_HELPER_PATH = "/usr/local/bin/task-artifact"
+#: The most the rendered `AWS-RunShellScript` commands may take (a test checks).
+#: SendCommand documents no limit for `Parameters`, only 64 KB for a document
+#: (MaxDocumentSizeExceeded):
+#: https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_SendCommand.html
+#: So 48 KiB is our own margin, not an AWS figure.
+SSM_COMMANDS_BUDGET = 48 * 1024
+
+
+def artifact_helper_setup() -> str:
+    """Shell that writes the task-artifact helper, gzipped and base64-encoded,
+    or fails the task. `mtime=0` keeps the rendering stable."""
+    source = Path(__file__).with_name("task_artifact.py").read_bytes()
+    encoded = base64.b64encode(gzip.compress(source, mtime=0)).decode()
+    path = ARTIFACT_HELPER_PATH
+    return f"""if ! {{ echo {encoded} | base64 -d | gzip -d > {path} && chmod 755 {path}; }}; then
+  echo "task-runner: could not write {path}"
+  exit 1
+fi"""
+
+
 def task_script(spec: TaskSpec, bucket: str, prefix: str) -> str:
     """The bash script the instance runs: wait for setup, reset the lifetime
     guard, fetch the commit anonymously, run the task, upload its outputs
@@ -614,6 +721,8 @@ fi
 shutdown -c 2>/dev/null || true
 shutdown -h +{minutes} 2>/dev/null
 
+{artifact_helper_setup()}
+
 rm -rf /work
 mkdir -p /work/repo /work/out /work/scratch
 scratch=root-volume
@@ -627,6 +736,8 @@ echo "profile={spec.profile}"
 cat /etc/task-runner/ready
 echo "scratch=$scratch"
 echo "scratch_device=$scratch_device"
+aws_cli=$(aws --version 2>&1 | head -n 1)
+echo "aws_cli=$aws_cli"
 echo "=="
 if [ -n "$scratch_note" ]; then
   echo "$scratch_note"
@@ -638,6 +749,12 @@ if ! git -C /work/repo fetch --quiet --depth 1 {q(url)} {q(spec.ref)}; then
 fi
 git -C /work/repo checkout --quiet FETCH_HEAD
 cd /work/repo || exit 1
+
+# What a task's artifact manifest records about the run, and its AWS region.
+export TASK_RUN_ID={q(spec.run_id)}
+export TASK_ID={q(spec.task_id)}
+export TASK_COMMIT={q(spec.ref)}
+export TASK_REGION={q(region)}
 
 # The only results prefix this instance may write: tasks/<role-id>:<instance-id>/.
 if ! uid=$(aws sts get-caller-identity --query UserId --output text --region {q(region)}); then
@@ -1044,6 +1161,9 @@ def run_task(
 
     with _interruptible() as shield:
         try:
+            on_demand = None
+            if spec.max_run_cost_usd is not None:
+                on_demand = check_ceiling(pricing, spec, logger, sleep)
             info = instance_types_info(ec2, [spec.instance_type])
             vcpus, threads = info[spec.instance_type]
             if threads > 1 and spec.whole_cores:
@@ -1055,7 +1175,8 @@ def run_task(
                 ec2, spec, vcpus, profile.max_vcpus, profile.slot_wait_minutes * 60, logger,
                 sleep, clock,
             )  # fmt: skip
-            plan = price_plan(ec2, pricing, spec, public_subnets(ec2, project.project), logger)
+            subnets = public_subnets(ec2, project.project)
+            plan = price_plan(ec2, pricing, spec, subnets, logger, on_demand)
             launching = True
             launched = launch(ec2, spec, template, plan, logger, sleep, clock)
             instance_id = launched.id
@@ -1088,6 +1209,10 @@ def run_task(
         except NoCapacity as exc:
             logger.error("%s", exc)
             outcome = "no-capacity"
+            return exc.exit_code
+        except NoPrice as exc:
+            logger.error("%s", exc)
+            outcome = "no-price"
             return exc.exit_code
         except TaskInterrupted as exc:
             logger.warning("%s; terminating the task instance", exc)

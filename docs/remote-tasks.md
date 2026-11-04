@@ -1,21 +1,24 @@
 # Remote tasks: one script on a dedicated, ephemeral EC2 instance
 
-A bot project with a `task-runner` component can run long, CPU-bound jobs,
+A bot or [research project](research-projects.md) with a `task-runner`
+component can run long, CPU-bound jobs,
 such as an engine SPRT or a match series, on real dedicated cores instead of
 a shared GitHub-hosted runner. The standard box is a 64-core `c8a.16xlarge`
 on spot. A GitHub Actions job calls the reusable `remote-task.yml` workflow,
 which runs `jwall-engineering-sites task run`. That command:
 
-1. waits for room under the project's vCPU cap;
-2. launches one fresh spot instance from the project's task launch template,
+1. checks the worst-case cost against the [ceiling](#cost-ceiling);
+2. waits for room under the project's vCPU cap;
+3. launches one fresh spot instance from the project's task launch template,
    trying every zone, and falls back to on demand only at launch;
-3. waits for its setup (git, a C toolchain and a pinned Rust toolchain);
-4. fetches the commit under test anonymously and runs one script on it through
+4. waits for its setup (git, a C toolchain and, unless the profile sets
+   `rust: false`, a pinned Rust toolchain);
+5. fetches the commit under test anonymously and runs one script on it through
    SSM Run Command, with a watcher for spot interruption notices;
-5. streams the script's output into the job's log as it runs;
-6. copies the files the script wrote to `$OUT_DIR` back into the job;
-7. terminates the instance, on every exit path;
-8. exits with the script's own exit code, or 75 when spot reclaimed the
+6. streams the script's output into the job's log as it runs;
+7. copies the files the script wrote to `$OUT_DIR` back into the job;
+8. terminates the instance, on every exit path;
+9. exits with the script's own exit code, or 75 when spot reclaimed the
    instance, and reports the outcome to the workflow.
 
 It is a task, not a runner: the instance never registers with GitHub, holds
@@ -44,6 +47,7 @@ components:
     slot_wait_minutes: 30        # 0-120; how long a launch over the cap waits for a slot
     results_days: 7              # 1-30; task outputs expire from S3 after this
     log_retention_days: 14
+    rust: true                   # false: no Rust toolchain on the instances
 ```
 
 Every field has the default shown. Burstable `t*` types are refused, because
@@ -51,8 +55,10 @@ they throttle under sustained load, which is noise in a benchmark. Types with
 more than one thread per core are refused at launch (exit 2): a timed game
 needs a whole core. Then, in this repository:
 
-- add the project and its types to `local.bot_task_types` in
-  `foundation/bots.tf` (a test checks that they match the project file);
+- add the project's `instance_types` and `task_profiles` under `projects` in
+  `config.yaml`, and register the project in `foundation/bots.tf` (the
+  project file is cross-checked against `config.yaml` at load, and a test
+  checks the foundation's lists come from it);
 - release, which applies the foundation and creates the
   `<org>-<project>-ci-task` launch role;
 - run **Bot apply** for the project. It creates the launch template, its
@@ -110,7 +116,7 @@ jobs:
 
 | Output | Meaning |
 |---|---|
-| `outcome` | `passed`, `failed`, `interrupted` (spot reclaimed the instance) or `no-capacity` |
+| `outcome` | `passed`, `failed`, `interrupted` (spot reclaimed the instance), `no-capacity` or `no-price` (the cost ceiling could not be checked) |
 | `interrupted-at` | when the instance was reclaimed; set only for `interrupted` |
 
 An interrupted task's partial outputs upload as `<artifact>-interrupted`, and
@@ -140,9 +146,16 @@ variables or secrets. The workflow builds the role ARN from this tool's
   [Scratch on the instance store](#scratch-on-the-instance-store).
 - **Toolchain.** `HOME=/root`, and `PATH` includes `/root/.cargo/bin`, so
   `cargo` and `rustc` are the pinned toolchain (`tasks.rust_toolchain` in
-  this repository's `config.yaml`). `git`, `gcc`, `gcc-c++`, `make`, `tar`,
+  this repository's `config.yaml`), unless the profile sets `rust: false`:
+  then neither is installed. `git`, `gcc`, `gcc-c++`, `make`, `tar`,
   `curl` and the AWS CLI are installed. The script installs anything else
   itself.
+- **Task variables.** `TASK_RUN_ID` (the run and attempt), `TASK_ID` and
+  `TASK_COMMIT` (the commit SHA) are exported, so an artifact manifest can
+  record them. `TASK_REGION` is the project's region: pass it to your own AWS
+  CLI calls with `--region`, because `AWS_DEFAULT_REGION` is not set.
+  `task-artifact`, a helper for checksummed, write-once uploads to
+  datasets, is on `PATH`; see [research projects](research-projects.md#artifacts-and-task-artifact).
 - **Exit code.** The script's exit code is the job's. Avoid 75: on spot, a
   non-zero exit counts as an interruption when the watcher's record or AWS's
   termination reason says spot reclaimed the instance, and 75 is that code.
@@ -174,13 +187,17 @@ cpu_model=AMD EPYC 9R45
 physical_cores=64
 scratch=root-volume
 scratch_device=nvme0n1p1 40G
+aws_cli=aws-cli/2.38.0 ...
 ==
 ```
 
 A GPU profile adds `gpu_model`, `gpu_memory`, `nvidia_driver` and
 `cuda_version`, so every net records the hardware it trained on. `scratch`
 and `scratch_device` record where `SCRATCH_DIR` was, so every result shows
-which disk its data was read from.
+which disk its data was read from. `aws_cli` is the AWS CLI's version;
+`task-artifact` needs 2.33.0 or later. With `rust: false`, the block shows
+`rust_toolchain=none` and no `rustc` line (this follows the module's setup
+script and is not checked by a test here).
 
 ## Task profiles: GPU tasks
 
@@ -212,7 +229,7 @@ security group, the network and the results bucket.
 A profile also takes `max_price_fraction`, `on_demand_fallback`,
 `spot_wait_minutes` and `slot_wait_minutes`, as the cpu profile does. The
 defaults are `market: on-demand`, `max_vcpus: 4`, `root_volume_gb: 40`,
-`whole_cores: true`, `gpu: false` and `scratch: root-volume` (but
+`whole_cores: true`, `gpu: false`, `rust: true` and `scratch: root-volume` (but
 `instance-store` with `gpu: true`), with no image (the bot's pinned Amazon
 Linux 2023 image) and no dataset access.
 
@@ -235,10 +252,11 @@ jobs:
 
 **Turning a profile on.**
 
-1. In this repository, add its types to `local.bot_task_types` and its name
-   to `local.bot_task_profiles` in `foundation/bots.tf` (a test checks both
-   against the fixture project file), then release. The foundation apply lets
-   the launch role use the new profile.
+1. In this repository, add its types to `instance_types` and its name to
+   `task_profiles` under the project in `config.yaml`, then release. The
+   foundation apply lets the launch role use the new profile. (`foundation/bots.tf`
+   reads both lists from `config.yaml`; the project file is checked against
+   them at load.)
 2. In the consumer, merge the profile into the project file on its default
    branch. Leave the workflows as they are for now.
 3. Run **Bot apply** for the project. It reads the project file from the
@@ -354,7 +372,8 @@ writes `data/nets/<net id>/{net.nnue, training.json, log.txt, checkpoints/}`
 and puts only the small files in `OUT_DIR`. See [datasets](datasets.md).
 
 **Interruptions and long runs.** On demand needs nothing beyond the six-hour
-limit. Spot GPU tasks come later, once the spot quota is raised. A trainer
+limit. A longer training is a chain of six-hour runs resuming from S3
+checkpoints ([research projects](research-projects.md#resuming-a-long-training)). Spot GPU tasks come later, once the spot quota is raised. A trainer
 that uploads checkpoints to `data/nets/<net id>/checkpoints/` as it goes can
 resume from them when the workflow reports `outcome = interrupted`. The
 resume logic belongs to the consumer.
@@ -369,6 +388,35 @@ resume logic belongs to the consumer.
 Raise them in the Service Quotas console (Amazon EC2 → the quota → Request
 increase). 16 vCPUs on demand runs four `g6.xlarge` at once. Increases take
 hours to a day. Raise the profile's `max_vcpus` with the quota.
+
+### Cost ceiling
+
+`task run` computes the worst case before it launches and logs it:
+
+```text
+worst-case cost: $11.17 (g6e.xlarge on-demand $1.861/h x 6 h); ceiling $50.00
+```
+
+- **The ceiling is per task**: $50 by default (`tasks.max_run_cost_usd`, or
+  a project's own `max_run_cost_usd` under `projects`). It is not per chain of
+  runs and not a monthly budget.
+- **Price used.** The on-demand price, when the market is on demand or
+  `on_demand_fallback` is on. Otherwise the spot cap (`max_price_fraction`
+  times on demand). Hours are the effective `max_hours`, including a lower
+  `--max-hours`. The root volume and public IPv4 are not counted.
+- **Over the ceiling:** exit 2, naming the estimate and the key to change.
+- **Price unavailable:** after three attempts, exit 3 with `outcome =
+  no-price`, and nothing is launched. The check fails closed. Before the
+  ceiling existed, a spot launch went ahead without a price cap when the
+  Pricing API failed, so rusty-chess sees this change at its next pin bump,
+  as it does the ceiling itself.
+- **The allow-list is the hard limit on hourly cost.** The ceiling is a CLI
+  check, and the launch role can be used to call AWS directly, so review a new
+  instance type's price when adding it. Raising a ceiling or adding a type is
+  a config change here, a release, then a pin bump in the consumer.
+
+At $50 and six hours the threshold is $8.33 an hour. See
+[research projects](research-projects.md#cost-controls) for the `g6e` prices.
 
 ### Costs
 
@@ -407,9 +455,11 @@ own.
   `max_price_fraction` × the on-demand price from the Pricing API, rounded
   down. For a `c8a.16xlarge` that is 0.58 × $3.4486 = $2.0002 an hour, which
   guarantees a test never costs more than 58% of on demand. The log shows
-  the cap next to the current price. If the Pricing API is unavailable,
-  spot is requested without a cap, so AWS caps it at the on-demand price,
-  and the log says so.
+  the cap next to the current price. The [cost ceiling](#cost-ceiling) reads
+  the on-demand price once and the cap reuses it, so the launch runs under the
+  cap the estimate assumed. If the Pricing API is unavailable, the ceiling
+  refuses the launch (`outcome = no-price`), so `task run` never makes a spot
+  request without a cap.
 - **Capacity interruptions** are the common kind. AWS reclaims spot capacity
   whatever you pay. The CLI reduces them in two ways:
   - It tries the zones in order of their spot placement score, then the
@@ -508,8 +558,8 @@ tasks end.
 |---|---|
 | the task's | the script ran; this is its exit code |
 | 1 | the tool or AWS failed: setup, fetch, Run Command, or copying outputs after a successful task |
-| 2 | configuration: a type outside the allow-list or with SMT, a bad market or price fraction, `--max-hours` above `max_hours`, or malformed inputs |
-| 3 | preflight: no free slot, no capacity, a duplicate task, or the wrong role |
+| 2 | configuration: a type outside the allow-list or with SMT, a bad market or price fraction, `--max-hours` above `max_hours`, a worst-case cost over the ceiling, or malformed inputs |
+| 3 | preflight: no free slot, no capacity, no price (`outcome = no-price`), a duplicate task, or the wrong role |
 | 75 | spot reclaimed the instance: there is no result; re-run |
 | 124 | Run Command's execution timeout (`max_hours`) |
 | 130 | cancelled |
@@ -591,5 +641,7 @@ about $0.35.
   the new version, release, then run **Bot apply**. The launch template's new
   default version installs it on the next task.
 - **Destroying the project.** `destroy` refuses while task instances run. It
-  keeps the task results bucket out of Terraform's way; the bucket expires
-  its own contents.
+  keeps the task results bucket and any dataset buckets out of Terraform's
+  way; the results bucket expires its own contents, and datasets are kept
+  until an administrator deletes them
+  ([research projects](research-projects.md#destroy)).

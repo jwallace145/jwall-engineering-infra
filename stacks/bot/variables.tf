@@ -2,6 +2,9 @@
 # image repository, a VPC, the records bucket and the bot instance. Every
 # value comes from the project's jwall-engineering-sites.yaml (components)
 # or from config.yaml; the CLI writes them to terraform.tfvars.json.
+#
+# A research project renders bot_enabled false and leaves the bot's variables
+# at these defaults, which nothing reads while the bot's modules are gated off.
 
 variable "project" {
   description = "Project name in kebab-case. Resources are named `<Organization>-<project>[-...]`."
@@ -46,9 +49,16 @@ variable "tags" {
   }
 }
 
+variable "bot_enabled" {
+  description = "Whether the project has a bot: the image repository and the bot instance. False for a research project. The VPC also exists with a task runner."
+  type        = bool
+  default     = true
+}
+
 variable "instance_type" {
   description = "EC2 instance type of the bot (lichess-bot.instance_type)."
   type        = string
+  default     = null
 }
 
 variable "architecture" {
@@ -64,6 +74,7 @@ variable "architecture" {
 variable "secret_parameters" {
   description = "Environment variable name to SSM SecureString parameter name (lichess-bot.secrets). The parameters are created out of band by `bot secrets set`."
   type        = map(string)
+  default     = {}
 }
 
 variable "container_environment" {
@@ -86,26 +97,31 @@ variable "records_enabled" {
 variable "records_prefix" {
   description = "Key prefix of the game records in the bucket (bot.records_prefix in config.yaml)."
   type        = string
+  default     = null
 }
 
 variable "records_container_path" {
   description = "Directory inside the image where lichess-bot writes one PGN per game; fixed by the harness Dockerfile."
   type        = string
+  default     = null
 }
 
 variable "log_retention_days" {
   description = "Retention of the bot's CloudWatch log group (lichess-bot.logs.retention_days)."
   type        = number
+  default     = null
 }
 
 variable "health_log_pattern" {
   description = "Line a new container must log to count as healthy (bot.health_log_pattern in config.yaml)."
   type        = string
+  default     = null
 }
 
 variable "health_seconds" {
   description = "Seconds a new container has to become healthy (bot.health_seconds in config.yaml)."
   type        = number
+  default     = null
 }
 
 variable "availability_zones" {
@@ -116,11 +132,13 @@ variable "availability_zones" {
 variable "keep_release_images" {
   description = "Release images kept in the repository (ecr.keep_release_images in config.yaml)."
   type        = number
+  default     = null
 }
 
 variable "expire_untagged_after_days" {
   description = "Days after which untagged images expire (ecr.expire_untagged_after_days in config.yaml)."
   type        = number
+  default     = null
 }
 
 variable "ami_name" {
@@ -154,13 +172,18 @@ variable "task_log_retention_days" {
   type        = number
 }
 
+variable "task_rust" {
+  description = "Whether cpu task instances install the Rust toolchain (task-runner.rust). Each other profile has its own `rust`."
+  type        = bool
+}
+
 variable "task_rust_toolchain" {
-  description = "Rust toolchain task instances install (tasks.rust_toolchain in config.yaml)."
+  description = "Rust toolchain task instances install, unless their `rust` is false (tasks.rust_toolchain in config.yaml)."
   type        = string
 }
 
 variable "task_profiles" {
-  description = "The task-runner's profiles beyond `cpu` (task-runner.profiles): each gets its own launch template and instance role, `<Organization>-<project>-task-<name>`, sharing the cpu profile's log group, security group and results bucket. `ami_name` is the pinned image name (tasks.images in config.yaml), null for the bot's image; `datasets` grants the profile's instances read and write sub-prefixes of datasets."
+  description = "The task-runner's profiles beyond `cpu` (task-runner.profiles): each gets its own launch template and instance role, `<Organization>-<project>-task-<name>`, sharing the cpu profile's log group, security group and results bucket. `ami_name` is the pinned image name (tasks.images in config.yaml), null for the bot's image; `rust` installs the Rust toolchain; `datasets` grants the profile's instances read, write and add-only (`write_once`) sub-prefixes of datasets."
   type = list(object({
     name                  = string
     default_instance_type = string
@@ -168,10 +191,12 @@ variable "task_profiles" {
     ami_name              = string
     root_volume_gb        = number
     gpu                   = bool
+    rust                  = bool
     datasets = list(object({
-      name  = string
-      read  = list(string)
-      write = list(string)
+      name       = string
+      read       = list(string)
+      write      = list(string)
+      write_once = list(string)
     }))
   }))
   default = []
@@ -193,14 +218,17 @@ variable "task_profiles" {
 }
 
 variable "datasets" {
-  description = "The project's dataset components: kept-forever, append-only buckets named `<Organization>-<project>-<name>`. `writers` lists the components whose roles may add objects under `prefix` (`task-runner`: the task instances); `readers` lists role ARNs that may read under it."
+  description = "The project's dataset components: kept-forever, append-only buckets named `<Organization>-<project>-<name>`. `writers` lists the components whose roles may add objects under `prefix` (`task-runner`: the task instances); `readers` lists role ARNs that may read under it. `versioning`, `expire_noncurrent_days` and `expire_prefixes` are the retention config.yaml approves."
   type = list(object({
-    name            = string
-    bucket          = string
-    prefix          = string
-    writers         = list(string)
-    readers         = list(string)
-    transition_days = number
+    name                   = string
+    bucket                 = string
+    prefix                 = string
+    writers                = list(string)
+    readers                = list(string)
+    transition_days        = number
+    versioning             = bool
+    expire_noncurrent_days = number
+    expire_prefixes        = map(number)
   }))
   default = []
 

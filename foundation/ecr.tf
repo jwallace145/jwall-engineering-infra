@@ -20,7 +20,7 @@ locals {
 
 module "sites_image" {
   source  = "jwallace145/jwall-engineering/aws//modules/ecr-repository"
-  version = "0.16.1"
+  version = "0.17.0"
 
   name                       = local.tool_config.ecr.repository
   keep_release_images        = local.tool_config.ecr.keep_release_images

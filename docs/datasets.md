@@ -1,9 +1,10 @@
 # Datasets
 
-A bot project can declare **datasets**: durable S3 buckets for data that has
-to outlive the CI run that made it, such as NNUE self-play training data.
-Every net the engine trains is built from it, and later generations are
-compared against earlier ones, so it is kept forever.
+A bot or [research project](research-projects.md) can declare **datasets**:
+durable S3 buckets for data that has to outlive the CI run that made it, such
+as NNUE self-play training data. Every net the engine trains is built from it,
+and later generations are compared against earlier ones, so it is kept
+forever.
 
 What other storage doesn't do:
 - **The task results bucket** keeps outputs for a week, and each instance
@@ -22,6 +23,9 @@ components:
     writers: [task-runner]                     # optional: who may add objects
     # readers: [arn:aws:iam::123456789012:role/trainer]  # optional
     # transition_days: 0                       # optional: days before Intelligent-Tiering
+    # versioning: true                         # optional; config.yaml must approve it
+    # expire_noncurrent_days: 90               # optional; needs versioning; config.yaml must approve it
+    # expire_prefixes: { tmp/: 30 }            # optional; sub-prefix -> days; config.yaml must approve it
 ```
 
 | Field | Meaning |
@@ -32,6 +36,16 @@ components:
 | `writers` | Components whose roles may add objects under the prefix. Only `task-runner`, the task instances, is accepted today, and it needs a `task-runner` component. The default is none. |
 | `readers` | IAM role ARNs granted read access under the prefix through the bucket policy. The default is none; the account's administrators can always read. |
 | `transition_days` | Days before objects move to S3 Intelligent-Tiering. The default is 0, which means at the next daily lifecycle run. |
+| `versioning` | Keep prior versions of overwritten or deleted objects. The default is `false`. |
+| `expire_noncurrent_days` | Days before noncurrent versions expire. Needs `versioning: true`. |
+| `expire_prefixes` | Sub-prefixes of `prefix` whose current objects expire, in days, such as `{tmp/: 30}`. |
+
+`versioning`, `expire_noncurrent_days` and `expire_prefixes` must equal what
+`config.yaml` approves for the bucket under `projects.<name>.datasets`
+(the default is no versioning and no expiry), and so must the prefix that
+`write_once` and `expire_prefixes` are relative to. A file that differs is a
+configuration error. Retention is a reviewed change to this tool; see
+[research projects](research-projects.md#retention-is-approved-in-configyaml).
 
 A project can declare several datasets, each with its own bucket.
 
@@ -41,12 +55,23 @@ The bucket is built by the library's
 [`dataset-bucket`](https://registry.terraform.io/modules/jwallace145/jwall-engineering/aws/latest/submodules/dataset-bucket)
 module, in the bot stack.
 
-- **Kept forever.** There is no expiration rule, and Terraform refuses to
-  destroy the bucket (`prevent_destroy`). Removing the component from the
-  file therefore fails the plan instead of deleting data.
-- **Write-once, by convention.** Writers add new keys; a new run gets a new
-  partition and never overwrites. Versioning is off, because it would only
-  store an accidental re-upload twice.
+- **Kept forever by default.** With no `expire_prefixes`, there is no
+  expiration rule. Terraform refuses to destroy the bucket
+  (`prevent_destroy`), so removing the component from the file fails the plan
+  instead of deleting data. `destroy` also keeps the bucket.
+- **Write-once, by convention or by IAM.** With plain `writers` or `write`
+  grants, a new run gets a new partition and never overwrites, but nothing
+  stops `PutObject` replacing a key. Prefixes that `config.yaml` lists under
+  `write_once` are enforced: see [Write-once prefixes](#write-once-prefixes).
+- **Versioning is off unless the project turns it on** (and `config.yaml`
+  approves it). The rusty-chess bucket has it off, because it would only store
+  an accidental re-upload twice. When it is on:
+  - S3 advises waiting 15 minutes after enabling versioning before writing.
+  - `expire_prefixes` only adds delete markers on a versioned bucket; the data
+    stays, and is billed, until `expire_noncurrent_days` expires the
+    noncurrent versions. Without `expire_noncurrent_days` nothing is removed.
+  - The apply role needs `s3:PutBucketVersioning`, part of `dataset/manage`,
+    so a project's apply must follow the foundation apply that grants it.
 - **Intelligent-Tiering.** Writers upload in S3 Standard (the AWS CLI's
   default), and a lifecycle rule moves objects to Intelligent-Tiering.
   Objects under 128 KB, such as manifests, stay in Standard.
@@ -71,10 +96,39 @@ module, in the bot stack.
 | The account's administrators | yes | yes | yes |
 
 Task instances run pull request code, so they can only add data: nothing
-automated can read it back or delete it. `PutObject` can still replace an
-existing key. Every run writing under its own new `run=` partition is what
-keeps that from happening, and versioning is off, so a replaced object
-can't be recovered.
+automated can read it back or delete it. On a plain `write` or `writers`
+grant, `PutObject` can still replace an existing key. Every run writing under
+its own new `run=` partition is what keeps that from happening, and with
+versioning off a replaced object can't be recovered. A `write_once` prefix
+closes that gap (below).
+
+### Write-once prefixes
+
+A profile's `datasets` grant can name `write_once` sub-prefixes, which
+`config.yaml` must also list for the bucket:
+
+```yaml
+datasets:
+  artifacts:
+    read: [datasets/, runs/, models/]
+    write: [tmp/]
+    write_once: [runs/, models/]
+```
+
+A `write_once` grant allows `s3:PutObject` only when the request carries
+`If-None-Match: *` (and the multipart steps that cannot carry it), so S3
+refuses to replace an existing key. It also allows `AbortMultipartUpload`. A
+plain upload without the header is AccessDenied. `CopyObject` into a
+write-once prefix is refused too (S3 answers 403 or 501), so copy by
+downloading and uploading again.
+
+- A profile may write a protected prefix only through `write_once`, never
+  through `write`, and a dataset with protected prefixes cannot use
+  `writers: [task-runner]`, which grants `PutObject` on the whole prefix.
+- `aws s3 cp --no-overwrite` exits 0 and writes nothing when the key already
+  exists. Use `task-artifact put`, which reads the object back to prove its
+  own write ([research projects](research-projects.md#artifacts-and-task-artifact)).
+- `put` needs `read` on the prefix as well as `write_once`.
 
 The instances write with the AWS CLI and the instance role's credentials:
 
@@ -143,6 +197,12 @@ data/nets/<net id>/checkpoints/    # for resuming an interrupted run
 Nothing automated deletes, and a new run uses a new net ID, so earlier nets
 stay.
 
+## Deleting data
+
+Deleting data is not a CLI feature and no CI role can do it. It is a manual
+procedure for an administrator ([research projects](research-projects.md#destroy)).
+On a versioned bucket, every version and delete marker has to be removed too.
+
 ## Cost
 
 Compressed positions plus full game records come to about 18 bytes per
@@ -167,8 +227,9 @@ position. So 100 million positions are about 1.8 GB, and a billion about
 ## Adding a dataset
 
 1. Add the component to the project's `jwall-engineering-sites.yaml`.
-2. Add the bucket to `local.bot_datasets` in `foundation/bots.tf` and
-   release. That gives the project's plan and apply roles `dataset/read` and
-   `dataset/manage` for the bucket.
+2. Add the bucket under `projects.<name>.datasets` in `config.yaml`, with its
+   approved retention (`{}` for none), and release. `foundation/bots.tf` reads
+   the bucket names from it and gives the project's plan and apply roles
+   `dataset/read` and `dataset/manage` for the bucket.
 3. Run **Bot apply** for the project. It creates the bucket and the
    writers' policies.

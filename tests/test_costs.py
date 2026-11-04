@@ -99,6 +99,40 @@ def test_a_project_report_filters_on_the_project_and_groups_by_component_and_wor
     ]
 
 
+def test_a_project_report_by_profile_groups_by_component_and_profile() -> None:
+    ce = FakeCE([])
+    costs.project_table(_any(ce), "rusty-chess", START, END, by="profile")
+    (request,) = ce.requests
+    assert request["GroupBy"] == [
+        {"Type": "TAG", "Key": "Component"},
+        {"Type": "TAG", "Key": "Profile"},
+    ]
+    assert request["Filter"]["Tags"]["Values"] == ["rusty-chess"]
+
+
+def test_task_spend_by_profile_is_labelled_with_the_profile_value() -> None:
+    ce = FakeCE(
+        [
+            _month(
+                OCT,
+                [
+                    _group(["Component$task-runner", "Profile$gpu"], "14.60"),
+                    _group(["Component$task-runner", "Profile$cpu"], "41.30"),
+                    _group(["Component$task-runner", "Profile$"], "0.40"),
+                    _group(["Component$", "Profile$"], "0.50"),
+                ],
+            )
+        ]
+    )
+    table = costs.project_table(_any(ce), "rusty-chess", START, END, by="profile")
+    assert {label: row["2026-10"] for label, row in table.rows.items()} == {
+        "task-runner: gpu": Decimal("14.60"),
+        "task-runner: cpu": Decimal("41.30"),
+        "task-runner": Decimal("0.40"),
+        "(no component)": Decimal("0.50"),
+    }
+
+
 def test_the_account_report_groups_by_project_without_a_filter() -> None:
     ce = FakeCE([])
     costs.account_table(_any(ce), START, END)
@@ -305,3 +339,25 @@ def test_cost_report_needs_no_ci_role(ce: FakeCE) -> None:
     with patch("jwall_engineering_sites.aws.caller_identity", return_value=("1", OWNER)):
         result = CliRunner().invoke(cli.app, ["cost", "report", "--project", "rusty-chess"])
     assert result.exit_code == 0, result.output
+
+
+def test_cost_report_by_profile_for_one_project(ce: FakeCE) -> None:
+    ce.responses = [[_month(OCT, [_group(["Component$task-runner", "Profile$gpu"], "3.00")])]]
+    with _as_role(OWNER):
+        result = CliRunner().invoke(
+            cli.app, ["cost", "report", "--project", "rusty-chess", "--by", "profile"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "task-runner: gpu" in result.output
+    (request,) = ce.requests
+    assert request["GroupBy"][1] == {"Type": "TAG", "Key": "Profile"}
+
+
+@pytest.mark.parametrize(
+    "args", [["--by", "profile"], ["--project", "rusty-chess", "--by", "nonsense"]]
+)
+def test_cost_report_by_needs_a_project_and_a_known_split(ce: FakeCE, args: list[str]) -> None:
+    with _as_role(OWNER):
+        result = CliRunner().invoke(cli.app, ["cost", "report", *args])
+    assert result.exit_code == 2
+    assert ce.requests == []

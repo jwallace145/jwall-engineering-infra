@@ -1,10 +1,11 @@
 name: Remote task
 
-# Reusable: a bot repository with a task-runner component calls this to run
-# one script on a fresh, dedicated, on-demand EC2 instance. The CLI launches
-# the instance, streams the script's output into this job's log, copies the
-# files the script wrote to $OUT_DIR back, terminates the instance on every
-# exit path and exits with the script's code.
+# Reusable: a repository with a task-runner component (a bot or research
+# project) calls this to run one script on a fresh, dedicated EC2 instance, spot
+# or on demand as its profile says. The CLI launches the instance, streams the
+# script's output into this job's log, copies the files the script wrote to
+# $OUT_DIR back, terminates the instance on every exit path and exits with the
+# script's code.
 #
 # Who can run it: same-repository pull requests, pushes, manual dispatches
 # and schedules. Fork pull requests get no OIDC token from GitHub, and the
@@ -15,7 +16,7 @@ name: Remote task
 # The CLI runs from this workflow's own commit (github.job_workflow_sha), so
 # the tag the caller pins selects the tool version.
 #
-# Caller (in the bot repository):
+# Caller (in the project's repository):
 #
 #   permissions: {}
 #   jobs:
@@ -92,7 +93,7 @@ on:
         default: false
     outputs:
       outcome:
-        description: passed, failed, interrupted (spot reclaimed the instance; no result, re-run) or no-capacity.
+        description: passed, failed, interrupted (spot reclaimed the instance; no result, re-run), no-capacity (neither spot nor on-demand had room) or no-price (the cost ceiling could not be checked).
         value: ${{ jobs.task.outputs.outcome }}
       interrupted-at:
         description: When spot reclaimed the instance, if it did.

@@ -8,14 +8,41 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jwall_engineering_sites.project import Project
-from jwall_engineering_sites.settings import Settings, load_settings
+from jwall_engineering_sites.settings import (
+    DatasetRetention,
+    ProjectGuardrails,
+    Settings,
+    load_settings,
+)
 from jwall_engineering_sites.site import Site, load_site_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SITE_FIXTURES = sorted((FIXTURES / "sites").glob("*.yaml"))
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+#: The central entry the math-prover sample would have once it is onboarded.
+MATH_PROVER_GUARDRAILS = ProjectGuardrails(
+    instance_types=("c8a.xlarge", "g6e.xlarge", "g6e.2xlarge", "g6e.4xlarge"),
+    task_profiles=("cpu", "train"),
+    datasets={
+        "jwall-engineering-math-prover-artifacts": DatasetRetention(
+            prefix="data/",
+            versioning=True,
+            expire_noncurrent_days=90,
+            expire_prefixes={"tmp/": 30},
+            write_once=("runs/", "models/"),
+        )
+    },
+)
+
+
+def with_guardrails(settings: Settings, project: str, guardrails: ProjectGuardrails) -> Settings:
+    """`settings` with `guardrails` as the central entry for `project`."""
+    return settings.model_copy(update={"projects": {**settings.projects, project: guardrails}})
 
 
 @pytest.fixture
@@ -38,6 +65,15 @@ def guitar(settings: Settings) -> Site:
 @pytest.fixture
 def bot(settings: Settings) -> Project:
     return Project.from_config(load_site_config(FIXTURES / "bots" / "rusty-chess.yaml"), settings)
+
+
+@pytest.fixture
+def research(settings: Settings) -> Project:
+    """The math-prover sample: a dataset and a task-runner, no bot, with its central entry."""
+    return Project.from_config(
+        load_site_config(FIXTURES / "bots" / "math-prover.yaml"),
+        with_guardrails(settings, "math-prover", MATH_PROVER_GUARDRAILS),
+    )
 
 
 @pytest.fixture
@@ -109,6 +145,20 @@ def bot_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
         "engine:\n  dir: ./engines/\n  name: rusty-chess\n  protocol: uci\n"
         "  uci_options:\n    Hash: 16\n"
     )
+    monkeypatch.chdir(root)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    yield root
+
+
+@pytest.fixture
+def research_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A working directory holding the math-prover file and a config.yaml approving it."""
+    root = tmp_path / "research-workspace"
+    root.mkdir()
+    shutil.copy(FIXTURES / "bots" / "math-prover.yaml", root / "jwall-engineering-sites.yaml")
+    config = yaml.safe_load((FIXTURES / "config.yaml").read_text())
+    config["projects"]["math-prover"] = MATH_PROVER_GUARDRAILS.model_dump(mode="json")
+    (root / "config.yaml").write_text(yaml.safe_dump(config))
     monkeypatch.chdir(root)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     yield root

@@ -13,7 +13,7 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from jwall_engineering_sites import tasks
-from jwall_engineering_sites.errors import PreflightError
+from jwall_engineering_sites.errors import ConfigError, PreflightError
 from jwall_engineering_sites.project import Project
 
 REGION = "us-east-1"
@@ -318,15 +318,44 @@ def test_price_plan_caps_spot_and_orders_zones(bot: Project) -> None:
     assert [s.zone for s in plan.subnets] == ["us-east-1d", "us-east-1b", "us-east-1a"]
 
 
-def test_price_plan_without_the_pricing_api_lets_aws_cap_at_on_demand(
+def test_price_plan_without_a_ceiling_or_a_price_lets_aws_cap_at_on_demand(
     bot: Project, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Only a spec with no ceiling may do this; the CLI always sets one."""
+    spec = _spec(bot, max_run_cost_usd=None)
     with caplog.at_level(logging.WARNING):
-        plan = tasks.price_plan(
-            _any(FakePriceEC2()), _any(FakePricing(None)), _spec(bot), THREE, LOG
-        )
+        plan = tasks.price_plan(_any(FakePriceEC2()), _any(FakePricing(None)), spec, THREE, LOG)
     assert plan.max_price is None and plan.on_demand is None
     assert "capped at the on-demand price" in caplog.text
+
+
+def test_price_plan_with_a_ceiling_never_plans_spot_without_a_cap(bot: Project) -> None:
+    spec = _spec(bot, max_run_cost_usd=50.0)
+    with pytest.raises(tasks.NoPrice, match=r"c8a\.16xlarge"):
+        tasks.price_plan(_any(FakePriceEC2()), _any(FakePricing(None)), spec, THREE, LOG)
+
+
+def test_price_plan_with_a_ceiling_may_plan_on_demand_without_a_price(bot: Project) -> None:
+    """On demand has no cap to lose; `check_ceiling` has already priced it in a real run."""
+    spec = _spec(bot, market="on-demand", max_run_cost_usd=50.0)
+    plan = tasks.price_plan(_any(object()), _any(FakePricing(None)), spec, THREE, LOG)
+    assert plan.max_price is None and plan.on_demand is None
+
+
+def test_price_plan_reuses_a_price_it_is_given(bot: Project) -> None:
+    pricing = FakePricing("9.99")
+    plan = tasks.price_plan(
+        _any(FakePriceEC2()), _any(pricing), _spec(bot), THREE, LOG, on_demand=3.44864
+    )
+    assert pricing.calls == []
+    assert plan.max_price == "2.0002" and plan.on_demand == 3.44864
+
+
+def test_price_plan_for_on_demand_reuses_a_price_it_is_given(bot: Project) -> None:
+    pricing = FakePricing("9.99")
+    spec = _spec(bot, market="on-demand")
+    plan = tasks.price_plan(_any(object()), _any(pricing), spec, THREE, LOG, on_demand=3.44864)
+    assert pricing.calls == [] and plan.on_demand == 3.44864
 
 
 def test_price_plan_for_on_demand_skips_spot_lookups(bot: Project) -> None:
@@ -518,3 +547,127 @@ def test_public_subnets_sorted_by_zone() -> None:
         (ids["us-east-1b"], "us-east-1b"),
     ]
     assert all(s.zone_id.startswith("use1-az") for s in subnets)
+
+
+# --- the cost ceiling -----------------------------------------------------------
+
+
+class FlakyPricing(FakePricing):
+    """Raises `failures` times (or forever with None), then answers."""
+
+    def __init__(self, price: str | None, failures: int | None, error: Exception) -> None:
+        super().__init__(price)
+        self.failures = failures
+        self.error = error
+
+    def get_products(self, **kwargs: Any) -> dict[str, Any]:
+        if self.failures is None or len(self.calls) < self.failures:
+            self.calls.append(kwargs)
+            raise self.error
+        return super().get_products(**kwargs)
+
+
+def _ceiling(
+    bot: Project,
+    pricing: object,
+    caplog: pytest.LogCaptureFixture | None = None,
+    sleeps: list[float] | None = None,
+    **overrides: Any,
+) -> None:
+    values: dict[str, Any] = {"max_run_cost_usd": 50.0, **overrides}
+    tasks.check_ceiling(
+        _any(pricing),
+        _spec(bot, **values),
+        LOG,
+        sleep=(sleeps if sleeps is not None else []).append,
+    )
+
+
+def test_worst_case_rate_is_on_demand_unless_spot_has_no_fallback(bot: Project) -> None:
+    assert tasks.worst_case_rate(_spec(bot, market="on-demand"), 10.0) == 10.0
+    assert tasks.worst_case_rate(_spec(bot, market="spot", on_demand_fallback=True), 10.0) == 10.0
+    capped = tasks.worst_case_rate(_spec(bot, market="spot", on_demand_fallback=False), 10.0)
+    assert capped == pytest.approx(5.8)
+
+
+def test_a_task_under_the_ceiling_passes_and_logs_the_estimate(
+    bot: Project, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="test")
+    spec = _spec(bot, instance_type="g6e.xlarge", market="on-demand", max_run_cost_usd=50.0)
+    tasks.check_ceiling(_any(FakePricing("1.8610000000")), spec, LOG, sleep=lambda _: None)
+    assert [r.getMessage() for r in caplog.records] == [
+        "worst-case cost: $11.17 (g6e.xlarge on-demand $1.861/h x 6 h); ceiling $50.00"
+    ]
+
+
+def test_a_spot_task_without_fallback_is_costed_at_its_cap(
+    bot: Project, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="test")
+    _ceiling(bot, FakePricing("1.861"), instance_type="g6e.xlarge", on_demand_fallback=False)
+    assert [r.getMessage() for r in caplog.records] == [
+        "worst-case cost: $6.48 (g6e.xlarge spot cap $1.08/h x 6 h); ceiling $50.00"
+    ]
+
+
+def test_a_spot_task_with_fallback_is_costed_at_on_demand(bot: Project) -> None:
+    with pytest.raises(ConfigError, match=r"\$62\.96"):
+        _ceiling(bot, FakePricing("10.49264"), instance_type="g6e.12xlarge", market="spot")
+
+
+def test_a_task_over_the_ceiling_is_refused_naming_the_setting(bot: Project) -> None:
+    with pytest.raises(ConfigError) as caught:
+        _ceiling(bot, FakePricing("10.49264"), instance_type="g6e.12xlarge", market="on-demand")
+    message = str(caught.value)
+    assert "$62.96" in message and "$50.00" in message
+    assert "tasks.max_run_cost_usd" in message and "--max-hours" in message
+    assert caught.value.exit_code == 2
+
+
+def test_fewer_hours_bring_a_task_under_the_ceiling(bot: Project) -> None:
+    _ceiling(bot, FakePricing("10.49264"), instance_type="g6e.12xlarge", market="on-demand",
+             max_hours=4)  # fmt: skip
+
+
+def test_an_estimate_equal_to_the_ceiling_passes(bot: Project) -> None:
+    _ceiling(bot, FakePricing("12.5"), market="on-demand", max_hours=4)  # exactly $50
+    with pytest.raises(ConfigError):
+        _ceiling(bot, FakePricing("12.5"), market="on-demand", max_hours=5)
+
+
+def test_the_price_looked_up_is_the_instance_types_override(bot: Project) -> None:
+    pricing = FakePricing("1.0")
+    _ceiling(bot, pricing, instance_type="g6e.2xlarge", market="on-demand")
+    filters = {f["Field"]: f["Value"] for f in pricing.calls[0]["Filters"]}
+    assert filters["instanceType"] == "g6e.2xlarge" and filters["regionCode"] == REGION
+
+
+def test_a_failing_pricing_api_is_retried_then_succeeds(bot: Project) -> None:
+    error = ClientError({"Error": {"Code": "Throttling"}}, "GetProducts")
+    sleeps: list[float] = []
+    _ceiling(bot, FlakyPricing("1.0", 2, error), sleeps=sleeps, market="on-demand")
+    assert sleeps == [5, 5]
+
+
+@pytest.mark.parametrize("api_fails", [False, True])
+def test_no_price_after_three_attempts_fails_closed(bot: Project, api_fails: bool) -> None:
+    error = ClientError({"Error": {"Code": "AccessDenied"}}, "GetProducts")
+    pricing = FlakyPricing(None, None, error) if api_fails else FakePricing(None)
+    sleeps: list[float] = []
+    with pytest.raises(tasks.NoPrice, match=r"c8a\.16xlarge.*fails closed") as caught:
+        _ceiling(bot, pricing, sleeps=sleeps, market="on-demand")
+    assert len(pricing.calls) == 3 and sleeps == [5, 5]
+    assert caught.value.exit_code == 3 and isinstance(caught.value, PreflightError)
+
+
+def test_the_check_returns_the_price_it_read(bot: Project) -> None:
+    spec = _spec(bot, max_run_cost_usd=50.0, market="on-demand")
+    found = tasks.check_ceiling(_any(FakePricing("3.44864")), spec, LOG, sleep=lambda _: None)
+    assert found == 3.44864
+
+
+def test_no_ceiling_skips_the_check(bot: Project) -> None:
+    pricing = FakePricing("1000")
+    tasks.check_ceiling(_any(pricing), _spec(bot), LOG, sleep=lambda _: None)
+    assert pricing.calls == []

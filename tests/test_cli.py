@@ -797,3 +797,246 @@ def test_bot_build_waits_for_assets_attached_after_publishing(
     assert result.exit_code == 0, result.output
     assert sleeps, "the build waited for the assets"
     assert "waiting for" in result.output
+
+
+# -- research projects ---------------------------------------------------------------
+
+RESEARCH_PLAN_ROLE = (
+    "arn:aws:sts::650503560686:assumed-role/jwall-engineering-math-prover-ci-plan/s"
+)
+RESEARCH_APPLY_ROLE = (
+    "arn:aws:sts::650503560686:assumed-role/jwall-engineering-math-prover-ci-apply/s"
+)
+RESEARCH_BUCKET = "jwall-engineering-math-prover-artifacts"
+TF_RM = "state rm -lock-timeout=120s "
+
+
+def _calls(log: Path) -> list[str]:
+    """Terraform's invocations, without the version check."""
+    lines = log.read_text().splitlines() if log.exists() else []
+    return [c for c in lines if not c.startswith("version")]
+
+
+def _dataset_state(name: str, role: str) -> dict[str, list[str]]:
+    """A dataset's addresses in state, as `terraform state list` prints them."""
+    module = f'module.datasets["{name}"]'
+    return {
+        "buckets": [
+            f"{module}.aws_s3_bucket.this",
+            f"{module}.aws_s3_bucket_lifecycle_configuration.this",
+            f"{module}.aws_s3_bucket_policy.this",
+            f"{module}.aws_s3_bucket_public_access_block.this",
+        ],
+        "grants": [
+            f'{module}.aws_iam_role_policy.grant["{role}"]',
+            f'{module}.aws_iam_role_policy.writer["{role}"]',
+        ],
+    }
+
+
+def _assert_releases_only_the_buckets(calls: list[str], state: dict[str, list[str]]) -> None:
+    released = [c.removeprefix(TF_RM) for c in calls if c.startswith(TF_RM)]
+    assert sorted(released) == sorted(state["buckets"])
+    assert not set(released) & set(state["grants"])
+    destroy = next(i for i, c in enumerate(calls) if c.startswith("destroy "))
+    assert all(calls.index(TF_RM + a) < destroy for a in state["buckets"])
+
+
+def test_validate_research_describes_what_it_has(
+    research_workspace: Path, fake_terraform: Path, tmp_path: Path
+) -> None:
+    result = runner.invoke(cli.app, ["validate"])
+    assert result.exit_code == 0, result.output
+    assert "kind research" in result.output
+    # Not the bot's: nothing of the kind exists for this project.
+    assert "kind bot" not in result.output and "image" not in result.output
+    assert "stack validates" in result.output
+    tfvars = json.loads((tmp_path / "rendered.tfvars.json").read_text())
+    assert tfvars["project"] == "math-prover" and tfvars["bot_enabled"] is False
+
+
+def test_plan_research_uses_the_bot_stack_and_names_the_manual_apply(
+    research_workspace: Path, fake_terraform: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_TF_PLAN_EXIT", str(PLAN_CHANGES))
+    monkeypatch.setenv("FAKE_TF_PLAN_SUMMARY", "1 to add, 0 to change, 0 to destroy.")
+    with _as_role(RESEARCH_PLAN_ROLE):
+        result = runner.invoke(cli.app, ["plan"])
+    assert result.exit_code == 0, result.output
+    assert "research math-prover: state project=math-prover/" in result.output
+    calls = _calls(fake_terraform)
+    assert calls[0].startswith("init ") and "-backend-config=backend.hcl" in calls[0]
+    assert calls[1].startswith("plan ")
+    tfvars = json.loads((tmp_path / "rendered.tfvars.json").read_text())
+    assert tfvars["bot_enabled"] is False
+    comment = (research_workspace / ".jwall-engineering-sites" / "plan-comment.md").read_text()
+    # Merging does not apply this stack: the comment must not say or imply it does.
+    assert "**Bot apply**" in comment and "Merging this pull request will" not in comment
+
+
+def test_plan_research_refuses_another_projects_role(
+    research_workspace: Path, fake_terraform: Path
+) -> None:
+    with _as_role(BOT_PLAN_ROLE):
+        result = runner.invoke(cli.app, ["plan"])
+    assert result.exit_code == 3
+    assert "jwall-engineering-math-prover-ci-plan" in result.output
+    assert _calls(fake_terraform) == []
+
+
+def test_apply_and_outputs_work_on_research(research_workspace: Path, fake_terraform: Path) -> None:
+    with _as_role(RESEARCH_APPLY_ROLE):
+        applied = runner.invoke(cli.app, ["apply"])
+    assert applied.exit_code == 0, applied.output
+    assert [c.split()[0] for c in _calls(fake_terraform)] == ["init", "plan", "apply", "output"]
+    with _as_role(RESEARCH_PLAN_ROLE):
+        outputs = runner.invoke(cli.app, ["outputs"])
+    assert outputs.exit_code == 0, outputs.output
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bot", "build", "--version", "v1.2.3"],
+        ["bot", "push", "--version", "v1.2.3"],
+        ["bot", "deploy", "--version", "v1.2.3"],
+        ["bot", "reconcile"],
+        ["bot", "reconcile", "--dry-run"],
+        ["bot", "status"],
+        ["bot", "logs"],
+        ["bot", "secrets", "set", "LICHESS_TOKEN"],
+        ["bot", "secrets", "check", "LICHESS_TOKEN"],
+    ],
+    ids=" ".join,
+)
+def test_bot_commands_refuse_research(research_workspace: Path, command: list[str]) -> None:
+    with mock_aws(), _as_role(RESEARCH_PLAN_ROLE):
+        result = runner.invoke(cli.app, command, input="value\n")
+    assert result.exit_code == 3, result.output
+    assert "math-prover is a research project" in result.output
+    assert "bot commands work on bot projects" in result.output
+
+
+@pytest.mark.parametrize("command", ["publish", "release"])
+def test_site_commands_touch_nothing_on_research(
+    research_workspace: Path, fake_terraform: Path, dist: Path, command: str
+) -> None:
+    """`release` would otherwise apply the stack before finding there is no site."""
+    with _as_role(RESEARCH_APPLY_ROLE):
+        result = runner.invoke(cli.app, [command, "--dist", str(dist)])
+    assert result.exit_code == 2, result.output
+    assert "not a site" in result.output
+    assert _calls(fake_terraform) == []
+
+
+def test_destroy_research_warning_names_what_it_deletes(
+    research_workspace: Path, fake_terraform: Path
+) -> None:
+    with _as_role(RESEARCH_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy"])
+    assert result.exit_code == 3
+    assert "--yes" in result.output and "buckets" in result.output
+    assert "task launch templates" in result.output
+    assert "image repository" not in result.output and "instance," not in result.output
+    assert _calls(fake_terraform) == []
+
+
+def test_destroy_of_datasets_alone_deletes_no_network(
+    research_workspace: Path, fake_terraform: Path
+) -> None:
+    """A project of datasets alone has no VPC or task runner to delete."""
+    import yaml
+
+    path = research_workspace / "jwall-engineering-sites.yaml"
+    project = yaml.safe_load(path.read_text())
+    project["components"] = [c for c in project["components"] if c["kind"] == "dataset"]
+    path.write_text(yaml.safe_dump(project))
+    with _as_role(RESEARCH_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy"])
+    assert result.exit_code == 3
+    assert "buckets" in result.output
+    assert "VPC" not in result.output and "launch template" not in result.output
+
+
+def test_destroy_bot_warning_stays_true(bot_workspace: Path, fake_terraform: Path) -> None:
+    with _as_role(BOT_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy"])
+    assert result.exit_code == 3
+    assert "its instance, VPC and image repository are deleted" in result.output
+    assert "buckets" in result.output and "kept" in result.output
+
+
+def test_destroy_research_releases_only_the_buckets_and_skips_the_image_check(
+    research_workspace: Path, fake_terraform: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _dataset_state("artifacts", "jwall-engineering-math-prover-task-train")
+    monkeypatch.setenv(
+        "FAKE_TF_STATE_LIST",
+        " ".join([*state["buckets"], *state["grants"], "module.tasks[0].aws_launch_template.this"]),
+    )
+    monkeypatch.setattr(
+        image_module,
+        "present_tags",
+        lambda *a, **k: pytest.fail("a research project has no image repository to check"),
+    )
+    with mock_aws(), _as_role(RESEARCH_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 0, result.output
+    _assert_releases_only_the_buckets(_calls(fake_terraform), state)
+    assert f"released {RESEARCH_BUCKET}" in result.output
+    assert "the bucket and its data are kept" in result.output
+    # The summary names what was kept, and nothing a research project never had.
+    summary = next(line for line in result.output.splitlines() if "destroyed math-prover" in line)
+    assert RESEARCH_BUCKET in summary
+    assert "records" not in summary and "secret" not in summary
+
+
+def test_destroy_research_with_nothing_in_state_claims_nothing_kept(
+    research_workspace: Path, fake_terraform: Path
+) -> None:
+    with mock_aws(), _as_role(RESEARCH_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert not [c for c in _calls(fake_terraform) if c.startswith(TF_RM)]
+    summary = next(line for line in result.output.splitlines() if "destroyed math-prover" in line)
+    assert "kept" not in summary
+
+
+def test_destroy_research_refuses_while_tasks_run(
+    research_workspace: Path, fake_terraform: Path
+) -> None:
+    with mock_aws(), _as_role(RESEARCH_APPLY_ROLE):
+        ec2 = boto3.client("ec2", region_name="us-east-1")
+        image_id = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
+        instance = ec2.run_instances(
+            ImageId=image_id, MinCount=1, MaxCount=1, InstanceType="c8a.xlarge",
+            TagSpecifications=[{"ResourceType": "instance", "Tags": [
+                {"Key": "Project", "Value": "math-prover"}, {"Key": "Purpose", "Value": "ci-task"},
+            ]}],
+        )["Instances"][0]["InstanceId"]  # fmt: skip
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 3
+    assert instance in result.output and "task terminate --all" in result.output
+    assert not [c for c in _calls(fake_terraform) if c.startswith(("destroy", "state"))]
+
+
+def test_destroy_bot_releases_its_dataset_buckets_too(
+    bot_workspace: Path, fake_terraform: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rusty-chess has a dataset: its prevent_destroy would reject the whole plan."""
+    state = _dataset_state("nnue", "jwall-engineering-rusty-chess-task-datagen")
+    monkeypatch.setenv(
+        "FAKE_TF_STATE_LIST",
+        " ".join(["module.records[0].aws_s3_bucket.this", *state["buckets"], *state["grants"]]),
+    )
+    with mock_aws(), _as_role(BOT_APPLY_ROLE):
+        result = runner.invoke(cli.app, ["destroy", "--yes"])
+    assert result.exit_code == 0, result.output
+    calls = _calls(fake_terraform)
+    destroy = next(i for i, c in enumerate(calls) if c.startswith("destroy "))
+    assert calls.index(TF_RM + "module.records") < destroy
+    released = [c for c in calls if c.startswith(TF_RM) and c != TF_RM + "module.records"]
+    _assert_releases_only_the_buckets([*released, calls[destroy]], state)
+    summary = next(line for line in result.output.splitlines() if "destroyed rusty-chess" in line)
+    assert "jwall-engineering-rusty-chess-nnue" in summary
+    assert "records bucket" in summary and "secret" in summary
