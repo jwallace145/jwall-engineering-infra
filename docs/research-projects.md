@@ -148,7 +148,7 @@ components:
         rust: false
         datasets:
           artifacts:
-            read: [datasets/, models/, runs/]
+            read: [datasets/, models/, runs/, tmp/]
             write: [tmp/]
             write_once: [runs/, models/]
 ```
@@ -247,9 +247,12 @@ Things to know:
   checks only the exit code believes the upload happened. `task-artifact put`
   avoids this by setting a unique `upload-id` in the metadata and reading it
   back; a different value means the key already existed, and `put` exits 4.
-- **`put` and `publish` need `read` on the prefix** as well as `write_once`,
-  because reading the object back (`HeadObject`) needs `s3:GetObject`. Without
-  it they report that plainly.
+- **`put` and `publish` need `read` on the prefix** as well as `write` or
+  `write_once`, because reading the object back (`HeadObject`) needs
+  `s3:GetObject`. A profile's `write_once` prefix without a covering `read` is
+  a configuration error at load, so it cannot fail after uploading. A `write`
+  prefix is not checked: without `read`, `put` uploads and then reports that it
+  cannot read the object back, which is why the sample also reads `tmp/`.
 - **`CopyObject` into a write-once prefix is refused.** Download and `put` the
   file instead.
 - **A retry after a read-back failure exits 4.** If the upload succeeded but
@@ -297,10 +300,12 @@ approve exactly the same values under `projects.<name>.datasets.<bucket>`:
 | `expire_noncurrent_days` | Days before noncurrent versions expire; needs `versioning`. |
 
 A violation is a configuration error at load, so **Bot apply** and `task run`
-refuse it. The checks also reject `write` on a `write_once` prefix, a dataset
-with `write_once` prefixes that uses `writers: [task-runner]` (which grants
-`PutObject` on the whole prefix), and an expiring prefix that overlaps a
-protected one. A change to retention is therefore a reviewed change to this
+refuse it. The checks also reject `write` on a `write_once` prefix, a
+`write_once` prefix without a covering `read`, a dataset with `write_once`
+prefixes that uses `writers: [task-runner]` (which grants `PutObject` on the
+whole prefix), an expiring prefix that overlaps a protected one, and expiring
+prefixes that overlap each other or give the same lifecycle rule id (`a/b/`
+and `a-b/`). A change to retention is therefore a reviewed change to this
 tool. These checks do not stop someone with admin credentials, or an apply
 from a modified copy of the tool.
 

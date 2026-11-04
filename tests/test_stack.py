@@ -511,7 +511,7 @@ def test_research_tfvars(research: Project, settings: Settings) -> None:
     assert train["datasets"] == [
         {
             "name": "artifacts",
-            "read": ["datasets/", "models/", "runs/"],
+            "read": ["datasets/", "models/", "runs/", "tmp/"],
             "write": ["tmp/"],
             "write_once": ["runs/", "models/"],
         }

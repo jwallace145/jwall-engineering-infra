@@ -291,7 +291,7 @@ def test_non_overlapping_prefixes_pass(settings: Settings) -> None:
 def test_a_profile_may_write_a_protected_prefix_through_write_once(settings: Settings) -> None:
     raw = _raw()
     _no_task_runner_writer(raw)
-    access = {"write_once": ["runs/"], "write": ["selfplay/"]}
+    access = {"read": ["runs/"], "write_once": ["runs/"], "write": ["selfplay/"]}
     _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = access
     assert _problems(raw, _protect(settings, "runs/")) == []
 
@@ -299,14 +299,43 @@ def test_a_profile_may_write_a_protected_prefix_through_write_once(settings: Set
 def test_write_once_below_a_central_prefix_is_covered(settings: Settings) -> None:
     raw = _raw()
     _no_task_runner_writer(raw)
-    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = {"write_once": ["runs/x/"]}
+    access = {"read": ["runs/x/"], "write_once": ["runs/x/"]}
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = access
+    assert _problems(raw, _protect(settings, "runs/")) == []
+
+
+def test_write_once_without_read_is_refused(settings: Settings) -> None:
+    """`task-artifact put` reads the object back, so it would fail after uploading."""
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    access = {"read": ["selfplay/"], "write_once": ["runs/"]}
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = access
+    (problem,) = _problems(raw, _protect(settings, "runs/"))
+    assert "datagen" in problem and "'runs/'" in problem and "read" in problem
+
+
+def test_read_below_a_write_once_prefix_does_not_cover_it(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    access = {"read": ["runs/x/"], "write_once": ["runs/"]}
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = access
+    (problem,) = _problems(raw, _protect(settings, "runs/"))
+    assert "'runs/'" in problem and "read" in problem
+
+
+def test_read_above_a_write_once_prefix_covers_it(settings: Settings) -> None:
+    raw = _raw()
+    _no_task_runner_writer(raw)
+    access = {"read": ["runs/"], "write_once": ["runs/x/"]}
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = access
     assert _problems(raw, _protect(settings, "runs/")) == []
 
 
 def test_write_once_outside_the_central_list_is_refused(settings: Settings) -> None:
     raw = _raw()
     _no_task_runner_writer(raw)
-    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = {"write_once": ["other/"]}
+    access = {"read": ["other/"], "write_once": ["other/"]}
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = access
     (problem,) = _problems(raw, _protect(settings, "runs/"))
     assert "other/" in problem and "write_once" in problem and "config.yaml" in problem
     (problem,) = _problems(raw, settings)  # no central protection at all
@@ -465,7 +494,8 @@ def test_expiry_on_a_parent_of_a_protected_prefix_is_refused(settings: Settings)
 def test_consumer_write_once_on_a_parent_is_not_covered(settings: Settings) -> None:
     raw = _raw()
     _no_task_runner_writer(raw)
-    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = {"write_once": ["runs/"]}
+    access = {"read": ["runs/"], "write_once": ["runs/"]}
+    _runner(raw)["profiles"]["datagen"]["datasets"]["nnue"] = access
     (problem,) = _problems(raw, _protect(settings, "runs/x/"))
     assert "write_once" in problem and "'runs/'" in problem
 

@@ -112,6 +112,12 @@ def _dataset_problems(config: SiteConfig, approved: ProjectGuardrails) -> list[s
                         f"{who}: write_once {prefix!r} is not under a write_once prefix "
                         "approved in config.yaml"
                     )
+                if not any(prefix.startswith(granted) for granted in access.read):
+                    problems.append(
+                        f"{who}: write_once {prefix!r} is not covered by its read grants; add "
+                        "it to read, because task-artifact put reads the object back and "
+                        "would fail after uploading"
+                    )
     return problems
 
 
