@@ -49,6 +49,7 @@ def not_found(operation: str) -> None:
 
 def options(args: list[str], flags: set[str], valued: set[str]) -> tuple[dict[str, str], list[str]]:
     """Split arguments into options and positionals; refuse an unknown option."""
+    valued = valued | {"--region"}  # the real CLI takes it on every command
     found: dict[str, str] = {}
     positional: list[str] = []
     rest = iter(args)

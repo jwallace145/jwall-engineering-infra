@@ -72,7 +72,9 @@ def find_cli() -> str:
 
 
 def aws(*args: str) -> subprocess.CompletedProcess[str]:
-    return run_cli(find_cli(), *args)
+    """Run the CLI in the task's region: the instance has no default one."""
+    region = os.environ.get("TASK_REGION")
+    return run_cli(find_cli(), *args, *(("--region", region) if region else ()))
 
 
 def sha256_file(path: str) -> str:

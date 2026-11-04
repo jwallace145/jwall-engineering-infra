@@ -212,7 +212,9 @@ jobs:
 `ci/train.sh` runs on the instance as root, at the commit under test. See
 [Writing a task script](remote-tasks.md#writing-a-task-script). Besides
 `OUT_DIR` and `SCRATCH_DIR`, it gets `TASK_RUN_ID`, `TASK_ID` and
-`TASK_COMMIT`, which `task-artifact publish` records in a manifest.
+`TASK_COMMIT`, which `task-artifact publish` records in a manifest, and
+`TASK_REGION`, which `task-artifact` passes to every AWS CLI call as `--region`.
+`AWS_DEFAULT_REGION` is not set.
 
 ## Artifacts and `task-artifact`
 

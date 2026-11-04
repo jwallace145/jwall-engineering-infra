@@ -152,7 +152,9 @@ variables or secrets. The workflow builds the role ARN from this tool's
   itself.
 - **Task variables.** `TASK_RUN_ID` (the run and attempt), `TASK_ID` and
   `TASK_COMMIT` (the commit SHA) are exported, so an artifact manifest can
-  record them. `task-artifact`, a helper for checksummed, write-once uploads to
+  record them. `TASK_REGION` is the project's region: pass it to your own AWS
+  CLI calls with `--region`, because `AWS_DEFAULT_REGION` is not set.
+  `task-artifact`, a helper for checksummed, write-once uploads to
   datasets, is on `PATH`; see [research projects](research-projects.md#artifacts-and-task-artifact).
 - **Exit code.** The script's exit code is the job's. Avoid 75: on spot, a
   non-zero exit counts as an interruption when the watcher's record or AWS's

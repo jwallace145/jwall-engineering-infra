@@ -38,7 +38,7 @@ class Env:
     work: Path
 
     def _environ(self, extra: dict[str, str]) -> dict[str, str]:
-        task = {"TASK_RUN_ID", "TASK_ID", "TASK_COMMIT"}
+        task = {"TASK_RUN_ID", "TASK_ID", "TASK_COMMIT", "TASK_REGION"}
         base = {k: v for k, v in os.environ.items() if k not in task and not k.startswith("FAKE_")}
         return {
             **base,
@@ -173,6 +173,43 @@ def test_put_uploads_with_no_overwrite_then_reads_back(s3: Env) -> None:
     assert "--no-overwrite" in cp and "--only-show-errors" in cp
     assert cp.count("--metadata") == 1
     assert cp[-2:] == [str(source), f"s3://{BUCKET}/k"]
+
+
+def _exercise_every_command(s3: Env, **env: str) -> list[list[str]]:
+    """Put, get, publish, get-run and list-complete; every AWS call but the version probes."""
+    source = s3.file("f")
+    expect = s3.expect("a.bin")
+    work = s3.work
+    steps = (
+        ("put", str(source), f"{PREFIX}a.bin"),
+        ("get", f"{PREFIX}a.bin", str(work / "got")),
+        ("publish", PREFIX, "--expect", str(expect)),
+        ("get-run", PREFIX, str(work / "run")),
+        ("list-complete", f"s3://{BUCKET}/runs/"),
+    )
+    for step in steps:
+        result = s3.run(*step, **env)
+        assert result.returncode == 0, (step, result.stderr)
+    return [c for c in s3.calls() if c != ["--version"]]
+
+
+def test_every_call_names_the_task_region(s3: Env) -> None:
+    calls = _exercise_every_command(s3, TASK_REGION="eu-west-1")
+    assert {c[0] for c in calls} == {"s3", "s3api"} and len(calls) > 5
+    for call in calls:
+        assert call.count("--region") == 1, call
+        assert call[call.index("--region") + 1] == "eu-west-1", call
+
+
+@pytest.mark.parametrize("env", [{}, {"TASK_REGION": ""}], ids=["unset", "empty"])
+def test_no_region_is_passed_without_a_task_region(s3: Env, env: dict[str, str]) -> None:
+    for call in _exercise_every_command(s3, **env):
+        assert "--region" not in call, call
+
+
+def test_the_version_probe_needs_no_region(s3: Env) -> None:
+    s3.run("put", str(s3.file("f")), f"s3://{BUCKET}/a", TASK_REGION="eu-west-1")
+    assert ["--version"] in s3.calls()
 
 
 def test_two_puts_use_different_upload_ids(s3: Env) -> None:

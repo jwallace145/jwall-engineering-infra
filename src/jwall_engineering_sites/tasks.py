@@ -750,10 +750,11 @@ fi
 git -C /work/repo checkout --quiet FETCH_HEAD
 cd /work/repo || exit 1
 
-# What a task's artifact manifest records about the run.
+# What a task's artifact manifest records about the run, and its AWS region.
 export TASK_RUN_ID={q(spec.run_id)}
 export TASK_ID={q(spec.task_id)}
 export TASK_COMMIT={q(spec.ref)}
+export TASK_REGION={q(region)}
 
 # The only results prefix this instance may write: tasks/<role-id>:<instance-id>/.
 if ! uid=$(aws sts get-caller-identity --query UserId --output text --region {q(region)}); then

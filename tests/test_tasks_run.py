@@ -106,13 +106,14 @@ def test_the_task_environment_names_the_run_and_commit(
     hostile = "; rm -rf / $(reboot) `id` 'quoted' \"double\""
     script = _script(bot, run_id=hostile, task_id=f"{hostile} 2", ref=f"{hostile} 3")
     exports = "\n".join(ln for ln in script.splitlines() if ln.startswith("export TASK_"))
-    assert exports.count("export") == 3
+    assert exports.count("export") == 4
+    variables = '"$TASK_RUN_ID" "$TASK_ID" "$TASK_COMMIT" "$TASK_REGION"'
     result = subprocess.run(
-        ["/bin/bash", "-c", exports + '\nprintf "%s\\n" "$TASK_RUN_ID" "$TASK_ID" "$TASK_COMMIT"'],
+        ["/bin/bash", "-c", exports + f'\nprintf "%s\\n" {variables}'],
         capture_output=True,
         text=True,
     )
-    assert result.stdout.splitlines() == [hostile, f"{hostile} 2", f"{hostile} 3"]
+    assert result.stdout.splitlines() == [hostile, f"{hostile} 2", f"{hostile} 3", "us-east-1"]
     assert script.index("export TASK_RUN_ID") < script.index("setsid -w bash")
 
 
@@ -121,6 +122,20 @@ def test_the_task_environment_of_a_normal_spec(bot: Project) -> None:
     assert "export TASK_RUN_ID=123-1\n" in script
     assert "export TASK_ID=sprt-0\n" in script
     assert "export TASK_COMMIT=0123456789abcdef0123456789abcdef01234567\n" in script
+    assert "export TASK_REGION=us-east-1\n" in script
+
+
+def test_the_task_region_is_quoted_and_the_default_region_left_alone(bot: Project) -> None:
+    hostile = "us-east-1; reboot $(id)"
+    script = _script(bot.model_copy(update={"region": hostile}))
+    (export,) = [ln for ln in script.splitlines() if ln.startswith("export TASK_REGION")]
+    result = subprocess.run(
+        ["/bin/bash", "-c", f'{export}\nprintf "%s" "$TASK_REGION"'],
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout == hostile
+    assert "AWS_DEFAULT_REGION" not in script
 
 
 @pytest.mark.parametrize("gpu", [False, True])
