@@ -33,7 +33,7 @@ npm ci && npm test
 uv sync && uv run ruff format --check && uv run ruff check && uv run mypy && uv run pytest
 ```
 
-- **The sites CLI lives in `src/jwall_engineering_sites/`** with tests in `tests/`. Python 3.13, `uv`, Typer, Pydantic. `config.yaml` at the root is the tool configuration; `stacks/site/` and `stacks/bot/` are the Terraform the CLI renders per site and per bot project; `kinds/lichess_bot/` holds the bot image's Dockerfile and entrypoint. Bot projects are documented in `docs/lichess-bot.md`; keep it current with any change to the bot commands, stack or image. Keep `tests/fixtures/config.yaml` identical to `config.yaml` (a test checks).
+- **The sites CLI lives in `src/jwall_engineering_sites/`** with tests in `tests/`. Python 3.13, `uv`, Typer, Pydantic. `config.yaml` at the root is the tool configuration and the central guardrails (`tasks.limits`, `tasks.max_run_cost_usd`, and `projects.<name>` with its instance types, task profiles and dataset retention; `foundation/bots.tf` reads them into the IAM allow-lists). `stacks/site/` and `stacks/bot/` are the Terraform the CLI renders per site and per bot or research project; `kinds/lichess_bot/` holds the bot image's Dockerfile and entrypoint. A project is a `site`, a `bot` (`container-image` + `lichess-bot`) or a `research` project (`dataset`/`task-runner` only). Bot projects are documented in `docs/lichess-bot.md` and research projects in `docs/research-projects.md`; keep them current with any change to the commands, stack or image. A guardrail change is a config PR, a release, then a consumer pin bump (see `docs/research-projects.md`). Keep `tests/fixtures/config.yaml` identical to `config.yaml` (a test checks).
 
 ## Things that need the owner
 

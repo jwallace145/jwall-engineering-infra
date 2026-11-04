@@ -16,7 +16,7 @@ on:
         options:
           - rusty-chess
       destroy:
-        description: Destroy the stack instead (the records bucket and the secret are kept).
+        description: Destroy the stack instead (the records, dataset and task results buckets and the secret are kept).
         required: false
         type: boolean
         default: false
