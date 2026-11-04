@@ -390,23 +390,87 @@ while task instances run. It also refuses a file that `config.yaml` no longer
 allows, so destroy before removing the project's central entry.
 
 Applying the project again afterwards is not automated. The kept buckets
-exist in AWS but not in state, so import them first, with admin credentials or
-the apply role, from the project's checkout. Each `aws_s3_bucket*` resource of
-the dataset module is imported by the bucket's name, for example:
+exist in AWS but not in state, so an administrator imports them first.
+
+**This procedure has not been run.** The addresses below are read from module
+0.17.0 and appear in a plan of the sample against a mock provider, but no import
+has been run against AWS. What Terraform does without the import, whether it
+fails because the bucket name is taken or something else, has not been
+confirmed either.
+
+It needs **admin credentials** on the administrator's machine. The apply role
+cannot be used: it trusts only GitHub's `environment:prod`. It also needs a
+checkout of this repository, not of the consumer, which holds no Terraform. The
+stack is here, and the rendered `terraform.tfvars.json` and `backend.hcl` exist
+only in a temporary directory that the CLI deletes unless the run failed and
+`JES_KEEP_WORKDIR=1` or debug logging is on. So render them with the CLI's code,
+from this repository's root, and with the Terraform version in `config.yaml`:
 
 ```sh
-terraform import 'module.datasets["artifacts"].aws_s3_bucket.this' jwall-engineering-math-prover-artifacts
+consumer_file=../math-prover/jwall-engineering-sites.yaml   # its default branch
+work=$(mktemp -d)
+tar -C stacks/bot --exclude=.terraform -cf - . | tar -C "$work" -xf -
+uv run python - "$consumer_file" "$work" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from jwall_engineering_sites.project import Project
+from jwall_engineering_sites.settings import load_settings
+from jwall_engineering_sites.site import load_site_config
+from jwall_engineering_sites.stack import render_backend, render_tfvars
+
+settings = load_settings(Path("config.yaml"))
+project = Project.from_config(load_site_config(Path(sys.argv[1])), settings)
+work = Path(sys.argv[2])
+(work / "terraform.tfvars.json").write_text(json.dumps(render_tfvars(project, settings), indent=2))
+(work / "backend.hcl").write_text(render_backend(project))
+PY
+cd "$work"
+terraform init -backend-config=backend.hcl
 ```
 
-Repeat for the bucket's sibling resources (`aws_s3_bucket_versioning`,
-`aws_s3_bucket_lifecycle_configuration`, `aws_s3_bucket_policy`,
-`aws_s3_bucket_public_access_block`, `aws_s3_bucket_ownership_controls` and
-`aws_s3_bucket_server_side_encryption_configuration`, all `.this`), and for the
-task results bucket (`module.task_results[0]`). `destroy` logs each bucket it
-released. The resource names come from the pinned library module and the
-import itself has not been run. What Terraform does without the import, whether
-it fails because the bucket name is taken or something else, has not been
-confirmed against AWS.
+Then import each bucket's resources, by the bucket's name. `destroy` logged
+every bucket it released. For a dataset (`artifacts` here; the key is the
+dataset's `name`):
+
+```sh
+dataset='module.datasets["artifacts"]'
+bucket=jwall-engineering-math-prover-artifacts
+for resource in \
+  'aws_s3_bucket.this' \
+  'aws_s3_bucket_server_side_encryption_configuration.this' \
+  'aws_s3_bucket_public_access_block.this' \
+  'aws_s3_bucket_ownership_controls.this' \
+  'aws_s3_bucket_versioning.this[0]' \
+  'aws_s3_bucket_lifecycle_configuration.this' \
+  'aws_s3_bucket_policy.this'; do
+  terraform import "$dataset.$resource" "$bucket"
+done
+```
+
+Leave out `aws_s3_bucket_versioning.this[0]` for a dataset without
+`versioning: true`: it has a `count`, so that instance exists only with
+versioning on. Then the task results bucket, whose versioning has no `count`:
+
+```sh
+results='module.task_results[0]'
+bucket=jwall-engineering-math-prover-tasks
+for resource in \
+  'aws_s3_bucket.this' \
+  'aws_s3_bucket_server_side_encryption_configuration.this' \
+  'aws_s3_bucket_public_access_block.this' \
+  'aws_s3_bucket_ownership_controls.this' \
+  'aws_s3_bucket_versioning.this' \
+  'aws_s3_bucket_lifecycle_configuration.this' \
+  'aws_s3_bucket_policy.this'; do
+  terraform import "$results.$resource" "$bucket"
+done
+```
+
+Finally, run `terraform plan` there. It should create the roles, network and
+templates, and create or replace no bucket. Delete `"$work"`, and apply through
+**Bot apply**, not locally.
 
 **Deleting data** is deliberately not a CLI feature. It is a manual procedure
 for an administrator with admin credentials: list what will go, delete the
