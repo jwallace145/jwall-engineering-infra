@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from jwall_engineering_sites import cli, tasks
@@ -323,6 +325,97 @@ def test_task_terminate_and_sweep_work_on_research(research_fleet: list[str]) ->
         sweep = runner.invoke(cli.app, ["task", "sweep"])
     assert sweep.exit_code == 0, sweep.output
     assert research_fleet == ["i-old", "i-untagged"]
+
+
+# -- cleanup after a guardrail change ------------------------------------------------
+
+
+def _edit_config(workspace: Path, edit: Callable[[dict[str, Any]], None]) -> None:
+    config = yaml.safe_load((workspace / "config.yaml").read_text())
+    edit(config)
+    (workspace / "config.yaml").write_text(yaml.safe_dump(config))
+
+
+def _remove_the_entry(config: dict[str, Any]) -> None:
+    del config["projects"]["math-prover"]
+
+
+def _narrow_the_types(config: dict[str, Any]) -> None:
+    config["projects"]["math-prover"]["instance_types"] = ["c8a.xlarge"]
+
+
+GUARDRAIL_CHANGES = pytest.mark.parametrize(
+    "change", [_remove_the_entry, _narrow_the_types], ids=["no-entry", "narrowed"]
+)
+
+
+@GUARDRAIL_CHANGES
+def test_task_terminate_works_on_a_file_config_no_longer_allows(
+    research_fleet: list[str], research_workspace: Path, change: Callable[[dict[str, Any]], None]
+) -> None:
+    _edit_config(research_workspace, change)
+    with _as_role(RESEARCH_TASK_ROLE):
+        result = runner.invoke(cli.app, ["task", "terminate", "--run-id", "2-1"])
+    assert result.exit_code == 0, result.output
+    assert research_fleet == ["i-run", "i-run2"]
+
+
+@GUARDRAIL_CHANGES
+def test_task_sweep_works_on_a_file_config_no_longer_allows(
+    research_fleet: list[str], research_workspace: Path, change: Callable[[dict[str, Any]], None]
+) -> None:
+    _edit_config(research_workspace, change)
+    with _as_role(RESEARCH_TASK_ROLE):
+        result = runner.invoke(cli.app, ["task", "sweep"])
+    assert result.exit_code == 0, result.output
+    assert research_fleet == ["i-old", "i-untagged"]
+
+
+@GUARDRAIL_CHANGES
+def test_task_list_works_on_a_file_config_no_longer_allows(
+    research_fleet: list[str], research_workspace: Path, change: Callable[[dict[str, Any]], None]
+) -> None:
+    _edit_config(research_workspace, change)
+    with _as_role(RESEARCH_PLAN_ROLE):
+        result = runner.invoke(cli.app, ["task", "list"])
+    assert result.exit_code == 0, result.output
+    assert "i-run2" in result.output
+
+
+@GUARDRAIL_CHANGES
+@pytest.mark.parametrize(
+    "command",
+    [["plan"], ["destroy", "--yes"], ["task", "run", "--script", "s.sh", "--ref", SHA]],
+    ids=" ".join,
+)
+def test_other_commands_still_refuse_a_file_config_no_longer_allows(
+    research_fleet: list[str],
+    research_workspace: Path,
+    change: Callable[[dict[str, Any]], None],
+    command: list[str],
+) -> None:
+    _edit_config(research_workspace, change)
+    result = runner.invoke(cli.app, command)
+    assert result.exit_code == 2, result.output
+    assert "config.yaml" in result.output
+    assert research_fleet == []
+
+
+@pytest.mark.parametrize(
+    "command", [["task", "list"], ["task", "terminate", "--all"], ["task", "sweep"]], ids=" ".join
+)
+def test_cleanup_commands_still_refuse_other_load_errors(
+    research_fleet: list[str], research_workspace: Path, command: list[str]
+) -> None:
+    """Only the central guardrails are skipped: the file must still be valid."""
+    path = research_workspace / "jwall-engineering-sites.yaml"
+    raw = yaml.safe_load(path.read_text())
+    raw["tags"]["Organization"] = "someone-else"
+    path.write_text(yaml.safe_dump(raw))
+    result = runner.invoke(cli.app, command)
+    assert result.exit_code == 2, result.output
+    assert "tags.Organization" in result.output
+    assert research_fleet == []
 
 
 def test_task_run_on_research_takes_the_profile_from_its_file(

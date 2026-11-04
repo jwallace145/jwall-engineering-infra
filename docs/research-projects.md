@@ -64,6 +64,12 @@ A consumer that stays on an older pin skips the newer CLI checks. IAM still
 bounds it, because the allow-lists are enforced by the launch role, not by the
 CLI.
 
+`task list`, `task terminate` and `task sweep` skip these checks, so an
+instance can always be stopped after a guardrail change. Every other load error
+still applies to them. `plan`, `apply`, `destroy` and `task run` keep the
+checks, so **destroy a project before removing its central entry**; see
+[Destroy](#destroy).
+
 ## Onboarding a research project
 
 The repository must exist first, because the registry needs its numeric
@@ -356,7 +362,8 @@ roles, log group and network, and keeps the dataset buckets and the task
 results bucket: before destroying, it removes the buckets from Terraform state
 so `prevent_destroy` does not reject the plan, and logs each one. The IAM
 grants stay in state and are destroyed with the roles they sit on. It refuses
-while task instances run.
+while task instances run. It also refuses a file that `config.yaml` no longer
+allows, so destroy before removing the project's central entry.
 
 Applying the project again afterwards is not automated. The kept buckets
 exist in AWS but not in state, so import them first, with admin credentials or

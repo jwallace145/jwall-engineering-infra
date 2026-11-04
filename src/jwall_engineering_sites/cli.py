@@ -86,6 +86,8 @@ class Run:
     site_file: Path
     artifacts: Path
     logger: logging.Logger
+    #: Off for the cleanup commands (`_cleanup_project`).
+    check_guardrails: bool = True
     _site: Site | None = None
     _project: Project | None = None
 
@@ -93,7 +95,9 @@ class Run:
     def project(self) -> Project:
         """The project file of either kind. Kind-aware commands use this."""
         if self._project is None:
-            self._project = Project.from_config(load_site_config(self.site_file), self.settings)
+            self._project = Project.from_config(
+                load_site_config(self.site_file), self.settings, self.check_guardrails
+            )
             self.logger.debug(
                 "project %s (%s), state key %s",
                 self._project.project,
@@ -666,6 +670,14 @@ def _component_project(run: Run) -> Project:
     return project
 
 
+def _cleanup_project(run: Run) -> Project:
+    """`_component_project` without the central guardrails, for the commands that
+    only find and stop instances: a guardrail change must not strand one. Every
+    other load error still applies. `destroy` keeps the check."""
+    run.check_guardrails = False
+    return _component_project(run)
+
+
 def _project_session(run: Run, roles: list[Role] | None) -> boto3.session.Session:
     """A session in the project's region, after checking the role when `roles` is given."""
     project = _component_project(run)
@@ -1150,7 +1162,7 @@ def task_list(ctx: typer.Context) -> None:
     """List the project's running task instances. Read-only."""
 
     def body(run: Run) -> None:
-        project = _component_project(run)
+        project = _cleanup_project(run)
         session = _project_session(run, roles=["plan", "task"])
         print(_render_tasks(tasks.running_tasks(session.client("ec2"), project.project)))
 
@@ -1172,7 +1184,7 @@ def task_terminate(
     """Terminate task instances. Only instances tagged Purpose=ci-task of this project match."""
 
     def body(run: Run) -> None:
-        project = _component_project(run)
+        project = _cleanup_project(run)
         if sum([instance is not None, run_id is not None, all_]) != 1 or (
             task_id is not None and run_id is None
         ):
@@ -1212,7 +1224,7 @@ def task_sweep(
     own shutdown all terminate), so there is no scheduled sweeper."""
 
     def body(run: Run) -> None:
-        project = _component_project(run)
+        project = _cleanup_project(run)
         runner = _task_runner(project)
         session = _project_session(run, roles=["task"])
         ec2 = session.client("ec2")

@@ -32,7 +32,11 @@ class Project(BaseModel):
     zone_id: str | None
 
     @classmethod
-    def from_config(cls, config: SiteConfig, settings: Settings) -> Project:
+    def from_config(
+        cls, config: SiteConfig, settings: Settings, check_guardrails: bool = True
+    ) -> Project:
+        """`check_guardrails=False` is for the commands that only find and stop
+        instances: an instance must stay stoppable after a guardrail change."""
         if config.kind == "site":
             site = Site.from_config(config, settings)
             return cls(
@@ -75,7 +79,8 @@ class Project(BaseModel):
                     f"task-runner profile {name}: image {profile.image!r} is not pinned in "
                     "config.yaml tasks.images"
                 )
-        problems += guardrails.check(config, settings)
+        if check_guardrails:
+            problems += guardrails.check(config, settings)
         if problems:
             raise ConfigError("; ".join(problems))
         return cls(
