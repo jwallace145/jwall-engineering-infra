@@ -56,6 +56,12 @@ def test_run_passes_the_task_and_its_exit_code(captured: dict[str, Any]) -> None
     assert captured["kw"]["poll"] == 5
 
 
+def test_run_sets_the_projects_cost_ceiling(captured: dict[str, Any]) -> None:
+    assert _run().exit_code == 0
+    spec: tasks.TaskSpec = captured["spec"]
+    assert spec.max_run_cost_usd == 50.0
+
+
 def test_run_ids_follow_github(captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_RUN_ID", "555")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")

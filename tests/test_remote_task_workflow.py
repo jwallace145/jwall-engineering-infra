@@ -124,6 +124,11 @@ def test_outcome_and_interruption_are_outputs() -> None:
     )
 
 
+def test_the_outcome_description_lists_no_price() -> None:
+    outputs = _workflow()[True]["workflow_call"]["outputs"]
+    assert "no-price" in outputs["outcome"]["description"]
+
+
 def test_an_interrupted_tasks_artifact_says_so() -> None:
     upload = _steps()[_index(lambda s: s.get("name") == "Upload the task's outputs")]
     suffix = "${{ steps.task.outputs.outcome == 'interrupted' && '-interrupted' || '' }}"

@@ -101,6 +101,8 @@ class TaskSpec:
     gpu: bool = False
     #: Where SCRATCH_DIR lives: `instance-store` or `root-volume`.
     scratch: str = "root-volume"
+    #: Refuse to launch above this worst-case cost; `None` skips the check.
+    max_run_cost_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -311,6 +313,73 @@ def on_demand_price(pricing: PricingClient, instance_type: str, region: str) -> 
                 if usd and float(usd) > 0:
                     return float(usd)
     return None
+
+
+class NoPrice(PreflightError):  # noqa: N818 (an outcome, read as `no-price`)
+    """The on-demand price is unknown, so the cost ceiling cannot be checked."""
+
+
+PRICE_ATTEMPTS = 3
+PRICE_RETRY_SECONDS = 5.0
+
+
+def worst_case_rate(spec: TaskSpec, on_demand: float) -> float:
+    """The most an hour can cost: on demand, unless spot is the only market
+    allowed, when it is capped at the fraction of on demand."""
+    if spec.market == "spot" and not spec.on_demand_fallback:
+        return on_demand * spec.max_price_fraction
+    return on_demand
+
+
+def _trimmed(value: float) -> str:
+    return f"{value:.10f}".rstrip("0").rstrip(".")
+
+
+def check_ceiling(
+    pricing: PricingClient,
+    spec: TaskSpec,
+    logger: Logger,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Refuse a task whose worst-case cost (rate x `max_hours`) is over
+    `max_run_cost_usd`. Fails closed: an unknown price is `NoPrice`."""
+    ceiling = spec.max_run_cost_usd
+    if ceiling is None:
+        return
+    region = spec.project.region
+    on_demand: float | None = None
+    failure = "the Pricing API returned no price"
+    for attempt in range(PRICE_ATTEMPTS):
+        if attempt:
+            sleep(PRICE_RETRY_SECONDS)
+        try:
+            on_demand = on_demand_price(pricing, spec.instance_type, region)
+        except (ClientError, BotoCoreError) as exc:
+            failure = f"the Pricing API failed: {exc}"
+            continue
+        if on_demand is not None:
+            break
+        failure = "the Pricing API returned no price"
+    if on_demand is None:
+        raise NoPrice(
+            f"no on-demand price for {spec.instance_type} after {PRICE_ATTEMPTS} attempts "
+            f"({failure}); the cost check fails closed, so nothing was launched"
+        )
+    rate = worst_case_rate(spec, on_demand)
+    cost = rate * spec.max_hours
+    if rate == on_demand:
+        basis = f"{spec.instance_type} on-demand ${_trimmed(on_demand)}/h"
+    else:
+        basis = f"{spec.instance_type} spot cap ${rate:.2f}/h"
+    logger.info(
+        "worst-case cost: $%.2f (%s x %d h); ceiling $%.2f", cost, basis, spec.max_hours, ceiling
+    )
+    if cost > ceiling:
+        raise ConfigError(
+            f"worst-case cost ${cost:.2f} ({basis} x {spec.max_hours} h) is over the "
+            f"${ceiling:.2f} ceiling; lower --max-hours, pick a smaller --instance-type, or "
+            "raise tasks.max_run_cost_usd (or the project's max_run_cost_usd)"
+        )
 
 
 def price_plan(
@@ -1044,6 +1113,8 @@ def run_task(
 
     with _interruptible() as shield:
         try:
+            if spec.max_run_cost_usd is not None:
+                check_ceiling(pricing, spec, logger, sleep)
             info = instance_types_info(ec2, [spec.instance_type])
             vcpus, threads = info[spec.instance_type]
             if threads > 1 and spec.whole_cores:
@@ -1088,6 +1159,10 @@ def run_task(
         except NoCapacity as exc:
             logger.error("%s", exc)
             outcome = "no-capacity"
+            return exc.exit_code
+        except NoPrice as exc:
+            logger.error("%s", exc)
+            outcome = "no-price"
             return exc.exit_code
         except TaskInterrupted as exc:
             logger.warning("%s; terminating the task instance", exc)

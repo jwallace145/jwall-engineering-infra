@@ -92,7 +92,7 @@ on:
         default: false
     outputs:
       outcome:
-        description: passed, failed, interrupted (spot reclaimed the instance; no result, re-run) or no-capacity.
+        description: passed, failed, interrupted (spot reclaimed the instance; no result, re-run), no-capacity (neither spot nor on-demand had room) or no-price (the cost ceiling could not be checked).
         value: ${{ jobs.task.outputs.outcome }}
       interrupted-at:
         description: When spot reclaimed the instance, if it did.

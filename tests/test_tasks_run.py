@@ -568,7 +568,8 @@ class Recorder:
         self.terminated: list[str] = []
         for name in ("instance_types_info", "wait_for_slot", "public_subnets", "price_plan",
                      "launch", "wait_for_agent", "send", "stream", "results_location",
-                     "collect", "interruption", "terminate", "running_tasks"):  # fmt: skip
+                     "collect", "interruption", "terminate", "running_tasks",
+                     "check_ceiling"):  # fmt: skip
             monkeypatch.setattr(tasks, name, self._step(name))
 
     def _step(self, name: str) -> Any:
@@ -1026,3 +1027,36 @@ def test_only_a_collected_record_counts(tmp_path: Path) -> None:
     ec2 = FakeStateEC2("Client.UserInitiatedShutdown")
     assert tasks.interruption(_any(ec2), "i-1", []) is None
     assert tasks.interruption(_any(ec2), "i-1", [stale]) == "old"
+
+
+def test_run_task_over_the_ceiling_never_launches(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    rec = Recorder(monkeypatch, check_ceiling=ConfigError("$62.96 is over the ceiling $50.00"))
+    session: Any = FakeSession()
+    spec = _spec(bot, max_run_cost_usd=50.0)
+    assert tasks.run_task(session, spec, tmp_path / "out", LOG, write=lambda _: None) == 2
+    assert rec.calls[0] == "check_ceiling" and rec.terminated == []
+    assert "launch" not in rec.calls and "wait_for_slot" not in rec.calls
+    assert _outputs(github_output)["outcome"] == "failed"
+
+
+def test_run_task_without_a_price_reports_no_price(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, github_output: Path
+) -> None:
+    rec = Recorder(monkeypatch, check_ceiling=tasks.NoPrice("no price; the check fails closed"))
+    session: Any = FakeSession()
+    spec = _spec(bot, max_run_cost_usd=50.0)
+    assert tasks.run_task(session, spec, tmp_path / "out", LOG, write=lambda _: None) == 3
+    assert "launch" not in rec.calls and "wait_for_slot" not in rec.calls
+    assert _outputs(github_output)["outcome"] == "no-price"
+
+
+def test_run_task_checks_the_ceiling_before_waiting_for_a_slot(
+    bot: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = Recorder(monkeypatch)
+    session: Any = FakeSession()
+    spec = _spec(bot, max_run_cost_usd=50.0)
+    assert tasks.run_task(session, spec, tmp_path / "out", LOG, write=lambda _: None) == 0
+    assert rec.calls.index("check_ceiling") < rec.calls.index("wait_for_slot")

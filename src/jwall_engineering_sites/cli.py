@@ -1109,6 +1109,7 @@ def task_run(
             whole_cores=profile.whole_cores,
             gpu=profile.gpu,
             scratch=profile.scratch,
+            max_run_cost_usd=run.settings.run_cost_ceiling(project.project),
         )
         session = _project_session(run, roles=["task"])
         run.logger.info(
