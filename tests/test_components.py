@@ -253,7 +253,7 @@ def test_task_runner_default_must_be_allowed(tmp_path: Path, settings: Settings)
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("max_hours", 0), ("max_hours", 7), ("max_vcpus", 0), ("max_vcpus", 257),
+    [("max_hours", 0), ("max_hours", 25), ("max_vcpus", 0), ("max_vcpus", 1025),
      ("results_days", 0), ("results_days", 31), ("log_retention_days", 10),
      ("max_price_fraction", 0), ("max_price_fraction", 1.01), ("spot_wait_minutes", 0),
      ("spot_wait_minutes", 31), ("slot_wait_minutes", -1), ("slot_wait_minutes", 121),

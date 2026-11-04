@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from . import guardrails
 from .components import CPU_PROFILE, ContainerImage, Dataset, LichessBot, TaskRunner
 from .errors import ConfigError
 from .settings import Settings
@@ -73,6 +74,7 @@ class Project(BaseModel):
                     f"task-runner profile {name}: image {profile.image!r} is not pinned in "
                     "config.yaml tasks.images"
                 )
+        problems += guardrails.check(config, settings)
         if problems:
             raise ConfigError("; ".join(problems))
         return cls(

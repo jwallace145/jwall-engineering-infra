@@ -10,12 +10,17 @@ from pathlib import Path
 import pytest
 
 from jwall_engineering_sites.project import Project
-from jwall_engineering_sites.settings import Settings, load_settings
+from jwall_engineering_sites.settings import ProjectGuardrails, Settings, load_settings
 from jwall_engineering_sites.site import Site, load_site_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SITE_FIXTURES = sorted((FIXTURES / "sites").glob("*.yaml"))
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def with_guardrails(settings: Settings, project: str, guardrails: ProjectGuardrails) -> Settings:
+    """`settings` with `guardrails` as the central entry for `project`."""
+    return settings.model_copy(update={"projects": {**settings.projects, project: guardrails}})
 
 
 @pytest.fixture

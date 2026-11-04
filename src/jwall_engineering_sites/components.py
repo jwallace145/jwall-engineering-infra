@@ -155,16 +155,20 @@ class DatasetAccess(_Model):
 
     read: tuple[str, ...] = ()
     write: tuple[str, ...] = ()
+    #: Sub-prefixes written only once per object (never overwritten or deleted).
+    #: Each must sit under a prefix config.yaml lists as `write_once` for the
+    #: bucket; `write` may not touch those prefixes.
+    write_once: tuple[str, ...] = ()
 
-    @field_validator("read", "write")
+    @field_validator("read", "write", "write_once")
     @classmethod
     def _prefixes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _check_prefixes(value)
 
     @model_validator(mode="after")
     def _something(self) -> DatasetAccess:
-        if not self.read and not self.write:
-            raise ValueError("grant at least one read or write sub-prefix")
+        if not self.read and not self.write and not self.write_once:
+            raise ValueError("grant at least one read or write sub-prefix (or write_once)")
         return self
 
 
@@ -182,10 +186,10 @@ class TaskProfile(_Model):
     max_price_fraction: float = Field(default=0.58, gt=0, le=1)
     on_demand_fallback: bool = True
     spot_wait_minutes: int = Field(default=5, ge=1, le=30)
-    max_hours: int = Field(default=6, ge=1, le=6)
+    max_hours: int = Field(default=6, ge=1, le=24)
     #: Running vCPUs of this profile's tasks: each profile has its own budget,
     #: so a GPU task never waits behind CPU tasks, nor they behind it.
-    max_vcpus: int = Field(default=4, ge=1, le=256)
+    max_vcpus: int = Field(default=4, ge=1, le=1024)
     slot_wait_minutes: int = Field(default=30, ge=0, le=120)
     #: A key of `tasks.images` in config.yaml, the pinned image name; none
     #: uses the bot's pinned Amazon Linux 2023 image, as the cpu profile does.
@@ -244,12 +248,12 @@ class TaskRunner(_Model):
     #: spot_wait_minutes. Never mid-task: an interrupted task is reported.
     on_demand_fallback: bool = True
     spot_wait_minutes: int = Field(default=5, ge=1, le=30)
-    #: At most 6: GitHub-hosted jobs stop at six hours, and the launch role's
-    #: sessions last seven (the task plus an hour for launch and setup).
-    max_hours: int = Field(default=6, ge=1, le=6)
+    #: The schema bound is loose; the real ceiling is `tasks.limits` in
+    #: config.yaml (`guardrails.check`), which sizes the launch role's sessions.
+    max_hours: int = Field(default=6, ge=1, le=24)
     #: Running task vCPUs per project (the account's standard spot and
     #: on-demand quotas are 256 each); a launch over it waits for a slot.
-    max_vcpus: int = Field(default=192, ge=1, le=256)
+    max_vcpus: int = Field(default=192, ge=1, le=1024)
     slot_wait_minutes: int = Field(default=30, ge=0, le=120)
     results_days: int = Field(default=7, ge=1, le=30)
     log_retention_days: RetentionDays = 14
@@ -333,6 +337,29 @@ class Dataset(_Model):
     readers: tuple[str, ...] = ()
     #: Days before objects move to Intelligent-Tiering; 0 moves them at once.
     transition_days: int = Field(default=0, ge=0, le=3650)
+    #: Keep prior versions of overwritten or deleted objects. config.yaml must
+    #: approve the same value (`projects.<name>.datasets.<bucket>`).
+    versioning: bool = False
+    #: Days after which noncurrent versions expire; needs `versioning`.
+    expire_noncurrent_days: int | None = Field(default=None, ge=1)
+    #: Sub-prefixes of `prefix` whose objects expire, by days. Must equal the
+    #: values config.yaml approves for the bucket.
+    expire_prefixes: dict[str, int] = {}
+
+    @field_validator("expire_prefixes")
+    @classmethod
+    def _expire_prefixes(cls, value: dict[str, int]) -> dict[str, int]:
+        _check_prefixes(tuple(value))
+        for prefix, days in value.items():
+            if days < 1:
+                raise ValueError(f"{prefix!r}: days must be at least 1")
+        return value
+
+    @model_validator(mode="after")
+    def _noncurrent_needs_versioning(self) -> Dataset:
+        if self.expire_noncurrent_days is not None and not self.versioning:
+            raise ValueError("expire_noncurrent_days needs versioning: true")
+        return self
 
     @field_validator("name")
     @classmethod
