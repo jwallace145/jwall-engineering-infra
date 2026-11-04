@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import signal
+import stat
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,6 +56,78 @@ def test_every_task_gets_a_scratch_dir_and_names_its_profile(bot: Project) -> No
     assert "SCRATCH_DIR=/work/scratch setsid" in script
     assert 'echo "profile=cpu"' in script
     assert "nvidia-smi" not in script
+
+
+# --- the task-artifact helper --------------------------------------------------
+
+
+def _run_helper_setup(directory: Path) -> subprocess.CompletedProcess[str]:
+    """Run the emitted shell, as the script does, with the install path redirected."""
+    setup = tasks.artifact_helper_setup().replace("/usr/local/bin", str(directory))
+    return subprocess.run(
+        ["/bin/bash", "-c", "set -uo pipefail\n" + setup + "\necho reached"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_the_setup_writes_the_helper_byte_for_byte_and_executable(tmp_path: Path) -> None:
+    result = _run_helper_setup(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.endswith("reached\n")
+    written = tmp_path / "task-artifact"
+    assert written.read_bytes() == Path(tasks.__file__).with_name("task_artifact.py").read_bytes()
+    assert stat.S_IMODE(written.stat().st_mode) == 0o755
+
+
+def test_a_helper_that_cannot_be_written_fails_the_task(tmp_path: Path) -> None:
+    result = _run_helper_setup(tmp_path / "absent")
+    assert result.returncode == 1
+    assert "task-runner: could not write" in result.stdout
+    assert "task-artifact" in result.stdout
+    assert "reached" not in result.stdout
+
+
+def test_the_setup_is_stable_between_renders() -> None:
+    assert tasks.artifact_helper_setup() == tasks.artifact_helper_setup()
+
+
+@pytest.mark.parametrize("gpu", [False, True])
+def test_the_script_installs_the_helper_before_the_task_starts(bot: Project, gpu: bool) -> None:
+    script = (_gpu_script if gpu else _script)(bot)
+    assert tasks.artifact_helper_setup() in script
+    assert script.index("/usr/local/bin/task-artifact") < script.index("setsid -w bash")
+
+
+def test_the_task_environment_names_the_run_and_commit(
+    bot: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tasks, "_check", lambda _spec: None)
+    hostile = "; rm -rf / $(reboot) `id` 'quoted' \"double\""
+    script = _script(bot, run_id=hostile, task_id=f"{hostile} 2", ref=f"{hostile} 3")
+    exports = "\n".join(ln for ln in script.splitlines() if ln.startswith("export TASK_"))
+    assert exports.count("export") == 3
+    result = subprocess.run(
+        ["/bin/bash", "-c", exports + '\nprintf "%s\\n" "$TASK_RUN_ID" "$TASK_ID" "$TASK_COMMIT"'],
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.splitlines() == [hostile, f"{hostile} 2", f"{hostile} 3"]
+    assert script.index("export TASK_RUN_ID") < script.index("setsid -w bash")
+
+
+def test_the_task_environment_of_a_normal_spec(bot: Project) -> None:
+    script = _script(bot)
+    assert "export TASK_RUN_ID=123-1\n" in script
+    assert "export TASK_ID=sprt-0\n" in script
+    assert "export TASK_COMMIT=0123456789abcdef0123456789abcdef01234567\n" in script
+
+
+@pytest.mark.parametrize("gpu", [False, True])
+def test_the_rendered_commands_stay_under_the_budget(bot: Project, gpu: bool) -> None:
+    spec = _gpu_spec(bot, scratch="instance-store") if gpu else _spec(bot, args=("--games", "200"))
+    commands = tasks.task_commands(spec, "jwall-engineering-rusty-chess-tasks", "tasks/")
+    assert len(json.dumps(commands)) < tasks.SSM_COMMANDS_BUDGET
 
 
 # --- scratch: the instance store or the root volume ---------------------------

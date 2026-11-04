@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""A fake aws CLI for tests, backed by the directory in FAKE_S3_ROOT.
+
+Objects live at <root>/<bucket>/<url-quoted key>, their metadata at
+<root>/.meta/<bucket>/<url-quoted key>, and every invocation is appended to
+<root>/calls.log as one JSON argument list.
+
+Like the real CLI, `s3 cp --no-overwrite` onto an existing key exits 0, writes
+nothing and prints nothing; unknown options exit 252.
+
+FAKE_AWS_VERSION           what `aws --version` prints
+FAKE_AWS_FAIL_ON           fail (403, nothing written) if the joined arguments contain this
+FAKE_AWS_CORRUPT           this key downloads with its first byte flipped
+FAKE_AWS_TRUNCATE          this key uploads one byte short
+FAKE_AWS_HEAD_METADATA     JSON merged into the Metadata head-object returns
+FAKE_AWS_HIDE_FIRST_HEAD   the first head-object of this key answers 404
+"""
+
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+from urllib.parse import quote, unquote
+
+DEFAULT_VERSION = "aws-cli/2.38.0 Python/3.13.0 Linux/6.18 exe/x86_64"
+ROOT = Path(os.environ.get("FAKE_S3_ROOT", "/nonexistent"))
+
+
+def die(message: str, code: int = 1) -> None:
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def not_found(operation: str) -> None:
+    die(f"An error occurred (404) when calling the {operation} operation: Not Found")
+
+
+def options(args: list[str], flags: set[str], valued: set[str]) -> tuple[dict[str, str], list[str]]:
+    """Split arguments into options and positionals; refuse an unknown option."""
+    found: dict[str, str] = {}
+    positional: list[str] = []
+    rest = iter(args)
+    for arg in rest:
+        if arg in flags:
+            found[arg] = ""
+        elif arg in valued:
+            found[arg] = next(rest)
+        elif arg.startswith("--"):
+            die(f"Unknown options: {arg}", 252)
+        else:
+            positional.append(arg)
+    return found, positional
+
+
+def body_path(bucket: str, key: str) -> Path:
+    return ROOT / bucket / quote(key, safe="")
+
+
+def meta_path(bucket: str, key: str) -> Path:
+    return ROOT / ".meta" / bucket / quote(key, safe="")
+
+
+def split_uri(uri: str) -> tuple[str, str]:
+    bucket, _, key = uri[len("s3://") :].partition("/")
+    return bucket, key
+
+
+def upload(found: dict[str, str], source: str, dest: str) -> None:
+    bucket, key = split_uri(dest)
+    if not Path(source).is_file():
+        die(f"The user-provided path {source} does not exist.")
+    body = body_path(bucket, key)
+    if "--no-overwrite" in found and body.exists():
+        return  # the real CLI's silent skip: exit 0, no output
+    data = Path(source).read_bytes()
+    if os.environ.get("FAKE_AWS_TRUNCATE") == key:
+        data = data[:-1]
+    body.parent.mkdir(parents=True, exist_ok=True)
+    body.write_bytes(data)
+    pairs = [p.split("=", 1) for p in found.get("--metadata", "").split(",") if p]
+    meta = meta_path(bucket, key)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps(dict(pairs)))
+    if "--only-show-errors" not in found:
+        print(f"upload: {source} to {dest}")
+
+
+def download(source: str, dest: str) -> None:
+    bucket, key = split_uri(source)
+    body = body_path(bucket, key)
+    if not body.exists():
+        not_found("HeadObject")
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("FAKE_AWS_CORRUPT") == key:
+        data = bytearray(body.read_bytes()) or bytearray(b"\0")
+        data[0] ^= 0xFF
+        Path(dest).write_bytes(bytes(data))
+    else:
+        shutil.copyfile(body, dest)
+
+
+def s3_cp(args: list[str]) -> None:
+    found, paths = options(args, {"--no-overwrite", "--only-show-errors"}, {"--metadata"})
+    if len(paths) != 2:
+        die(f"usage: aws s3 cp <source> <dest>; got {paths}", 252)
+    source, dest = paths
+    if dest.startswith("s3://"):
+        upload(found, source, dest)
+    else:
+        download(source, dest)
+
+
+def head_object(args: list[str]) -> None:
+    found, _ = options(args, set(), {"--bucket", "--key", "--output"})
+    bucket, key = found["--bucket"], found["--key"]
+    body = body_path(bucket, key)
+    if os.environ.get("FAKE_AWS_HIDE_FIRST_HEAD") == key:
+        marker = ROOT / "hidden-once"
+        if not marker.exists():
+            marker.write_text("")
+            not_found("HeadObject")
+    if not body.exists():
+        not_found("HeadObject")
+    metadata = json.loads(meta_path(bucket, key).read_text())
+    metadata.update(json.loads(os.environ.get("FAKE_AWS_HEAD_METADATA", "{}")))
+    print(json.dumps({"ContentLength": body.stat().st_size, "Metadata": metadata}))
+
+
+def list_objects(args: list[str]) -> None:
+    found, _ = options(args, set(), {"--bucket", "--prefix", "--output"})
+    bucket = ROOT / found["--bucket"]
+    prefix = found.get("--prefix", "")
+    keys = sorted(unquote(p.name) for p in bucket.iterdir()) if bucket.is_dir() else []
+    contents = [
+        {"Key": key, "Size": (bucket / quote(key, safe="")).stat().st_size}
+        for key in keys
+        if key.startswith(prefix)
+    ]
+    # Like S3, no `Contents` at all when nothing matches.
+    print(json.dumps({"Contents": contents} if contents else {"Prefix": prefix}))
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    ROOT.mkdir(parents=True, exist_ok=True)
+    with (ROOT / "calls.log").open("a") as log:
+        log.write(json.dumps(args) + "\n")
+    trigger = os.environ.get("FAKE_AWS_FAIL_ON")
+    if trigger and trigger in " ".join(args):
+        die("An error occurred (403) when calling the operation: Forbidden")
+    if args == ["--version"]:
+        print(os.environ.get("FAKE_AWS_VERSION", DEFAULT_VERSION))
+    elif args[:2] == ["s3", "cp"]:
+        s3_cp(args[2:])
+    elif args[:2] == ["s3api", "head-object"]:
+        head_object(args[2:])
+    elif args[:2] == ["s3api", "list-objects-v2"]:
+        list_objects(args[2:])
+    else:
+        die(f"fake aws: unknown command {args}", 64)
+
+
+main()

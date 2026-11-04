@@ -16,6 +16,7 @@ instance types, market and vCPU budget, and instances carry it as the
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import math
 import re
@@ -642,6 +643,28 @@ but it could not be mounted (${why:-no reason given}); SCRATCH_DIR is on the roo
 fi"""
 
 
+#: Where the task-artifact helper lands on the instance, on the task's PATH.
+ARTIFACT_HELPER_PATH = "/usr/local/bin/task-artifact"
+#: The most the rendered `AWS-RunShellScript` commands may take (a test checks).
+#: SendCommand documents no limit for `Parameters`, only 64 KB for a document
+#: (MaxDocumentSizeExceeded):
+#: https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_SendCommand.html
+#: So 48 KiB is our own margin, not an AWS figure.
+SSM_COMMANDS_BUDGET = 48 * 1024
+
+
+def artifact_helper_setup() -> str:
+    """Shell that writes the task-artifact helper, gzipped and base64-encoded,
+    or fails the task. `mtime=0` keeps the rendering stable."""
+    source = Path(__file__).with_name("task_artifact.py").read_bytes()
+    encoded = base64.b64encode(gzip.compress(source, mtime=0)).decode()
+    path = ARTIFACT_HELPER_PATH
+    return f"""if ! {{ echo {encoded} | base64 -d | gzip -d > {path} && chmod 755 {path}; }}; then
+  echo "task-runner: could not write {path}"
+  exit 1
+fi"""
+
+
 def task_script(spec: TaskSpec, bucket: str, prefix: str) -> str:
     """The bash script the instance runs: wait for setup, reset the lifetime
     guard, fetch the commit anonymously, run the task, upload its outputs
@@ -683,6 +706,8 @@ fi
 shutdown -c 2>/dev/null || true
 shutdown -h +{minutes} 2>/dev/null
 
+{artifact_helper_setup()}
+
 rm -rf /work
 mkdir -p /work/repo /work/out /work/scratch
 scratch=root-volume
@@ -707,6 +732,11 @@ if ! git -C /work/repo fetch --quiet --depth 1 {q(url)} {q(spec.ref)}; then
 fi
 git -C /work/repo checkout --quiet FETCH_HEAD
 cd /work/repo || exit 1
+
+# What a task's artifact manifest records about the run.
+export TASK_RUN_ID={q(spec.run_id)}
+export TASK_ID={q(spec.task_id)}
+export TASK_COMMIT={q(spec.ref)}
 
 # The only results prefix this instance may write: tasks/<role-id>:<instance-id>/.
 if ! uid=$(aws sts get-caller-identity --query UserId --output text --region {q(region)}); then
