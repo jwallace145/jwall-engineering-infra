@@ -27,7 +27,7 @@ from .project import Project
 from .settings import Settings
 from .site import Site
 
-#: What a stack is rendered for: a site (site commands) or a project of either kind.
+#: What a stack is rendered for: a site (site commands) or a project of any kind.
 Target = Site | Project
 
 #: Directory inside the bot image where lichess-bot writes one PGN per game.

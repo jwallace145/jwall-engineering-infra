@@ -470,9 +470,12 @@ def _strip_new_keys(tfvars: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_rusty_chess_tfvars_are_unchanged(bot: Project, settings: Settings) -> None:
-    """The live bot's inputs are what they were before gating, plus new keys at their defaults.
+    """The rusty-chess fixture's inputs are what they were before gating, plus new keys
+    at their defaults. The fixture is a sample, not the live bot's file.
 
-    The snapshot was rendered by the code before this change (commit 76187b0).
+    The snapshot was rendered by the code before this change (commit 76187b0). It
+    holds the pinned AMIs and Rust toolchain from config.yaml, so regenerate it when
+    `bot.amis`, `tasks.images` or `tasks.rust_toolchain` is bumped.
     """
     snapshot = json.loads((FIXTURES / "bots" / "rusty-chess.tfvars.json").read_text())
     tfvars = render_tfvars(bot, settings)

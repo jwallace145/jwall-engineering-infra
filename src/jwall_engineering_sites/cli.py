@@ -93,7 +93,7 @@ class Run:
 
     @property
     def project(self) -> Project:
-        """The project file of either kind. Kind-aware commands use this."""
+        """The project file of any kind. Kind-aware commands use this."""
         if self._project is None:
             self._project = Project.from_config(
                 load_site_config(self.site_file), self.settings, self.check_guardrails

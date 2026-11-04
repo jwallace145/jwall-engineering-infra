@@ -1,4 +1,4 @@
-"""A project file of either kind, with everything derived from it.
+"""A project file of any kind, with everything derived from it.
 
 Sites keep using `Site` (site.py) for their commands. `Project` is the view
 the kind-aware commands (validate, plan, apply, destroy) and the bot

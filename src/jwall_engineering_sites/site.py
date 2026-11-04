@@ -73,10 +73,12 @@ class DevSection(_Model):
 class SiteConfig(_Model):
     """jwall-engineering-sites.yaml, validated on its own.
 
-    A file describes either a site (`domain` and `site`) or a bot project
-    (`components`: one container image and one Lichess bot). Rules that need
-    config.yaml (the DNS zone, the organisation) live in `Site.from_config`
-    and `Project.from_config`, so that this model can be checked without it.
+    A file describes a site (`domain` and `site`), a bot project (`components`:
+    one container image and one Lichess bot, and optionally datasets and a task
+    runner) or a research project (`components`: only datasets and a task
+    runner). Rules that need config.yaml (the DNS zone, the organisation) live
+    in `Site.from_config` and `Project.from_config`, so that this model can be
+    checked without it.
     """
 
     version: Literal[1]
