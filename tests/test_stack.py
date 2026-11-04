@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,7 +20,7 @@ from jwall_engineering_sites.stack import (
     render_backend,
     render_tfvars,
 )
-from tests.conftest import REPO_ROOT
+from tests.conftest import FIXTURES, REPO_ROOT
 
 #: What each site's infra/ directory produced before the migration, by project.
 #: Step 6's "no changes" plan depends on these staying identical.
@@ -88,6 +90,7 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
         "project": "rusty-chess",
         "repository": "jwallace145/rusty-chess-v2",
         "tags": dict(bot.config.tags),
+        "bot_enabled": True,
         "instance_type": "t3.micro",
         "architecture": "x86_64",
         "secret_parameters": {"LICHESS_TOKEN": "/jwall-engineering/rusty-chess/lichess-token"},
@@ -114,6 +117,7 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
         "task_max_lifetime_hours": 6,
         "task_results_days": 7,
         "task_log_retention_days": 14,
+        "task_rust": True,
         "task_rust_toolchain": settings.tasks.rust_toolchain,
         "task_profiles": [
             {
@@ -125,7 +129,10 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
                 ),
                 "root_volume_gb": 200,
                 "gpu": True,
-                "datasets": [{"name": "nnue", "read": ["selfplay/"], "write": ["nets/"]}],
+                "rust": True,
+                "datasets": [
+                    {"name": "nnue", "read": ["selfplay/"], "write": ["nets/"], "write_once": []}
+                ],
             },
             {
                 "name": "sprt",
@@ -134,6 +141,7 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
                 "ami_name": None,
                 "root_volume_gb": 40,
                 "gpu": False,
+                "rust": True,
                 "datasets": [],
             },
             {
@@ -143,6 +151,7 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
                 "ami_name": None,
                 "root_volume_gb": 40,
                 "gpu": False,
+                "rust": True,
                 "datasets": [],
             },
             {
@@ -152,7 +161,10 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
                 "ami_name": None,
                 "root_volume_gb": 40,
                 "gpu": False,
-                "datasets": [{"name": "nnue", "read": [], "write": ["selfplay/"]}],
+                "rust": True,
+                "datasets": [
+                    {"name": "nnue", "read": [], "write": ["selfplay/"], "write_once": []}
+                ],
             },
             {
                 "name": "relabel",
@@ -161,8 +173,14 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
                 "ami_name": None,
                 "root_volume_gb": 40,
                 "gpu": False,
+                "rust": True,
                 "datasets": [
-                    {"name": "nnue", "read": ["selfplay/"], "write": ["selfplay/relabel/"]}
+                    {
+                        "name": "nnue",
+                        "read": ["selfplay/"],
+                        "write": ["selfplay/relabel/"],
+                        "write_once": [],
+                    }
                 ],
             },
         ],
@@ -174,6 +192,9 @@ def test_render_tfvars_for_bot(bot: Project, settings: Settings) -> None:
                 "writers": ["task-runner"],
                 "readers": [],
                 "transition_days": 0,
+                "versioning": False,
+                "expire_noncurrent_days": None,
+                "expire_prefixes": {},
             }
         ],
     }
@@ -387,3 +408,300 @@ def test_bot_tfvars_without_a_task_runner(tmp_path: Path, bot: Project, settings
     # The other task variables keep valid values so the stack's validations hold.
     assert tfvars["task_instance_type"] == "c8a.16xlarge"
     assert set(tfvars) == _declared("bot")
+
+
+# -- the bot stack's gating ---------------------------------------------------
+
+
+def _blocks(path: Path) -> list[tuple[str, list[str], dict[str, str]]]:
+    """(type, labels, attributes) of each top-level block of a `terraform fmt`-ed file.
+
+    fmt puts a block's closing brace in column one and indents its own attributes
+    by exactly two spaces, so nested blocks' attributes are not mistaken for them.
+    An attribute's value is its first line.
+    """
+    blocks: list[tuple[str, list[str], dict[str, str]]] = []
+    attributes: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        opening = re.fullmatch(r'(\w+)((?: "[^"]+")*) \{', line)
+        attribute = re.fullmatch(r"  (\w+)\s*=\s*(.*)", line)
+        if opening:
+            attributes = {}
+            labels = re.findall(r'"([^"]+)"', opening.group(2))
+            blocks.append((opening.group(1), labels, attributes))
+        elif attribute:
+            attributes[attribute.group(1)] = attribute.group(2)
+    return blocks
+
+
+def _bot_stack(block_type: str, file: str = "main.tf") -> dict[str, dict[str, str]]:
+    """Blocks of one type in a stacks/bot file, by first label."""
+    return {
+        labels[0]: attributes
+        for kind, labels, attributes in _blocks(REPO_ROOT / "stacks" / "bot" / file)
+        if kind == block_type
+    }
+
+
+def _strip_new_keys(tfvars: dict[str, Any]) -> dict[str, Any]:
+    """`tfvars` without the keys stack gating added."""
+    old = {k: v for k, v in tfvars.items() if k not in ("bot_enabled", "task_rust")}
+    old["task_profiles"] = [
+        {
+            **{k: v for k, v in profile.items() if k != "rust"},
+            "datasets": [
+                {k: v for k, v in dataset.items() if k != "write_once"}
+                for dataset in profile["datasets"]
+            ],
+        }
+        for profile in tfvars["task_profiles"]
+    ]
+    old["datasets"] = [
+        {
+            k: v
+            for k, v in dataset.items()
+            if k not in ("versioning", "expire_noncurrent_days", "expire_prefixes")
+        }
+        for dataset in tfvars["datasets"]
+    ]
+    return old
+
+
+def test_rusty_chess_tfvars_are_unchanged(bot: Project, settings: Settings) -> None:
+    """The live bot's inputs are what they were before gating, plus new keys at their defaults.
+
+    The snapshot was rendered by the code before this change (commit 76187b0).
+    """
+    snapshot = json.loads((FIXTURES / "bots" / "rusty-chess.tfvars.json").read_text())
+    tfvars = render_tfvars(bot, settings)
+    assert _strip_new_keys(tfvars) == snapshot
+
+    assert tfvars["bot_enabled"] is True
+    assert tfvars["task_rust"] is True
+    assert tfvars["task_profiles"], "the snapshot must exercise task profiles"
+    for profile in tfvars["task_profiles"]:
+        assert profile["rust"] is True
+        for dataset in profile["datasets"]:
+            assert dataset["write_once"] == []
+    assert tfvars["datasets"], "the snapshot must exercise datasets"
+    for dataset in tfvars["datasets"]:
+        assert dataset["versioning"] is False
+        assert dataset["expire_noncurrent_days"] is None
+        assert dataset["expire_prefixes"] == {}
+
+
+def test_research_tfvars(research: Project, settings: Settings) -> None:
+    tfvars = render_tfvars(research, settings)
+    assert tfvars["bot_enabled"] is False
+    assert tfvars["records_enabled"] is False
+    assert tfvars["architecture"] == "x86_64"
+    assert tfvars["task_runner_enabled"] is True
+    assert tfvars["task_rust"] is False
+    # A task runner needs the network and the cpu profile's pinned image.
+    assert tfvars["availability_zones"] == list(settings.bot.availability_zones)
+    assert tfvars["ami_name"] == settings.bot.amis["x86_64"]
+
+    profiles = {p["name"]: p for p in tfvars["task_profiles"]}
+    assert set(profiles) == {"train"}
+    train = profiles["train"]
+    assert train["rust"] is False
+    assert train["ami_name"] == settings.tasks.images["deep-learning-gpu"]
+    assert train["datasets"] == [
+        {
+            "name": "artifacts",
+            "read": ["datasets/", "models/", "runs/"],
+            "write": ["tmp/"],
+            "write_once": ["runs/", "models/"],
+        }
+    ]
+
+    assert tfvars["datasets"] == [
+        {
+            "name": "artifacts",
+            "bucket": "jwall-engineering-math-prover-artifacts",
+            "prefix": "data/",
+            "writers": [],
+            "readers": [],
+            "transition_days": 0,
+            "versioning": True,
+            "expire_noncurrent_days": 90,
+            "expire_prefixes": {"tmp/": 30},
+        }
+    ]
+
+
+def test_research_tfvars_leave_the_bots_inputs_to_the_stacks_defaults(
+    research: Project, settings: Settings
+) -> None:
+    tfvars = render_tfvars(research, settings)
+    bot_only = {
+        "instance_type",
+        "secret_parameters",
+        "container_environment",
+        "bot_name",
+        "records_prefix",
+        "records_container_path",
+        "log_retention_days",
+        "health_log_pattern",
+        "health_seconds",
+        "keep_release_images",
+        "expire_untagged_after_days",
+    }
+    assert not bot_only & set(tfvars)
+    variables = _bot_stack("variable", "variables.tf")
+    assert bot_only <= {name for name, block in variables.items() if "default" in block}
+
+
+def _dataset_only(research: Project) -> Project:
+    components = tuple(c for c in research.config.components if c.kind == "dataset")
+    config = research.config.model_copy(update={"components": components})
+    return research.model_copy(update={"config": config})
+
+
+def test_dataset_only_project_disables_network(research: Project, settings: Settings) -> None:
+    """A research file with only a dataset creates no VPC and no task resources."""
+    tfvars = render_tfvars(_dataset_only(research), settings)
+    assert tfvars["bot_enabled"] is False
+    assert tfvars["task_runner_enabled"] is False
+    assert tfvars["task_profiles"] == []
+    assert [d["name"] for d in tfvars["datasets"]] == ["artifacts"]
+    assert tfvars["ami_name"] is None, "nothing launches, so no image to resolve"
+
+
+def test_network_exists_for_a_bot_or_a_task_runner() -> None:
+    locals_blocks = [
+        attributes
+        for kind, _, attributes in _blocks(REPO_ROOT / "stacks" / "bot" / "main.tf")
+        if kind == "locals"
+    ]
+    assert locals_blocks[0]["network_enabled"] == "var.bot_enabled || var.task_runner_enabled"
+    modules = _bot_stack("module")
+    assert modules["network"]["count"] == "local.network_enabled ? 1 : 0"
+    assert modules["image"]["count"] == "var.bot_enabled ? 1 : 0"
+    assert modules["bot"]["count"] == "var.bot_enabled ? 1 : 0"
+    assert modules["records"]["count"] == "var.records_enabled ? 1 : 0"
+    assert modules["tasks"]["count"] == "var.task_runner_enabled ? 1 : 0"
+    assert modules["task_results"]["count"] == "var.task_runner_enabled ? 1 : 0"
+
+
+def test_stack_has_moved_blocks() -> None:
+    moved = [
+        (attributes["from"], attributes["to"])
+        for kind, _, attributes in _blocks(REPO_ROOT / "stacks" / "bot" / "main.tf")
+        if kind == "moved"
+    ]
+    assert sorted(moved) == [
+        ("module.bot", "module.bot[0]"),
+        ("module.image", "module.image[0]"),
+        ("module.network", "module.network[0]"),
+    ]
+
+
+def test_gated_modules_are_only_referenced_by_index() -> None:
+    """Outside the moved blocks, an unindexed reference to a counted module is invalid."""
+    for path in (REPO_ROOT / "stacks" / "bot").glob("*.tf"):
+        for line in path.read_text().splitlines():
+            code = line.split("#", 1)[0]
+            if re.fullmatch(r"\s*from\s*=\s*module\.(image|bot|network)\s*", code):
+                continue
+            unindexed = re.findall(r"module\.(?:image|bot|network)\b(?!\[0\])", code)
+            assert not unindexed, f"{path.name}: {line.strip()}"
+
+
+def test_outputs_keep_their_names_and_are_null_safe() -> None:
+    outputs = _bot_stack("output", "outputs.tf")
+    expected = {
+        "image_repository_url": "module.image[0].url",
+        "instance_id": "module.bot[0].instance_id",
+        "public_ip": "module.bot[0].public_ip",
+        "log_group_name": "module.bot[0].log_group_name",
+        "parameter_names": "module.bot[0].parameter_names",
+        "records_uri": "module.bot[0].records_uri",
+        "vpc_id": "module.network[0].vpc_id",
+    }
+    for name, source in expected.items():
+        assert outputs[name]["value"] == f"try({source}, null)"
+    assert set(outputs) == {
+        *expected,
+        "task_launch_template",
+        "task_log_group",
+        "task_results_uri",
+        "dataset_uris",
+        "task_profile_launch_templates",
+    }
+
+
+def test_rust_toolchain_follows_the_rust_flags() -> None:
+    modules = _bot_stack("module")
+    assert modules["tasks"]["rust_toolchain"] == "var.task_rust ? var.task_rust_toolchain : null"
+    assert (
+        modules["task_profiles"]["rust_toolchain"]
+        == "each.value.rust ? var.task_rust_toolchain : null"
+    )
+
+
+def test_datasets_receive_retention_and_write_once() -> None:
+    dataset = _bot_stack("module")["datasets"]
+    assert dataset["versioning"] == "each.value.versioning"
+    assert dataset["expire_noncurrent_days"] == "each.value.expire_noncurrent_days"
+    assert dataset["expire_prefixes"] == "each.value.expire_prefixes"
+    main_tf = (REPO_ROOT / "stacks" / "bot" / "main.tf").read_text()
+    assert re.search(
+        r"write_once\s*=\s*one\(\[for d in p\.datasets : d\.write_once if d\.name == each\.key\]\)",
+        main_tf,
+    )
+
+
+def _assert_keys_match_stack_variables(tfvars: dict[str, Any]) -> None:
+    """Rendered keys are all declared, and every variable without a default is rendered."""
+    variables = _bot_stack("variable", "variables.tf")
+    assert set(tfvars) <= set(variables)
+    assert {name for name, block in variables.items() if "default" not in block} <= set(tfvars)
+
+
+def test_tfvars_keys_match_stack_variables(
+    bot: Project, research: Project, settings: Settings
+) -> None:
+    _assert_keys_match_stack_variables(render_tfvars(bot, settings))
+    _assert_keys_match_stack_variables(render_tfvars(research, settings))
+    _assert_keys_match_stack_variables(render_tfvars(_dataset_only(research), settings))
+
+
+def test_new_variables_are_typed_for_the_rendered_values() -> None:
+    """A key added to an object type but not to the tfvars (or back) fails `terraform plan`."""
+    source = (REPO_ROOT / "stacks" / "bot" / "variables.tf").read_text()
+    profiles = source[
+        source.index('variable "task_profiles"') : source.index('variable "datasets"')
+    ]
+    assert re.search(r"^\s+rust\s+= bool$", profiles, re.MULTILINE)
+    assert re.search(r"^\s+write_once = list\(string\)$", profiles, re.MULTILINE)
+    datasets = source[source.index('variable "datasets"') :]
+    assert re.search(r"^\s+versioning\s+= bool$", datasets, re.MULTILINE)
+    assert re.search(r"^\s+expire_noncurrent_days\s+= number$", datasets, re.MULTILINE)
+    assert re.search(r"^\s+expire_prefixes\s+= map\(number\)$", datasets, re.MULTILINE)
+
+
+def test_research_uses_the_bot_stack(
+    research: Project,
+    settings: Settings,
+    logger: logging.Logger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JES_STACK_DIR", raising=False)
+    monkeypatch.setenv("JES_STACKS_ROOT", "/somewhere/stacks")
+    terraform = Terraform(research, settings, logger, plugin_dir=None)
+    assert terraform.stack_dir == Path("/somewhere/stacks/bot")
+
+
+def test_prepare_renders_a_research_project_into_the_bot_stack(
+    research: Project, settings: Settings, logger: logging.Logger, fake_terraform: Path
+) -> None:
+    terraform = Terraform(research, settings, logger, plugin_dir=None)
+    workdir = terraform.prepare()
+    try:
+        assert (workdir / "main.tf").read_text() == (
+            REPO_ROOT / "stacks" / "bot" / "main.tf"
+        ).read_text()
+        assert json.loads((workdir / "terraform.tfvars.json").read_text())["bot_enabled"] is False
+    finally:
+        terraform.cleanup(failed=False)

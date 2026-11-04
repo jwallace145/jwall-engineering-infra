@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from logging import Logger
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from .components import TaskRunner
 from .errors import RunError
@@ -33,6 +33,9 @@ Target = Site | Project
 #: Directory inside the bot image where lichess-bot writes one PGN per game.
 #: The harness Dockerfile and entrypoint fix it; the instance mounts it per tag.
 RECORDS_CONTAINER_PATH = "/opt/lichess-bot/game_records"
+
+#: A research project has no container image to take its architecture from.
+RESEARCH_ARCHITECTURE: Final = "x86_64"
 
 ENV_STACK_DIR = "JES_STACK_DIR"
 ENV_STACKS_ROOT = "JES_STACKS_ROOT"
@@ -52,13 +55,13 @@ _LOCK_INFO = re.compile(r"Lock Info:\n((?:\s{2,}\S.*\n?)+)")
 def render_tfvars(target: Target, settings: Settings | None = None) -> dict[str, Any]:
     """The stack's input variables. Pure, so it can be tested.
 
-    A bot project needs `settings` (health check, records prefix, zones and the
-    ECR lifecycle come from config.yaml).
+    A bot or research project needs `settings` (health check, records prefix,
+    zones and the ECR lifecycle come from config.yaml).
     """
     if isinstance(target, Project):
-        if target.kind == "bot":
+        if target.has_components:
             if settings is None:
-                raise ValueError("render_tfvars needs settings for a bot project")
+                raise ValueError("render_tfvars needs settings for a project with components")
             return _bot_tfvars(target, settings)
         return _site_tfvars_from_project(target)
     return _site_tfvars(target)
@@ -89,13 +92,11 @@ def _site_tfvars_from_project(project: Project) -> dict[str, Any]:
     }
 
 
-def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
+def _lichess_bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
+    """The inputs of the image repository and the bot instance."""
     bot, image = project.bot, project.image
-    runner = project.task_runner or TaskRunner(kind="task-runner")
     return {
-        "project": project.project,
-        "repository": project.config.repository,
-        "tags": dict(project.config.tags),
+        "bot_enabled": True,
         "instance_type": bot.instance_type,
         "architecture": image.architecture,
         "secret_parameters": dict(bot.secrets),
@@ -110,10 +111,37 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
         "log_retention_days": bot.logs.retention_days,
         "health_log_pattern": settings.bot.health_log_pattern,
         "health_seconds": settings.bot.health_seconds,
-        "availability_zones": list(settings.bot.availability_zones),
         "keep_release_images": settings.ecr.keep_release_images,
         "expire_untagged_after_days": settings.ecr.expire_untagged_after_days,
         "ami_name": settings.bot.amis.get(image.architecture),
+    }
+
+
+def _research_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
+    """The bot's modules are gated off; its other variables keep the stack's defaults."""
+    return {
+        "bot_enabled": False,
+        "architecture": RESEARCH_ARCHITECTURE,
+        "records_enabled": False,
+        # The image tasks without their own use. Without a task runner nothing
+        # launches, so there is no image for the plan to look up.
+        "ami_name": settings.bot.amis.get(RESEARCH_ARCHITECTURE) if project.task_runner else None,
+    }
+
+
+def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
+    runner = project.task_runner or TaskRunner(kind="task-runner")
+    kind_tfvars = (
+        _lichess_bot_tfvars(project, settings)
+        if project.kind == "bot"
+        else _research_tfvars(project, settings)
+    )
+    return {
+        "project": project.project,
+        "repository": project.config.repository,
+        "tags": dict(project.config.tags),
+        **kind_tfvars,
+        "availability_zones": list(settings.bot.availability_zones),
         # Without a task runner the stack creates none of its resources; the
         # other variables keep the component's defaults so they stay valid.
         "task_runner_enabled": project.task_runner is not None,
@@ -121,6 +149,7 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
         "task_max_lifetime_hours": runner.max_hours,
         "task_results_days": runner.results_days,
         "task_log_retention_days": runner.log_retention_days,
+        "task_rust": runner.rust,
         "task_rust_toolchain": settings.tasks.rust_toolchain,
         # Profiles beyond cpu: one launch template and instance role each.
         "task_profiles": [
@@ -131,8 +160,14 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
                 "ami_name": settings.tasks.images[profile.image] if profile.image else None,
                 "root_volume_gb": profile.root_volume_gb,
                 "gpu": profile.gpu,
+                "rust": profile.rust,
                 "datasets": [
-                    {"name": dataset, "read": list(access.read), "write": list(access.write)}
+                    {
+                        "name": dataset,
+                        "read": list(access.read),
+                        "write": list(access.write),
+                        "write_once": list(access.write_once),
+                    }
                     for dataset, access in profile.datasets.items()
                 ],
             }
@@ -146,6 +181,9 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
                 "writers": list(d.writers),
                 "readers": list(d.readers),
                 "transition_days": d.transition_days,
+                "versioning": d.versioning,
+                "expire_noncurrent_days": d.expire_noncurrent_days,
+                "expire_prefixes": dict(d.expire_prefixes),
             }
             for d in project.datasets
         ],
@@ -202,7 +240,7 @@ class Terraform:
         self.site = site
         self.settings = settings
         self.logger = logger
-        self.kind = site.kind if isinstance(site, Project) else "site"
+        self.kind = site.stack_kind if isinstance(site, Project) else "site"
         self.stack_dir = stack_dir or default_stack_dir(self.kind)
         self.plugin_dir = default_plugin_dir() if plugin_dir is None else plugin_dir
         self.binary = binary

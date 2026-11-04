@@ -1,36 +1,36 @@
 output "image_repository_url" {
-  description = "ECR repository the release images are pushed to."
-  value       = module.image.url
+  description = "ECR repository the release images are pushed to, or null without a bot."
+  value       = try(module.image[0].url, null)
 }
 
 output "instance_id" {
-  description = "The bot's EC2 instance, for Session Manager."
-  value       = module.bot.instance_id
+  description = "The bot's EC2 instance, for Session Manager, or null without a bot."
+  value       = try(module.bot[0].instance_id, null)
 }
 
 output "public_ip" {
-  description = "The bot's public IPv4 address (egress only)."
-  value       = module.bot.public_ip
+  description = "The bot's public IPv4 address (egress only), or null without a bot."
+  value       = try(module.bot[0].public_ip, null)
 }
 
 output "log_group_name" {
-  description = "CloudWatch log group of the bot container."
-  value       = module.bot.log_group_name
+  description = "CloudWatch log group of the bot container, or null without a bot."
+  value       = try(module.bot[0].log_group_name, null)
 }
 
 output "parameter_names" {
-  description = "SSM parameters shared by the release tooling and the instance: desired_version, running_version, status, last_sync."
-  value       = module.bot.parameter_names
+  description = "SSM parameters shared by the release tooling and the instance: desired_version, running_version, status, last_sync. Null without a bot."
+  value       = try(module.bot[0].parameter_names, null)
 }
 
 output "records_uri" {
-  description = "Where finished games are shipped, or null without records."
-  value       = module.bot.records_uri
+  description = "Where finished games are shipped, or null without a bot or records."
+  value       = try(module.bot[0].records_uri, null)
 }
 
 output "vpc_id" {
-  description = "The project's VPC."
-  value       = module.network.vpc_id
+  description = "The project's VPC, or null without a bot or a task runner."
+  value       = try(module.network[0].vpc_id, null)
 }
 
 output "task_launch_template" {
