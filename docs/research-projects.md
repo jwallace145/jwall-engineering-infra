@@ -72,31 +72,49 @@ checks, so **destroy a project before removing its central entry**; see
 
 ## Onboarding a research project
 
-The repository must exist first, because the registry needs its numeric
-repository ID (`gh api repos/<owner>/<repo> --jq .id`). Then, in this
-repository:
+The repository must exist first and be public: the registry needs its numeric
+repository ID (`gh api repos/<owner>/<repo> --jq .id`), **Bot plan** and **Bot
+apply** check it out, and task instances fetch it anonymously.
 
-1. Add the project to `local.bots` in `foundation/bots.tf`, and to
+In the consumer, first:
+
+1. Merge the project file (`jwall-engineering-sites.yaml`) to the default
+   branch. **Bot plan** and **Bot apply** read it from there, and from step 6 on
+   every pull request here runs a plan that fails without it. Add no workflow
+   that uses the CLI yet: no release carries the project's entry until step 6.
+
+Then, in this repository:
+
+2. Add the project to `local.bots` in `foundation/bots.tf`, and to
    `local.research_projects` there, which gives it `compute/*` instead of
    `container/*` and no release role.
-2. Add its `projects:` entry to `config.yaml`: instance types, task profiles,
+3. Add its `projects:` entry to `config.yaml`: instance types, task profiles,
    and each dataset bucket with its retention. Keep
    `tests/fixtures/config.yaml` identical to it.
-3. Add it to the CI matrices: `bot-plan` in `.github/workflows/ci.yml` and
-   the `project` options in `.github/workflows/bot-apply.yml`.
-4. Release. The foundation apply creates the project's roles and grants.
+4. Add a copy of the project file as `tests/fixtures/bots/<project>.yaml`
+   (the `math-prover` sample is already there). `tests/test_bots_registry.py`
+   checks steps 2 and 3 against it. No test needs editing.
+5. Add it to the CI matrices: `bot-plan` in `.github/workflows/ci.yml` and
+   the `project` options in `.github/workflows/bot-apply.yml`. On this pull
+   request **Bot plan** for the project is expected to skip with a warning,
+   because its plan role does not exist yet.
+6. Release. The foundation apply creates the project's roles and grants. From
+   then on **Bot plan** runs for the project on every pull request here.
 
 Then, in the consumer and by the owner:
 
-5. Merge the project file (`jwall-engineering-sites.yaml`) to the consumer's
-   default branch. **Bot apply** reads it from there.
-6. Run **Bot apply** for the project. It creates the buckets, launch
+7. Run **Bot apply** for the project. It creates the buckets, launch
    templates, roles, network and log group.
-7. Raise the GPU quota if needed. On 2026-11-02 the account had 5 on-demand
-   G/VT vCPUs and 0 G/VT spot vCPUs, so one `g6e.xlarge` (4 vCPUs) at a time,
-   and no `g6e.2xlarge` (8). See [remote-tasks.md](remote-tasks.md#quotas).
-   Keep the profile's `max_vcpus` within the quota.
-8. Run a GPU smoke test first (see [Not yet proven](#not-yet-proven)).
+8. Add the consumer's workflows, pinned to the release from step 6 or later.
+   `remote-task.yml` reads `config.yaml` from the pinned version, so an older
+   pin has no entry for the project and refuses its file.
+9. If a dataset is versioned, wait 15 minutes before the first task writes (see
+   **Versioning order** below).
+10. Raise the GPU quota if needed. On 2026-11-02 the account had 5 on-demand
+    G/VT vCPUs and 0 G/VT spot vCPUs, so one `g6e.xlarge` (4 vCPUs) at a time,
+    and no `g6e.2xlarge` (8). See [remote-tasks.md](remote-tasks.md#quotas).
+    Keep the profile's `max_vcpus` within the quota.
+11. Run a GPU smoke test first (see [Not yet proven](#not-yet-proven)).
 
 **Project names.** The project's roles are `<org>-<project>-...`, and the
 policies match them as `<org>-<project>-*`. A project named `math` would
@@ -104,9 +122,11 @@ therefore match the roles of `math-prover`. Avoid project names that are
 prefixes of each other.
 
 **Versioning order.** S3 advises waiting 15 minutes after enabling versioning
-on a bucket before writing to it. A research project's apply must also follow
-the foundation apply that grants `s3:PutBucketVersioning` to `dataset/manage`;
-before that, the apply role is refused when it turns versioning on.
+on a bucket before writing to it. The wait starts after the **Bot apply** that
+enables versioning and ends before the first task writes. That apply must also
+follow the foundation apply that grants `s3:PutBucketVersioning` to
+`dataset/manage`; before that, the apply role is refused when it turns
+versioning on.
 
 ## A sample project file
 
