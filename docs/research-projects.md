@@ -199,7 +199,8 @@ projects:
 
 `rust: false` (on the task-runner and on each profile; default `true`) skips
 rustup and the Rust version in the instance setup. The environment block then
-shows `rust_toolchain=none`. The pinned `deep-learning-gpu` image has the NVIDIA
+shows `rust_toolchain=none`; `scripts/test-task-setup.sh` in the module
+repository covers this with fake binaries. The pinned `deep-learning-gpu` image has the NVIDIA
 driver and CUDA but no PyTorch: the task installs its own pinned PyTorch into
 `SCRATCH_DIR` from its lock file. Egress is open, so public Hugging Face
 downloads work. The instance receives no secret, so gated models are out of
@@ -292,9 +293,11 @@ Things to know:
   upload; a file that changes in between fails the checks.
 - **AWS CLI 2.33.0 or later**, as `aws` or `aws2`, is required for
   `--no-overwrite`. Without it the helper exits with an error and uploads
-  nothing. The AL2023 image pinned in `bot.amis` has 2.38.0. The GPU image's
-  version has not been confirmed: the first GPU smoke test must check the
-  `aws_cli=` line of the environment block and run a `put`.
+  nothing. The AL2023 image pinned in `bot.amis` has 2.38.0, as read from the
+  AL2023 2023.12.20261026 release notes. The 2026-11-03 live test used
+  2.34.59. The GPU image's version has not been confirmed: the
+  first GPU smoke test must check the `aws_cli=` line of the environment block
+  and run a `put`.
 - A partial run has no manifest. Its checkpoints and diagnostics stay for
   debugging and resuming.
 
@@ -311,6 +314,11 @@ checkpoint in S3:
 3. It stops with margin before six hours, or when the run finishes.
 4. The owner (or a later workflow) starts the next run, which resumes.
 5. When the run is complete, `task-artifact publish` writes the manifest.
+
+A spot interruption ends the task with exit 75, which is never a result: re-run
+it. The outputs written to `OUT_DIR` so far are uploaded, within the time the
+notice leaves, and the checkpoints already `put` stay, so the next run resumes
+from the latest one.
 
 The resume logic belongs to the consumer. `OUT_DIR` is for small files only
 (results, summaries, logs): it goes to the results bucket, which expires after
@@ -475,7 +483,10 @@ templates, and create or replace no bucket. Delete `"$work"`, and apply through
 **Deleting data** is deliberately not a CLI feature. It is a manual procedure
 for an administrator with admin credentials: list what will go, delete the
 objects (and, on a versioned bucket, every version and delete marker), then
-the bucket. No CI role is granted `s3:DeleteObject` or `s3:DeleteObjectVersion`.
+the bucket. No CI role can delete dataset or results objects: the only
+`s3:DeleteObject` a project's roles hold is on Terraform's lock files
+(`tfstate/read` and `tfstate/write` delete `*.tflock`). The apply role can still write a bucket's
+lifecycle configuration, which is why retention is approved in `config.yaml`.
 
 ## Not yet proven
 
@@ -487,6 +498,11 @@ the bucket. No CI role is granted `s3:DeleteObject` or `s3:DeleteObjectVersion`.
   live. `task-artifact` decides absence from listings because a head of a
   missing key may answer 403, but a missing key under a restricted `ListBucket`
   condition has not been tried against S3.
+- **The `compute/*` policies** are covered by tests in the module repository.
+  No research project has used them in a real plan or apply yet.
+- **The rendered inputs** pass the stack's and modules' validations in
+  `scripts/test-stack-plans.sh`, against a mock provider. That is a plan with no
+  AWS behind it, so it says nothing about IAM or what AWS accepts.
 - **`moved` blocks** (`module.image` to `module.image[0]`, and the others) are
   proven by the CI **Bot plan** for rusty-chess, which must show no create or
   destroy.
