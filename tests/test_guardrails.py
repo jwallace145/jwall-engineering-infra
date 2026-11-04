@@ -332,6 +332,39 @@ def test_central_expiry_overlapping_a_protected_prefix_is_refused(settings: Sett
     assert "runs/old/" in problem and "runs/" in problem and "write_once" in problem
 
 
+@pytest.mark.parametrize(
+    ("one", "other"), [("tmp/", "tmp/keep/"), ("tmp/keep/", "tmp/")], ids=["parent", "child"]
+)
+def test_central_expiry_prefixes_that_overlap_are_refused(
+    settings: Settings, one: str, other: str
+) -> None:
+    """The module refuses these at plan: S3 would apply the shorter expiry to both."""
+    expiry = {one: 30, other: 60}
+    raw = _raw()
+    _component(raw, "dataset")["prefix"] = "data/"
+    _component(raw, "dataset")["expire_prefixes"] = expiry
+    (problem,) = _problems(raw, _central(settings, expire_prefixes=expiry))
+    assert "'tmp/'" in problem and "'tmp/keep/'" in problem and "overlap" in problem
+
+
+def test_central_expiry_prefixes_that_share_a_rule_id_are_refused(settings: Settings) -> None:
+    """The module refuses these at plan: both give the lifecycle rule `expire-a-b-`."""
+    expiry = {"a/b/": 30, "a-b/": 60}
+    raw = _raw()
+    _component(raw, "dataset")["prefix"] = "data/"
+    _component(raw, "dataset")["expire_prefixes"] = expiry
+    (problem,) = _problems(raw, _central(settings, expire_prefixes=expiry))
+    assert "'a/b/'" in problem and "'a-b/'" in problem and "expire-a-b-" in problem
+
+
+def test_central_expiry_prefixes_with_their_own_rules_pass(settings: Settings) -> None:
+    expiry = {"tmp/": 30, "tmp-keep/": 60, "a/b/": 7, "a/c/": 7}
+    raw = _raw()
+    _component(raw, "dataset")["prefix"] = "data/"
+    _component(raw, "dataset")["expire_prefixes"] = expiry
+    assert _problems(raw, _central(settings, expire_prefixes=expiry)) == []
+
+
 def test_expiry_beside_a_protected_prefix_passes(settings: Settings) -> None:
     raw = _raw()
     _no_task_runner_writer(raw)

@@ -8,6 +8,9 @@ string; `Project.from_config` raises them all as one `ConfigError`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from itertools import combinations
+
 from .components import Dataset, TaskProfile
 from .settings import DatasetRetention, ProjectGuardrails, Settings, TaskLimits
 from .site import SiteConfig
@@ -16,6 +19,11 @@ from .site import SiteConfig
 def _overlap(a: str, b: str) -> bool:
     """Two prefixes overlap when either one starts with the other."""
     return a.startswith(b) or b.startswith(a)
+
+
+def _rule_id(prefix: str) -> str:
+    """The lifecycle rule the dataset-bucket module names after an expiring prefix."""
+    return f"expire-{prefix.replace('/', '-')}"
 
 
 def check(config: SiteConfig, settings: Settings) -> list[str]:
@@ -143,4 +151,21 @@ def _retention_problems(dataset: Dataset, retention: DatasetRetention) -> list[s
                     f"{where}: expire_prefixes {expiring!r} overlaps write_once {guarded!r} "
                     "in config.yaml"
                 )
+    return problems + _expiry_rule_problems(where, retention.expire_prefixes)
+
+
+def _expiry_rule_problems(where: str, expire_prefixes: Mapping[str, int]) -> list[str]:
+    """What the dataset-bucket module refuses at plan, caught here at load."""
+    problems: list[str] = []
+    for one, other in combinations(sorted(expire_prefixes), 2):
+        if _overlap(one, other):
+            problems.append(
+                f"{where}: expire_prefixes {one!r} and {other!r} overlap in config.yaml; S3 "
+                "would apply the shorter expiry to the nested prefix too"
+            )
+        elif _rule_id(one) == _rule_id(other):
+            problems.append(
+                f"{where}: expire_prefixes {one!r} and {other!r} in config.yaml both give the "
+                f"lifecycle rule id {_rule_id(one)!r}"
+            )
     return problems
