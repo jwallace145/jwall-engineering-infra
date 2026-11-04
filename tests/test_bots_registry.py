@@ -134,14 +134,16 @@ def _policies(block: str) -> list[str]:
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
+def _projects() -> dict[str, Any]:
+    """The reviewed guardrails: config.yaml's `projects`, as foundation decodes it."""
+    import yaml
+
+    projects: dict[str, Any] = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())["projects"]
+    return projects
+
+
 def _task_types() -> dict[str, list[str]]:
-    text = BOTS_TF.read_text()
-    match = re.search(r"bot_task_types\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
-    assert match, "local.bot_task_types not found"
-    return {
-        key: re.findall(r'"([^"]+)"', types)
-        for key, types in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
-    }
+    return {k: list(p["instance_types"]) for k, p in _projects().items() if p.get("instance_types")}
 
 
 def test_bot_plan_and_apply_carry_the_task_policies() -> None:
@@ -180,13 +182,7 @@ def test_task_instance_types_match_the_project_file() -> None:
 
 
 def _task_profiles() -> dict[str, list[str]]:
-    text = BOTS_TF.read_text()
-    match = re.search(r"bot_task_profiles\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
-    assert match, "local.bot_task_profiles not found"
-    return {
-        key: re.findall(r'"([^"]+)"', names)
-        for key, names in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
-    }
+    return {k: list(p["task_profiles"]) for k, p in _projects().items() if p.get("task_profiles")}
 
 
 def test_task_profiles_match_the_project_file() -> None:
@@ -201,13 +197,7 @@ def test_bots_output_names_the_task_role() -> None:
 
 
 def _bot_datasets() -> dict[str, list[str]]:
-    text = BOTS_TF.read_text()
-    match = re.search(r"bot_datasets\s*=\s*\{(.*?)\n  \}", text, re.DOTALL)
-    assert match, "local.bot_datasets not found"
-    return {
-        key: re.findall(r'"([^"]+)"', buckets)
-        for key, buckets in re.findall(r"^\s+([a-z0-9-]+)\s*=\s*\[([^\]]*)\]", match.group(1), re.M)
-    }
+    return {k: list(p["datasets"]) for k, p in _projects().items() if p.get("datasets")}
 
 
 def test_dataset_buckets_match_the_project_file() -> None:
@@ -226,3 +216,13 @@ def test_bot_plan_and_apply_carry_the_dataset_policies() -> None:
     for block in (plan, apply):
         assert "contains(keys(local.bot_datasets), each.key)" in block
         assert "bucket_names = local.bot_datasets[each.key]" in block
+
+
+def test_foundation_reads_lists_from_config() -> None:
+    text = BOTS_TF.read_text()
+    assert not re.search(r"\b(?:c8a|g6e?|p[345])\.\w+", text), "instance types live in config.yaml"
+    for name in ("bot_task_types", "bot_task_profiles", "bot_datasets"):
+        match = re.search(rf"^\s+{name}\s*=\s*(.*)$", text, re.MULTILINE)
+        assert match and "local.tool_config.projects" in match.group(1), name
+    assert set(_projects()) <= set(registry())
+    assert set(_task_profiles()) == set(_task_types())

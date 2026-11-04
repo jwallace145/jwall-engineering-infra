@@ -149,6 +149,40 @@ class BotSection(_Section):
         return value
 
 
+class TaskLimits(_Section):
+    """What any project file may ask for. `project.py` checks files against these."""
+
+    #: Longest a task may run. GitHub stops a job at six hours.
+    max_hours: int = Field(ge=1)
+    max_vcpus: int = Field(ge=1)
+    root_volume_gb: int = Field(ge=1)
+
+
+class DatasetRetention(_Section):
+    """The centrally approved retention of one dataset bucket.
+
+    A consumer's dataset component must request exactly these values.
+    """
+
+    write_once: tuple[str, ...] = ()
+    expire_prefixes: dict[str, int] = {}
+    expire_noncurrent_days: int | None = None
+    versioning: bool = False
+
+
+class ProjectGuardrails(_Section):
+    """What one project's task launch role and buckets are approved for.
+
+    Reviewed in this repository; the project's own file cannot widen any of it.
+    """
+
+    instance_types: tuple[str, ...] = ()
+    task_profiles: tuple[str, ...] = ()
+    datasets: dict[str, DatasetRetention] = {}
+    #: Per-project override of `tasks.max_run_cost_usd`.
+    max_run_cost_usd: float | None = None
+
+
 class TasksSection(_Section):
     """How `task run` sets up and follows task instances (component `task-runner`)."""
 
@@ -161,6 +195,10 @@ class TasksSection(_Section):
     #: Amazon-owned image *name*, resolved to its ID by the bot stack. A
     #: profile's image changes only when its pin changes.
     images: dict[str, str] = {}
+    #: What any project file may ask for.
+    limits: TaskLimits
+    #: Worst-case cost of one task; above it, the launch is refused.
+    max_run_cost_usd: float = Field(gt=0)
 
     @field_validator("images")
     @classmethod
@@ -192,6 +230,14 @@ class Settings(_Section):
     plan: PlanSection
     bot: BotSection
     tasks: TasksSection
+    projects: dict[str, ProjectGuardrails] = {}
+
+    def run_cost_ceiling(self, project: str) -> float:
+        """The project's `max_run_cost_usd` override, else `tasks.max_run_cost_usd`."""
+        guardrails = self.projects.get(project)
+        if guardrails is not None and guardrails.max_run_cost_usd is not None:
+            return guardrails.max_run_cost_usd
+        return self.tasks.max_run_cost_usd
 
     def state_key(self, project: str, environment: str) -> str:
         return self.state.key_template.format(project=project, environment=environment)

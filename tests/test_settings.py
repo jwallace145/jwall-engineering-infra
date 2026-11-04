@@ -6,7 +6,12 @@ import pytest
 import yaml
 
 from jwall_engineering_sites.errors import ConfigError
-from jwall_engineering_sites.settings import Settings, load_settings, parse_duration
+from jwall_engineering_sites.settings import (
+    ProjectGuardrails,
+    Settings,
+    load_settings,
+    parse_duration,
+)
 from tests.conftest import FIXTURES, REPO_ROOT
 
 
@@ -159,3 +164,95 @@ def test_tasks_toolchain_is_a_rustup_name(tmp_path: Path, bad: str) -> None:
 def test_tasks_poll_bounds(tmp_path: Path, bad: int) -> None:
     with pytest.raises(ConfigError, match="poll_seconds"):
         load_settings(_write(tmp_path, {"tasks.poll_seconds": bad}), environ={})
+
+
+def test_task_limits_and_default_ceiling(settings: Settings) -> None:
+    assert settings.tasks.limits.model_dump() == {
+        "max_hours": 6,
+        "max_vcpus": 256,
+        "root_volume_gb": 200,
+    }
+    assert settings.tasks.max_run_cost_usd == 50
+
+
+def test_rusty_chess_guardrails_match_the_previous_lists(settings: Settings) -> None:
+    guardrails = settings.projects["rusty-chess"]
+    assert guardrails.instance_types == (
+        "c8a.xlarge",
+        "c8a.8xlarge",
+        "c8a.16xlarge",
+        "g6.xlarge",
+        "g6.2xlarge",
+        "g6e.xlarge",
+    )
+    assert guardrails.task_profiles == ("cpu", "gpu", "sprt", "match", "datagen", "relabel")
+    assert list(guardrails.datasets) == ["jwall-engineering-rusty-chess-nnue"]
+    retention = guardrails.datasets["jwall-engineering-rusty-chess-nnue"]
+    assert retention.write_once == ()
+    assert retention.expire_prefixes == {}
+    assert retention.expire_noncurrent_days is None
+    assert retention.versioning is False
+    assert guardrails.max_run_cost_usd is None
+
+
+def test_run_cost_ceiling_defaults_and_overrides(settings: Settings) -> None:
+    assert settings.run_cost_ceiling("rusty-chess") == 50
+    assert settings.run_cost_ceiling("not-registered") == 50
+    raised = settings.model_copy(
+        update={"projects": {"big": ProjectGuardrails(max_run_cost_usd=80)}}
+    )
+    assert raised.run_cost_ceiling("big") == 80
+    assert raised.run_cost_ceiling("rusty-chess") == 50
+
+
+def _with_projects(tmp_path: Path, projects: dict[str, object]) -> Path:
+    raw = yaml.safe_load((FIXTURES / "config.yaml").read_text())
+    raw["projects"] = projects
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return path
+
+
+@pytest.mark.parametrize(
+    "projects",
+    [
+        {"p": {"instance_typez": ["c8a.xlarge"]}},
+        {"p": {"datasets": {"b": {"write_onse": ["runs/"]}}}},
+    ],
+)
+def test_unknown_guardrail_key_is_refused(tmp_path: Path, projects: dict[str, object]) -> None:
+    with pytest.raises(ConfigError, match="Extra inputs are not permitted"):
+        load_settings(_with_projects(tmp_path, projects), environ={})
+
+
+def test_unknown_limit_key_is_refused(tmp_path: Path) -> None:
+    raw = yaml.safe_load((FIXTURES / "config.yaml").read_text())
+    raw["tasks"]["limits"]["max_gpus"] = 1
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match=r"tasks\.limits\.max_gpus"):
+        load_settings(path, environ={})
+
+
+def test_dataset_retention_is_typed(tmp_path: Path) -> None:
+    path = _with_projects(
+        tmp_path,
+        {
+            "math-prover": {
+                "datasets": {
+                    "b": {
+                        "write_once": ["runs/", "models/"],
+                        "expire_prefixes": {"tmp/": 30},
+                        "expire_noncurrent_days": 90,
+                        "versioning": True,
+                    }
+                },
+                "max_run_cost_usd": 80,
+            }
+        },
+    )
+    retention = load_settings(path, environ={}).projects["math-prover"].datasets["b"]
+    assert retention.write_once == ("runs/", "models/")
+    assert retention.expire_prefixes == {"tmp/": 30}
+    assert retention.expire_noncurrent_days == 90
+    assert retention.versioning is True
