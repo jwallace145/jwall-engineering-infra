@@ -85,6 +85,12 @@ class Env:
             return []
         return [json.loads(line) for line in log.read_text().splitlines()]
 
+    def binaries_used(self) -> set[str]:
+        """Which CLI ran each transfer: every call but the `--version` probes."""
+        log = (self.root / "binaries.log").read_text().splitlines()
+        calls = [json.loads(line) for line in log]
+        return {call[0] for call in calls if call[1:] != ["--version"]}
+
     def uploads(self) -> list[str]:
         """The destination of every `s3 cp` that wrote to S3, in order."""
         return [c[-1] for c in self.calls() if c[:2] == ["s3", "cp"] and c[-1].startswith("s3://")]
@@ -430,7 +436,7 @@ def test_publish_that_loses_a_race_for_the_manifest_exits_4(s3: Env) -> None:
         PREFIX,
         "--expect",
         str(s3.expect(*files)),
-        FAKE_AWS_HIDE_FIRST_HEAD=MANIFEST_KEY,
+        FAKE_AWS_HIDE_FROM_LIST=MANIFEST_KEY,
     )
     assert result.returncode == 4
     assert s3.body(MANIFEST_KEY) == b'{"winner": true}'
@@ -473,7 +479,8 @@ def test_a_missing_expect_file_exits_2(s3: Env) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["../x", "/x", "a/../b", "_manifest.json", "sub/_manifest.json", "a//b"]
+    "path",
+    ["../x", "/x", "a/../b", "_manifest.json", "sub/_manifest.json", "_manifest.json/x", "a//b"],
 )
 def test_publish_refuses_a_path_get_run_would_refuse(s3: Env, path: str) -> None:
     assert s3.run("publish", PREFIX, "--expect", str(s3.expect(path))).returncode == 2
@@ -536,7 +543,9 @@ def test_get_run_with_no_manifest_exits_1_and_says_so(s3: Env) -> None:
     assert not dest.exists()
 
 
-@pytest.mark.parametrize("evil", ["../evil", "{abs}", "a/../../evil", "..", ".", "", "a//b"])
+@pytest.mark.parametrize(
+    "evil", ["../evil", "{abs}", "a/../../evil", "..", ".", "", "a//b", "_manifest.json/x"]
+)
 def test_get_run_validates_every_path_before_downloading_anything(
     s3: Env, tmp_path: Path, evil: str
 ) -> None:
@@ -626,6 +635,7 @@ def test_get_run_refuses_a_corrupted_manifest(s3: Env) -> None:
         b"[]",
         b'{"schema": 2, "files": []}',
         b'{"schema": 1}',
+        b'{"schema": 1, "files": []}',
         b'{"schema": 1, "files": [{"path": "a"}]}',
         b'{"schema": 1, "files": [{"path": "a", "size": true, "sha256": "x"}]}',
         b'{"schema": 1, "files": ["a"]}',
@@ -644,13 +654,22 @@ def test_get_run_refuses_a_duplicated_path(s3: Env) -> None:
     assert s3.downloads() == [f"{PREFIX}_manifest.json"]
 
 
-def test_get_run_needs_no_cli_with_no_overwrite(s3: Env) -> None:
+def test_an_unsupported_cli_downloads_nothing_either(s3: Env) -> None:
     s3.seed_verified("runs/1/a", b"aaa")
     s3.seed_manifest([_entry("a", b"aaa")])
-    result = s3.run(
-        "get-run", PREFIX, str(s3.work / "dest"), FAKE_AWS_VERSION="aws-cli/2.0.0 Python/3"
-    )
-    assert result.returncode == 0, result.stderr
+    old = "aws-cli/2.0.0 Python/3"
+    commands = [
+        ("get-run", PREFIX, str(s3.work / "run")),
+        ("get", f"s3://{BUCKET}/runs/1/a", str(s3.work / "one")),
+        ("list-complete", f"s3://{BUCKET}/runs/"),
+    ]
+    before = len(s3.calls())
+    for command in commands:
+        result = s3.run(*command, FAKE_AWS_VERSION=old)
+        assert result.returncode == 1, command
+        assert "2.33.0" in result.stderr
+    assert {tuple(c) for c in s3.calls()[before:]} == {("--version",)}
+    assert not (s3.work / "run").exists() and not (s3.work / "one").exists()
 
 
 # --- list-complete -------------------------------------------------------------
@@ -675,9 +694,141 @@ def test_list_complete_of_nothing_prints_nothing(s3: Env) -> None:
     assert (result.returncode, result.stdout) == (0, "")
 
 
+@pytest.mark.parametrize("stdout", ["null", "{}", "", '{"Contents": null}'])
+def test_a_listing_with_no_contents_is_an_empty_listing(s3: Env, stdout: str) -> None:
+    result = s3.run("list-complete", f"s3://{BUCKET}/runs/", FAKE_AWS_LIST_STDOUT=stdout)
+    assert (result.returncode, result.stdout) == (0, ""), result.stderr
+
+
 def test_list_complete_reports_a_listing_failure(s3: Env) -> None:
     result = s3.run("list-complete", f"s3://{BUCKET}/runs/", FAKE_AWS_FAIL_ON="list-objects-v2")
     assert result.returncode == 1
+
+
+# --- a caller for whom S3 answers 403 on a missing key -----------------------------
+
+
+def test_first_and_second_publish_when_a_missing_key_answers_403(s3: Env) -> None:
+    files = _seed_run(s3)
+    expect = str(s3.expect(*files))
+    first = s3.run("publish", PREFIX, "--expect", expect, FAKE_AWS_HEAD_MISSING="403")
+    assert first.returncode == 0, first.stderr
+    before = s3.body(MANIFEST_KEY)
+    assert before is not None
+    second = s3.run("publish", PREFIX, "--expect", expect, FAKE_AWS_HEAD_MISSING="403")
+    assert second.returncode == 4
+    assert s3.body(MANIFEST_KEY) == before
+
+
+def test_publish_names_a_missing_file_when_a_missing_key_answers_403(s3: Env) -> None:
+    _seed_run(s3)
+    expect = str(s3.expect("model.bin", "absent.bin"))
+    result = s3.run("publish", PREFIX, "--expect", expect, FAKE_AWS_HEAD_MISSING="403")
+    assert result.returncode == 1
+    assert "absent.bin: missing" in result.stderr
+    assert s3.body(MANIFEST_KEY) is None
+
+
+def test_get_run_with_no_manifest_when_a_missing_key_answers_403(s3: Env) -> None:
+    _seed_run(s3)
+    dest = s3.work / "dest"
+    result = s3.run("get-run", PREFIX, str(dest), FAKE_AWS_HEAD_MISSING="403")
+    assert result.returncode == 1
+    assert "does not exist" in result.stderr
+    assert s3.downloads() == []
+    assert not dest.exists()
+
+
+def test_absence_of_a_manifest_is_not_fooled_by_a_longer_key(s3: Env) -> None:
+    files = _seed_run(s3)
+    s3.seed(f"{MANIFEST_KEY}.bak", b"{}")
+    expect = str(s3.expect(*files))
+    assert s3.run("get-run", PREFIX, str(s3.work / "dest")).returncode == 1
+    assert s3.run("publish", PREFIX, "--expect", expect).returncode == 0
+
+
+def test_publish_says_it_needs_read_when_it_cannot_list(s3: Env) -> None:
+    files = _seed_run(s3)
+    expect = str(s3.expect(*files))
+    result = s3.run("publish", PREFIX, "--expect", expect, FAKE_AWS_FAIL_ON="list-objects-v2")
+    assert result.returncode == 1
+    assert "needs read" in result.stderr
+    assert s3.body(MANIFEST_KEY) is None
+
+
+def test_get_of_a_missing_key_when_it_answers_403_exits_1(s3: Env) -> None:
+    result = s3.run(
+        "get", f"s3://{BUCKET}/absent", str(s3.work / "dest"), FAKE_AWS_HEAD_MISSING="403"
+    )
+    assert result.returncode == 1
+    assert "may not exist" in result.stderr
+
+
+# --- which CLI -------------------------------------------------------------------
+
+OLD = "aws-cli/1.44.0 Python/3.9"
+GOOD = "aws-cli/2.38.0 Python/3.13.0"
+
+
+def _every_command(s3: Env, **env: str) -> None:
+    """Run all five commands; each must succeed."""
+    data = s3.file("data", b"weights")
+    key = "runs/1/model.bin"
+    expect = str(s3.expect("model.bin"))
+    commands = [
+        ("put", str(data), f"s3://{BUCKET}/{key}"),
+        ("get", f"s3://{BUCKET}/{key}", str(s3.work / "one")),
+        ("publish", PREFIX, "--expect", expect),
+        ("get-run", PREFIX, str(s3.work / "run")),
+        ("list-complete", f"s3://{BUCKET}/runs/"),
+    ]
+    for command in commands:
+        result = s3.run(*command, **env)
+        assert result.returncode == 0, (command, result.stderr)
+    assert (s3.work / "run" / "model.bin").read_bytes() == b"weights"
+
+
+def test_a_too_old_aws_falls_back_to_a_good_aws2_for_every_command(s3: Env) -> None:
+    _every_command(s3, FAKE_AWS_VERSION=OLD, FAKE_AWS2_VERSION=GOOD)
+    assert s3.binaries_used() == {"aws2"}
+
+
+def test_a_good_aws_is_preferred_over_a_good_aws2(s3: Env) -> None:
+    _every_command(s3, FAKE_AWS2_VERSION=GOOD)
+    assert s3.binaries_used() == {"aws"}
+
+
+def test_a_missing_aws_falls_back_to_a_good_aws2(s3: Env, tmp_path: Path) -> None:
+    only_aws2 = tmp_path / "only-aws2"
+    only_aws2.mkdir()
+    (only_aws2 / "aws2").symlink_to(FIXTURES / "bin" / "aws2")
+    (only_aws2 / "python3").symlink_to(sys.executable)
+    _every_command(s3, PATH=str(only_aws2), FAKE_AWS2_VERSION=GOOD)
+    assert s3.binaries_used() == {"aws2"}
+
+
+def test_both_clis_too_old_fails_naming_both_and_transfers_nothing(s3: Env) -> None:
+    source = s3.file("f")
+    result = s3.run(
+        "put",
+        str(source),
+        f"s3://{BUCKET}/k",
+        FAKE_AWS_VERSION="aws-cli/2.32.9 Python/3",
+        FAKE_AWS2_VERSION="aws-cli/1.44.0 Python/3",
+    )
+    assert result.returncode == 1
+    assert "2.33.0" in result.stderr
+    assert "aws: aws-cli/2.32.9" in result.stderr
+    assert "aws2: aws-cli/1.44.0" in result.stderr
+    assert s3.uploads() == []
+    assert s3.body("k") is None
+
+
+def test_the_message_says_which_cli_is_absent(s3: Env) -> None:
+    result = s3.run("put", str(s3.file("f")), f"s3://{BUCKET}/k", FAKE_AWS_VERSION=OLD)
+    assert result.returncode == 1
+    assert "aws: aws-cli/1.44.0" in result.stderr
+    assert "aws2:" in result.stderr
 
 
 # --- usage and the source ------------------------------------------------------

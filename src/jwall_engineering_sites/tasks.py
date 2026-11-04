@@ -721,6 +721,8 @@ echo "profile={spec.profile}"
 cat /etc/task-runner/ready
 echo "scratch=$scratch"
 echo "scratch_device=$scratch_device"
+aws_cli=$(aws --version 2>&1 | head -n 1)
+echo "aws_cli=$aws_cli"
 echo "=="
 if [ -n "$scratch_note" ]; then
   echo "$scratch_note"

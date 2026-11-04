@@ -13,6 +13,7 @@ full-object SHA-256 for multipart uploads, so ours travels in the metadata.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -28,6 +29,7 @@ USAGE = 2
 EXISTS = 4
 CHUNK = 1024 * 1024
 MANIFEST = "_manifest.json"
+CLIS = ("aws", "aws2")
 MIN_CLI = (2, 33, 0)
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -38,9 +40,9 @@ class ArtifactError(Exception):
         self.code = code
 
 
-def aws(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["aws", *args],
+        [binary, *args],
         capture_output=True,
         encoding="utf-8",
         errors="replace",
@@ -48,18 +50,29 @@ def aws(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def require_cli() -> None:
-    """Refuse a CLI that may lack --no-overwrite, or whose version can't be read."""
-    result = aws("--version")
-    match = re.match(r"aws-cli/(\d+)\.(\d+)\.(\d+)", result.stdout + result.stderr)
-    if result.returncode != 0 or not match:
-        found = "an unreadable version"
-    elif tuple(int(part) for part in match.groups()) < MIN_CLI:
-        found = match.group(0)
-    else:
-        return
+@functools.cache
+def find_cli() -> str:
+    """The first CLI new enough for --no-overwrite. Some images name v2 `aws2`."""
+    found = []
+    for binary in CLIS:
+        try:
+            result = run_cli(binary, "--version")
+        except OSError:
+            found.append(f"{binary}: not found")
+            continue
+        match = re.match(r"aws-cli/(\d+)\.(\d+)\.(\d+)", result.stdout + result.stderr)
+        if result.returncode == 0 and match:
+            if tuple(int(part) for part in match.groups()) >= MIN_CLI:
+                return binary
+            found.append(f"{binary}: {match.group(0)}")
+        else:
+            found.append(f"{binary}: no readable version")
     needed = ".".join(str(part) for part in MIN_CLI)
-    raise ArtifactError(f"--no-overwrite needs AWS CLI {needed} or later; found {found}")
+    raise ArtifactError(f"needs AWS CLI {needed} or later; found {', '.join(found)}")
+
+
+def aws(*args: str) -> subprocess.CompletedProcess[str]:
+    return run_cli(find_cli(), *args)
 
 
 def sha256_file(path: str) -> str:
@@ -85,7 +98,9 @@ def parse_prefix(uri: str) -> tuple[str, str]:
 
 
 def head(bucket: str, key: str) -> dict[str, Any] | None:
-    """The object's head-object answer, or None if there is no such key."""
+    """The object's head-object answer, or None on a 404. S3 answers 403 for a
+    missing key when ListBucket doesn't apply, so 404 alone can't prove absence:
+    use `exists` where absence matters."""
     result = aws("s3api", "head-object", "--bucket", bucket, "--key", key, "--output", "json")
     if result.returncode == 0:
         answer: dict[str, Any] = json.loads(result.stdout)
@@ -93,7 +108,8 @@ def head(bucket: str, key: str) -> dict[str, Any] | None:
     if "(404)" in result.stderr:
         return None
     raise ArtifactError(
-        f"cannot read s3://{bucket}/{key}; task-artifact needs read on the prefix: "
+        f"cannot read s3://{bucket}/{key}; it may not exist, or task-artifact needs read "
+        f"on the prefix: "
         f"{result.stderr.strip()}"
     )
 
@@ -103,14 +119,22 @@ def list_sizes(bucket: str, prefix: str) -> dict[str, int]:
         "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--output", "json"
     )
     if result.returncode != 0:
-        raise ArtifactError(f"cannot list s3://{bucket}/{prefix}: {result.stderr.strip()}")
-    listing = json.loads(result.stdout) if result.stdout.strip() else {}
+        raise ArtifactError(
+            f"cannot list s3://{bucket}/{prefix}; task-artifact needs read on the prefix: "
+            f"{result.stderr.strip()}"
+        )
+    listing = (json.loads(result.stdout) if result.stdout.strip() else None) or {}
     return {entry["Key"]: entry["Size"] for entry in listing.get("Contents") or []}
+
+
+def exists(bucket: str, key: str) -> bool:
+    return key in list_sizes(bucket, key)
 
 
 def upload(path: str, bucket: str, key: str) -> str:
     """Write a new object or raise; returns its SHA-256."""
     uri = f"s3://{bucket}/{key}"
+    find_cli()  # before hashing what may be a very large file
     digest = sha256_file(path)
     size = os.path.getsize(path)
     upload_id = uuid.uuid4().hex
@@ -169,15 +193,14 @@ def recorded_digest(uri: str, answer: dict[str, Any]) -> str:
 
 
 def check_relative(path: Any, code: int) -> None:
-    """A manifest path: relative, with no `..`, and not itself a manifest."""
+    """A manifest path: relative, with no `..`, and no segment named as a manifest."""
     parts = path.split("/") if isinstance(path, str) else [""]
-    if any(part in ("", ".", "..") or "\0" in part for part in parts) or parts[-1] == MANIFEST:
+    if any(part in ("", ".", "..") or "\0" in part for part in parts) or MANIFEST in parts:
         raise ArtifactError(f"not a safe path relative to the prefix: {path!r}", code)
 
 
 def put(args: argparse.Namespace) -> None:
     bucket, key = parse_object(args.uri)
-    require_cli()
     digest = upload(args.file, bucket, key)
     print(f"{digest}  {args.uri}")
 
@@ -220,9 +243,10 @@ def read_metadata(path: str | None) -> dict[str, Any]:
     return metadata
 
 
-def verify_expected(bucket: str, prefix: str, expected: list[str]) -> list[dict[str, Any]]:
+def verify_expected(
+    bucket: str, prefix: str, expected: list[str], sizes: dict[str, int]
+) -> list[dict[str, Any]]:
     """Each expected file's manifest entry; raises naming every file that fails."""
-    sizes = list_sizes(bucket, prefix)
     entries: list[dict[str, Any]] = []
     problems: list[str] = []
     for path in sorted(expected):
@@ -248,10 +272,10 @@ def publish(args: argparse.Namespace) -> None:
     bucket, prefix = parse_prefix(args.uri)
     expected = read_expected(args.expect)
     metadata = read_metadata(args.metadata)
-    require_cli()
     key = prefix + MANIFEST
     uri = f"s3://{bucket}/{key}"
-    if head(bucket, key) is not None:
+    sizes = list_sizes(bucket, prefix)
+    if key in sizes:
         raise ArtifactError(f"{uri} already exists; this run is already published", EXISTS)
     manifest = {
         "schema": 1,
@@ -260,7 +284,7 @@ def publish(args: argparse.Namespace) -> None:
         "run_id": os.environ.get("TASK_RUN_ID"),
         "task_id": os.environ.get("TASK_ID"),
         "commit": os.environ.get("TASK_COMMIT"),
-        "files": verify_expected(bucket, prefix, expected),
+        "files": verify_expected(bucket, prefix, expected, sizes),
         "metadata": metadata,
     }
     with tempfile.TemporaryDirectory() as directory:
@@ -275,7 +299,7 @@ def read_manifest(bucket: str, prefix: str) -> list[dict[str, Any]]:
     """The manifest's files, each checked in shape, from a verified download."""
     key = prefix + MANIFEST
     uri = f"s3://{bucket}/{key}"
-    answer = head(bucket, key)
+    answer = head(bucket, key) if exists(bucket, key) else None
     if answer is None:
         raise ArtifactError(f"{uri} does not exist; the run is not complete")
     digest = recorded_digest(uri, answer)
@@ -287,6 +311,8 @@ def read_manifest(bucket: str, prefix: str) -> list[dict[str, Any]]:
     files = manifest.get("files") if isinstance(manifest, dict) else None
     if not isinstance(manifest, dict) or manifest.get("schema") != 1 or not isinstance(files, list):
         raise ArtifactError(f"{uri} is not a schema 1 manifest")
+    if not files:
+        raise ArtifactError(f"{uri} lists no files")
     for entry in files:
         if (
             not isinstance(entry, dict)

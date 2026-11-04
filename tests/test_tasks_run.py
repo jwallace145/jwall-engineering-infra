@@ -130,6 +130,28 @@ def test_the_rendered_commands_stay_under_the_budget(bot: Project, gpu: bool) ->
     assert len(json.dumps(commands)) < tasks.SSM_COMMANDS_BUDGET
 
 
+def _environment_block(script: str) -> str:
+    return script[script.index('echo "== task-runner environment"') : script.index('echo "=="')]
+
+
+def _run_aws_cli_record(script: str, aws: str) -> subprocess.CompletedProcess[str]:
+    lines = [ln for ln in _environment_block(script).splitlines() if "aws_cli" in ln]
+    probe = "set -uo pipefail\n" + aws + "\n" + "\n".join(lines) + "\necho reached"
+    return subprocess.run(["/bin/bash", "-c", probe], capture_output=True, text=True)
+
+
+def test_the_environment_block_records_the_first_line_of_the_cli_version(bot: Project) -> None:
+    aws = "aws() { echo aws-cli/2.38.0 Python/3; echo second line; }"
+    result = _run_aws_cli_record(_script(bot), aws)
+    assert result.stdout == "aws_cli=aws-cli/2.38.0 Python/3\nreached\n"
+
+
+def test_a_missing_or_failing_cli_does_not_stop_the_task(bot: Project) -> None:
+    result = _run_aws_cli_record(_script(bot), "aws() { echo broken >&2; return 3; }")
+    assert result.returncode == 0
+    assert result.stdout == "aws_cli=broken\nreached\n"
+
+
 # --- scratch: the instance store or the root volume ---------------------------
 
 FAKES = """
