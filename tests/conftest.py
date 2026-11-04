@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from jwall_engineering_sites.project import Project
-from jwall_engineering_sites.settings import ProjectGuardrails, Settings, load_settings
+from jwall_engineering_sites.settings import (
+    DatasetRetention,
+    ProjectGuardrails,
+    Settings,
+    load_settings,
+)
 from jwall_engineering_sites.site import Site, load_site_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -43,6 +48,28 @@ def guitar(settings: Settings) -> Site:
 @pytest.fixture
 def bot(settings: Settings) -> Project:
     return Project.from_config(load_site_config(FIXTURES / "bots" / "rusty-chess.yaml"), settings)
+
+
+@pytest.fixture
+def research(settings: Settings) -> Project:
+    """The math-prover sample: a dataset and a task-runner, no bot, with its central entry."""
+    guardrails = ProjectGuardrails(
+        instance_types=("c8a.xlarge", "g6e.xlarge", "g6e.2xlarge", "g6e.4xlarge"),
+        task_profiles=("cpu", "train"),
+        datasets={
+            "jwall-engineering-math-prover-artifacts": DatasetRetention(
+                prefix="data/",
+                versioning=True,
+                expire_noncurrent_days=90,
+                expire_prefixes={"tmp/": 30},
+                write_once=("runs/", "models/"),
+            )
+        },
+    )
+    return Project.from_config(
+        load_site_config(FIXTURES / "bots" / "math-prover.yaml"),
+        with_guardrails(settings, "math-prover", guardrails),
+    )
 
 
 @pytest.fixture

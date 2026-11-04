@@ -273,11 +273,12 @@ def test_two_task_runners_fail(tmp_path: Path, settings: Settings) -> None:
         _load(tmp_path, raw, settings)
 
 
-def test_task_runner_alone_is_not_a_bot_project(tmp_path: Path, settings: Settings) -> None:
+def test_task_runner_alone_is_a_research_project(tmp_path: Path, settings: Settings) -> None:
     raw = _raw()
-    raw["components"] = [_task_runner(raw)]
-    with pytest.raises(ConfigError, match="exactly one container-image"):
-        _load(tmp_path, raw, settings)
+    raw["components"] = [{**_task_runner(raw), "profiles": {}}]
+    project = _load(tmp_path, raw, settings)
+    assert project.config.kind == "research"
+    assert project.task_runner is not None
 
 
 def _dataset(raw: dict[str, Any]) -> dict[str, Any]:
@@ -554,3 +555,82 @@ def test_a_profile_default_type_must_be_allowed(tmp_path: Path, settings: Settin
     _gpu(raw)["default_instance_type"] = "g6.12xlarge"
     with pytest.raises(ConfigError, match="must be one of instance_types"):
         _load(tmp_path, raw, settings)
+
+
+# -- research projects: a dataset and a task-runner, no bot -------------------
+
+
+def test_the_research_fixture_is_a_research_project(research: Project, bot: Project) -> None:
+    assert research.kind == "research"
+    assert research.config.kind == "research"
+    assert research.stack_kind == "bot"
+    assert research.has_components
+    assert bot.kind == "bot"
+    assert bot.stack_kind == "bot"
+    assert bot.has_components
+
+
+def test_a_site_has_no_components_and_the_site_stack(settings: Settings) -> None:
+    site = Project.from_config(
+        load_site_config(FIXTURES / "sites" / "guitar-knowledge-base.yaml"), settings
+    )
+    assert not site.has_components
+    assert site.stack_kind == "site"
+
+
+def test_a_file_with_only_a_dataset_is_research(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"] = [_dataset(raw)]
+    _dataset(raw)["writers"] = []
+    project = _load(tmp_path, raw, settings)
+    assert project.kind == "research"
+    assert project.task_runner is None
+    assert [d.name for d in project.datasets] == ["nnue"]
+
+
+def test_an_image_without_a_bot_still_fails(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"] = [_image(raw), _task_runner(raw)]
+    with pytest.raises(ConfigError, match="exactly one lichess-bot"):
+        _load(tmp_path, raw, settings)
+
+
+def test_the_research_project_uses_the_task_names(research: Project) -> None:
+    assert research.task_bucket == "jwall-engineering-math-prover-tasks"
+    assert research.task_log_group == "/jwall-engineering/math-prover/tasks"
+    assert research.profile_task_name("cpu") == "jwall-engineering-math-prover-task"
+    assert research.profile_task_name("train") == "jwall-engineering-math-prover-task-train"
+    assert research.task_runner is not None
+    assert research.task_runner.profile_names == ("cpu", "train")
+    (dataset,) = research.datasets
+    assert dataset.bucket == "jwall-engineering-math-prover-artifacts"
+    assert research.dataset_bucket("artifacts") == dataset.bucket
+
+
+def test_bot_accessors_refuse_on_research(research: Project) -> None:
+    with pytest.raises(ConfigError, match="not a bot"):
+        _ = research.bot
+    with pytest.raises(ConfigError, match="not a bot"):
+        _ = research.image
+    with pytest.raises(ConfigError, match="not a site"):
+        _ = research.site_bucket
+
+
+def test_research_secrets_are_not_read(research: Project) -> None:
+    # A research file has no lichess-bot to hold secrets; loading never asks for one.
+    assert not any(c.kind == "lichess-bot" for c in research.config.components)
+
+
+def test_rust_defaults_to_true_and_the_cpu_profile_follows_it(
+    bot: Project, research: Project
+) -> None:
+    runner = bot.task_runner
+    assert runner is not None
+    assert runner.rust is True
+    assert runner.profile("cpu").rust is True
+    assert runner.profile("gpu").rust is True
+    research_runner = research.task_runner
+    assert research_runner is not None
+    assert research_runner.rust is False
+    assert research_runner.profile("cpu").rust is False
+    assert research_runner.profile("train").rust is False

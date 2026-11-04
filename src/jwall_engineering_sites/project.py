@@ -50,14 +50,15 @@ class Project(BaseModel):
                 f"tags.Organization must be {organization!r}, got {config.tags['Organization']!r}"
             )
         own = f"/{organization}/{config.project}/"
-        for name, parameter in config.bot.secrets.items():
-            if not parameter.startswith(own):
-                problems.append(f"secrets.{name} must start with {own}, got {parameter!r}")
-            elif parameter.startswith(f"{own}bot/"):
-                problems.append(
-                    f"secrets.{name} must not live under {own}bot/, "
-                    "which the release role can write"
-                )
+        if config.kind == "bot":  # a research project has no lichess-bot to hold secrets
+            for name, parameter in config.bot.secrets.items():
+                if not parameter.startswith(own):
+                    problems.append(f"secrets.{name} must start with {own}, got {parameter!r}")
+                elif parameter.startswith(f"{own}bot/"):
+                    problems.append(
+                        f"secrets.{name} must not live under {own}bot/, "
+                        "which the release role can write"
+                    )
         for dataset in config.datasets:
             bucket = f"{organization}-{config.project}-{dataset.name}"
             if dataset.bucket != bucket:
@@ -91,8 +92,18 @@ class Project(BaseModel):
         return self.config.project
 
     @property
-    def kind(self) -> Literal["site", "bot"]:
+    def kind(self) -> Literal["site", "bot", "research"]:
         return self.config.kind
+
+    @property
+    def has_components(self) -> bool:
+        """Bot and research projects are made of components; a site is not."""
+        return self.config.kind != "site"
+
+    @property
+    def stack_kind(self) -> Literal["site", "bot"]:
+        """The Terraform stack that provisions it: research projects use the bot stack."""
+        return "site" if self.config.kind == "site" else "bot"
 
     @property
     def image(self) -> ContainerImage:
@@ -135,7 +146,7 @@ class Project(BaseModel):
 
     @property
     def task_runner(self) -> TaskRunner | None:
-        self._require("bot")
+        self._require_components()
         return self.config.task_runner
 
     @property
@@ -166,7 +177,7 @@ class Project(BaseModel):
 
     @property
     def datasets(self) -> tuple[Dataset, ...]:
-        self._require("bot")
+        self._require_components()
         return self.config.datasets
 
     def dataset_bucket(self, name: str) -> str:
@@ -186,3 +197,7 @@ class Project(BaseModel):
     def _require(self, kind: Literal["site", "bot"]) -> None:
         if self.kind != kind:
             raise ConfigError(f"{self.project} is not a {kind} project")
+
+    def _require_components(self) -> None:
+        if not self.has_components:
+            raise ConfigError(f"{self.project} has no components (it is a site project)")

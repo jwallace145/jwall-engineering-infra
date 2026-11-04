@@ -207,6 +207,9 @@ class TaskProfile(_Model):
     scratch: Literal["instance-store", "root-volume"] = "root-volume"
     #: Read and write access to the project's datasets, by dataset name.
     datasets: dict[str, DatasetAccess] = {}
+    #: The Rust toolchain is installed on the instance. Research projects that
+    #: run no Rust turn it off; the default keeps every existing file as is.
+    rust: bool = True
 
     @model_validator(mode="before")
     @classmethod
@@ -257,6 +260,8 @@ class TaskRunner(_Model):
     slot_wait_minutes: int = Field(default=30, ge=0, le=120)
     results_days: int = Field(default=7, ge=1, le=30)
     log_retention_days: RetentionDays = 14
+    #: The `cpu` profile's `rust` (see `TaskProfile.rust`).
+    rust: bool = True
     #: Further profiles, such as `gpu`, by name. The fields above are `cpu`.
     profiles: dict[str, TaskProfile] = {}
 
@@ -299,6 +304,7 @@ class TaskRunner(_Model):
                 max_hours=self.max_hours,
                 max_vcpus=self.max_vcpus,
                 slot_wait_minutes=self.slot_wait_minutes,
+                rust=self.rust,
             )
         if name not in self.profiles:
             raise KeyError(name)

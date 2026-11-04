@@ -1,0 +1,46 @@
+# A sample research project file, for a future consumer (math-prover). It has
+# no container image and no Lichess bot: only a dataset and a task-runner. The
+# project is not registered in config.yaml yet, so tests build its central
+# entry in the `research` fixture (tests/conftest.py).
+version: 1
+project: math-prover
+repository: jwallace145/math-prover
+
+tags:
+  Organization: jwall-engineering
+  Project: math-prover
+  Environment: prod
+  Repository: jwallace145/math-prover
+  Owner: jwallace145
+
+components:
+  - kind: dataset                   # sample: a versioned bucket for training artifacts
+    name: artifacts
+    bucket: jwall-engineering-math-prover-artifacts
+    prefix: data/
+    versioning: true
+    expire_noncurrent_days: 90
+    expire_prefixes: { tmp/: 30 }
+
+  - kind: task-runner               # sample: no Rust toolchain on the instances
+    rust: false
+    instance_types: [c8a.xlarge]
+    default_instance_type: c8a.xlarge
+    market: on-demand
+    max_vcpus: 4
+    profiles:
+      train:
+        instance_types: [g6e.xlarge, g6e.2xlarge, g6e.4xlarge]
+        default_instance_type: g6e.xlarge
+        market: on-demand
+        max_vcpus: 4
+        image: deep-learning-gpu
+        root_volume_gb: 200
+        whole_cores: false
+        gpu: true
+        rust: false
+        datasets:
+          artifacts:
+            read: [datasets/, models/, runs/]
+            write: [tmp/]
+            write_once: [runs/, models/]

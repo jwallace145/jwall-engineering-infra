@@ -177,3 +177,16 @@ def test_site_config_defaults() -> None:
     assert config.preview.enabled is True
     assert config.site is not None
     assert config.site.immutable_paths == ()
+
+
+def test_a_research_file_is_neither_a_site_nor_a_bot() -> None:
+    config = load_site_config(FIXTURES / "bots" / "math-prover.yaml")
+    assert config.kind == "research"
+    assert config.domain is None and config.site is None
+    assert load_site_config(FIXTURES / "bots" / "rusty-chess.yaml").kind == "bot"
+
+
+def test_site_commands_refuse_a_research_project(settings: Settings) -> None:
+    config = load_site_config(FIXTURES / "bots" / "math-prover.yaml")
+    with pytest.raises(ConfigError, match="not a site"):
+        Site.from_config(config, settings)
