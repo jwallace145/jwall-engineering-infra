@@ -166,6 +166,8 @@ components:
         instance_types: [g6e.xlarge, g6e.2xlarge, g6e.4xlarge]
         default_instance_type: g6e.xlarge
         market: on-demand
+        # Fits one g6e.xlarge. The 2xlarge (8 vCPUs) and 4xlarge (16) exit 3 until
+        # this budget and the account's G/VT vCPU quota rise.
         max_vcpus: 4
         image: deep-learning-gpu
         root_volume_gb: 200
