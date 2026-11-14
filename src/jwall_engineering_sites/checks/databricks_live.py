@@ -226,6 +226,16 @@ def members_exist(ctx: CheckContext) -> Iterable[CheckResult]:
         raise ConfigError(f"add projects.{ctx.project.project}.databricks to config.yaml")
     emails = [*approved.admins, *approved.users]
     field = f"projects.{ctx.project.project}.databricks.admins/users"
+    # The foundation makes these the metastore admins once enabled; a placeholder there
+    # would hand the metastore to nobody.
+    admins = [e for e in _section(ctx).metastore_admins if e.lower().endswith("@example.com")]
+    if admins:
+        yield LIVE_005.failed(
+            f"replace the placeholder email {', '.join(admins)} in databricks.metastore_admins "
+            "in config.yaml with the owner's real email (an account user), then re-run",
+            placeholders=", ".join(admins),
+        )
+        return
     placeholders = [e for e in emails if e.lower().endswith("@example.com")]
     if placeholders:
         yield LIVE_005.failed(

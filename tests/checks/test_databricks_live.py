@@ -53,7 +53,12 @@ def empty_registry() -> Iterator[None]:
 def live(settings: Settings) -> Settings:
     assert settings.databricks is not None
     section = settings.databricks.model_copy(
-        update={"enabled": True, "account_id": REAL_ID, "client_id": CLIENT_ID}
+        update={
+            "enabled": True,
+            "account_id": REAL_ID,
+            "client_id": CLIENT_ID,
+            "metastore_admins": ("owner@corp.test",),
+        }
     )
     return settings.model_copy(update={"databricks": section})
 
@@ -250,6 +255,17 @@ def test_live005_rejects_placeholder_emails_without_calling_the_api(
     result = _run("DBX-LIVE-005", databricks, live, None, None)
     assert result.outcome is Outcome.FAIL
     assert "replace the placeholder email" in (result.remediation or "")
+    assert "owner@example.com" in (result.remediation or "")
+
+
+def test_live005_rejects_placeholder_metastore_admins(databricks: Project, live: Settings) -> None:
+    assert live.databricks is not None
+    section = live.databricks.model_copy(update={"metastore_admins": ("owner@example.com",)})
+    s = _members(live.model_copy(update={"databricks": section}), databricks, "a@corp.test")
+    api = _account(users=[user("a@corp.test")])
+    result = _run("DBX-LIVE-005", _project(databricks, s), s, None, api)
+    assert result.outcome is Outcome.FAIL
+    assert "databricks.metastore_admins" in (result.remediation or "")
     assert "owner@example.com" in (result.remediation or "")
 
 

@@ -414,7 +414,9 @@ foundation first (it creates the metastore once `databricks.enabled` is true).
 
 `DBX-LIVE-005`. A member email in `projects.<name>.databricks.admins` or
 `users` is a placeholder (`@example.com`) or is not an account user. Replace
-it with a real email, or add the user in the account console.
+it with a real email, or add the user in the account console. It also fails
+while `databricks.metastore_admins` still holds a placeholder: replace it with
+the owner's real email before the foundation makes it the metastore admin.
 
 ### Bucket names
 
