@@ -35,6 +35,7 @@ EXTRA_KEYS = frozenset({"workspace_id", "state_key"})
 _ERROR_CLASS = re.compile(r"^[A-Z]{2,5}-[A-Z-]+$")
 _CHECK_ID = re.compile(r"^[A-Z]{2,5}-[A-Z]{2,5}-\d{3}$")
 _STAGE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+_RUN_ID = re.compile(r"^[A-Za-z0-9-]+$")
 _PROJECT = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
@@ -50,14 +51,22 @@ class EventLog:
         unknown = set(base) - BASE_KEYS
         if unknown:
             raise ValueError(f"event base fields {sorted(unknown)} are not allowed")
-        if not _PROJECT.fullmatch(base.get("project", "")) or "run_id" not in base:
-            raise ValueError("event base fields need a valid project and a run_id")
+        if not _PROJECT.fullmatch(base.get("project", "")):
+            raise ValueError("event base fields need a valid project")
+        if not _RUN_ID.fullmatch(base.get("run_id", "")):
+            raise ValueError("event run_id must match [A-Za-z0-9-]+")
         self._s3 = s3
         self._bucket = bucket
         self._prefix = prefix
         self._base = dict(base)
         self._logger = logger
         self._seq = 0
+
+    def _valid(self, value: str | None, pattern: re.Pattern[str], field: str) -> str | None:
+        if value is None or pattern.fullmatch(value):
+            return value
+        self._logger.warning("event %s is not valid; recorded as null", field)
+        return None
 
     def emit(
         self,
@@ -69,30 +78,30 @@ class EventLog:
         failed_checks: Sequence[str] = (),
         extra: Mapping[str, str] | None = None,
     ) -> None:
-        extra = extra or {}
-        unknown = set(extra) - EXTRA_KEYS
-        if unknown:
-            raise ValueError(f"event extra keys {sorted(unknown)} are not allowed")
-        if not _STAGE.fullmatch(stage) or not _STAGE.fullmatch(event):
-            raise ValueError("event and stage must be short lowercase identifiers")
-        if error_class is not None and not _ERROR_CLASS.fullmatch(error_class):
-            raise ValueError("error_class must be a catalogue class name")
-        for check_id in failed_checks:
-            if not _CHECK_ID.fullmatch(check_id):
-                raise ValueError("failed_checks must be check ids")
+        # A bad value is dropped with a warning naming the field, never the value:
+        # the log must not fail a deploy or mask the error it is recording.
+        clean_extra = {k: v for k, v in (extra or {}).items() if k in EXTRA_KEYS}
+        if len(clean_extra) != len(extra or {}):
+            self._logger.warning("event extra had fields that are not allowed; dropped them")
+        safe_event = self._valid(event, _STAGE, "event")
+        safe_stage = self._valid(stage, _STAGE, "stage")
+        safe_class = self._valid(error_class, _ERROR_CLASS, "error_class")
+        safe_checks = [c for c in failed_checks if _CHECK_ID.fullmatch(c)]
+        if len(safe_checks) != len(failed_checks):
+            self._logger.warning("event failed_checks had invalid entries; dropped them")
         self._seq += 1
         now = datetime.now(UTC)
         record: dict[str, Any] = {
             "timestamp": now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "seq": self._seq,
-            "event": event,
-            "stage": stage,
+            "event": safe_event,
+            "stage": safe_stage,
             "result": result,
             "duration_s": duration_s,
-            "error_class": error_class,
-            "failed_checks": list(failed_checks),
+            "error_class": safe_class,
+            "failed_checks": safe_checks,
             **self._base,
-            **extra,
+            **clean_extra,
         }
         key = (
             f"{self._prefix}project={self._base['project']}/date={now:%Y-%m-%d}/"
@@ -112,6 +121,10 @@ class EventLog:
             )
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code", "unknown")
+            if code in ("PreconditionFailed", "412"):
+                # A retry after a timeout whose first attempt landed: already written.
+                self._logger.debug("event %s already exists", key)
+                return
             self._logger.warning("event %s was not written: %s", key, code)
         except BotoCoreError as error:
             self._logger.warning("event %s was not written: %s", key, type(error).__name__)

@@ -135,7 +135,7 @@ def test_botocore_error_does_not_fail_run(logger: logging.Logger) -> None:
     EventLog(Down(), BUCKET, PREFIX, BASE, logger).emit("apply", "apply", "started")  # type: ignore[arg-type]
 
 
-def test_precondition_failed_is_a_warning(
+def test_precondition_failed_is_idempotent_success(
     logger: logging.Logger, caplog: pytest.LogCaptureFixture
 ) -> None:
     class Exists:
@@ -145,9 +145,9 @@ def test_precondition_failed_is_a_warning(
             )
 
     log = EventLog(Exists(), BUCKET, PREFIX, BASE, logger)  # type: ignore[arg-type]
-    with caplog.at_level(logging.WARNING, logger=logger.name):
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
         log.emit("apply", "apply", "success")
-    assert any("PreconditionFailed" in r.getMessage() for r in caplog.records)
+    assert [r.levelno for r in caplog.records] == [logging.DEBUG]
 
 
 def test_no_client_logs_at_debug_only(
@@ -158,14 +158,19 @@ def test_no_client_logs_at_debug_only(
     assert [r.levelno for r in caplog.records] == [logging.DEBUG]
 
 
-def test_extra_rejects_unknown_keys(s3: Any, logger: logging.Logger) -> None:
+def test_unknown_extra_keys_dropped_with_warning(
+    s3: Any, logger: logging.Logger, caplog: pytest.LogCaptureFixture
+) -> None:
     log = _log(s3, logger)
-    with pytest.raises(ValueError, match="client_secret"):
-        log.emit("plan", "plan", "success", extra={"client_secret": SECRET})
-    log.emit("plan", "plan", "success", extra={"workspace_id": "123", "state_key": "a/b.tfstate"})
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        log.emit("plan", "plan", "success", extra={"client_secret": SECRET, "workspace_id": "1"})
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert SECRET not in caplog.text
     ((_, record),) = _records(s3)
-    assert record["workspace_id"] == "123"
-    assert record["state_key"] == "a/b.tfstate"
+    assert "client_secret" not in record
+    assert record["workspace_id"] == "1"
+    log.emit("plan", "plan", "success", extra={"state_key": "a/b.tfstate"})
+    assert _records(s3)[1][1]["state_key"] == "a/b.tfstate"
 
 
 def test_base_with_unknown_keys_rejected(s3: Any, logger: logging.Logger) -> None:
@@ -173,24 +178,37 @@ def test_base_with_unknown_keys_rejected(s3: Any, logger: logging.Logger) -> Non
         EventLog(s3, BUCKET, PREFIX, {**BASE, "token": SECRET}, logger)
 
 
-def test_record_has_no_secret_fields(s3: Any, logger: logging.Logger) -> None:
+@pytest.mark.parametrize("run_id", ["a/b", "", "x y", "../x"])
+def test_run_id_must_be_key_safe(s3: Any, logger: logging.Logger, run_id: str) -> None:
+    with pytest.raises(ValueError):
+        EventLog(s3, BUCKET, PREFIX, {**BASE, "run_id": run_id}, logger)
+
+
+def test_record_has_no_secret_fields(
+    s3: Any, logger: logging.Logger, caplog: pytest.LogCaptureFixture
+) -> None:
     log = _log(s3, logger)
-    for bad in (SECRET, f"DBX-AUTH {SECRET}", "lowercase", ""):
-        with pytest.raises(ValueError):
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        for bad in (SECRET, f"DBX-AUTH {SECRET}", "lowercase", ""):
             log.emit("apply", "apply", "failure", error_class=bad)
-    for bad_check in (SECRET, "DBX-NET-1"):
-        with pytest.raises(ValueError):
-            log.emit("preflight", "preflight", "failure", failed_checks=[bad_check])
+        log.emit("preflight", "preflight", "failure", failed_checks=[SECRET, "DBX-NET-1"])
+        log.emit(SECRET, SECRET, "failure")
+    assert SECRET not in caplog.text
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) >= 6
     log.emit("apply", "apply", "failure", error_class="DBX-AUTH", failed_checks=["DBX-NET-001"])
     log.emit("plan", "plan", "success")
-    raw = "".join(json.dumps(r) for _, r in _records(s3))
+    records = _records(s3)
+    raw = "".join(json.dumps(r) for _, r in records)
     assert SECRET not in raw
+    assert all(r["error_class"] is None for _, r in records[:4])
+    assert records[4][1]["failed_checks"] == []
+    assert records[5][1]["event"] is None
     allowed = {
         "timestamp", "event", "stage", "result", "duration_s", "error_class", "failed_checks",
         "run_id", "project", "environment", "cli_version", "repository", "commit", "actor",
         "workspace_id", "state_key", "seq",
     }  # fmt: skip
-    for _, record in _records(s3):
+    for _, record in records:
         assert set(record) <= allowed
 
 
