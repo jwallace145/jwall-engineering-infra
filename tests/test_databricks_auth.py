@@ -5,6 +5,12 @@ from typing import Any
 
 import boto3
 import pytest
+from botocore.exceptions import (
+    BotoCoreError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    NoCredentialsError,
+)
 from databricks.sdk import AccountClient, WorkspaceClient
 from moto import mock_aws
 
@@ -85,6 +91,27 @@ def test_unreadable_secret_is_preflight_without_the_value() -> None:
         load_secret(Denied(), PARAMETER)
     assert "AccessDeniedException" in str(caught.value)
     assert RUNBOOK in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        NoCredentialsError(),
+        EndpointConnectionError(endpoint_url="https://ssm.us-east-1.amazonaws.com"),
+        ConnectTimeoutError(endpoint_url="https://ssm.us-east-1.amazonaws.com"),
+    ],
+    ids=["no-credentials", "endpoint", "timeout"],
+)
+def test_aws_failure_is_preflight_with_runbook(error: BotoCoreError) -> None:
+    class Failing:
+        def get_parameter(self, **kwargs: Any) -> Any:
+            raise error
+
+    with pytest.raises(PreflightError) as caught:
+        load_secret(Failing(), PARAMETER)
+    assert RUNBOOK in str(caught.value)
+    assert PARAMETER in str(caught.value)
+    assert type(error).__name__ in str(caught.value)
 
 
 def test_terraform_env(ids: Settings) -> None:

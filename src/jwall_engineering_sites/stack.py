@@ -62,6 +62,8 @@ DATABRICKS_STACKS: Final = ("account", "workspace")
 
 #: The workspace's deployment name: the first label of its URL.
 _DEPLOYMENT_NAME = re.compile(r"^[a-z0-9-]{3,30}$")
+#: `<prefix>-<deployment_name>` is a DNS label of the workspace URL.
+_URL_LABEL = re.compile(r"^(?=.{1,63}$)[a-z0-9]+(-[a-z0-9]+)*$")
 
 #: The account stack's outputs the workspace stack takes as inputs, by tfvars name.
 _ACCOUNT_OUTPUTS: Final = (
@@ -234,18 +236,29 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
     }
 
 
-def deployment_name(project: str, settings: Settings, requested: str | None) -> str:
-    """The workspace's deployment name: the project file's, else `<org root>-<project>`.
+def deployment_name(project: str, prefix: str | None, requested: str | None = None) -> str | None:
+    """The workspace's deployment name, or None to let Databricks pick the URL.
 
-    The org root is the organization's first segment (`jwall`), so the longest
-    project name (21 characters) still fits Databricks' 30. Passed explicitly
-    because the provider does not compute it, and null may drift.
+    Databricks accepts a deployment name only once it has configured a prefix for
+    the account, and the URL is then `<prefix>-<name>`. Without a prefix in
+    config.yaml this is None. With one, the name is the project file's
+    `deployment_name`, else the project. Passed explicitly because the provider
+    does not compute it, so a null would drift. Changing it replaces the workspace.
     """
-    name = requested or f"{settings.context.organization.split('-')[0]}-{project}"
+    if prefix is None:
+        return None
+    name = requested or project
     if not _DEPLOYMENT_NAME.match(name):
         raise ConfigError(
             f"{project}: deployment_name {name!r} must be 3 to 30 lowercase letters, digits "
             "and hyphens; set a shorter deployment_name on the databricks-workspace component"
+        )
+    url_label = f"{prefix}-{name}"
+    if not _URL_LABEL.match(url_label):
+        raise ConfigError(
+            f"{project}: the workspace URL label {url_label!r} (<deployment_name_prefix>-"
+            "<deployment_name>) must be at most 63 lowercase letters, digits and single "
+            "hyphens; set a shorter deployment_name on the databricks-workspace component"
         )
     return name
 
@@ -275,7 +288,7 @@ def _databricks_account_tfvars(project: Project, settings: Settings) -> dict[str
         "nat_ami_name": section.nat_ami,
         "metastore_name": section.metastore_name,
         "deployment_name": deployment_name(
-            project.project, settings, project.databricks.deployment_name
+            project.project, section.deployment_name_prefix, project.databricks.deployment_name
         ),
         "admin_user_names": list(approved.admins),
         "user_names": list(approved.users),

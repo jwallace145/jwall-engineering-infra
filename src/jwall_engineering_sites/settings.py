@@ -281,6 +281,9 @@ class DatabricksSection(_Section):
     governance_project: str | None = None
     #: The pinned Amazon Linux 2023 arm64 image name of the NAT instance.
     nat_ami: str
+    #: The deployment-name prefix Databricks configured for this account, if any. With
+    #: one, a workspace's URL is `<prefix>-<project>`; without, Databricks picks the URL.
+    deployment_name_prefix: str | None = Field(default=None, pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
     audit_bucket: str = "jwall-engineering-databricks-audit-logs"
     events_prefix: str = Field(default="events/", pattern=r"^([a-z0-9][a-z0-9-]*/)+$")
     compute_policies: dict[str, DatabricksPolicy] = {}

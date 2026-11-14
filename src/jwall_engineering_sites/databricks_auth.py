@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .errors import ConfigError, PreflightError
 from .settings import DatabricksSection, Settings
@@ -50,6 +50,11 @@ def load_secret(ssm: Any, parameter: str) -> str:
             ) from None
         raise PreflightError(
             f"cannot read the Databricks client secret {parameter} from SSM ({code}); see {RUNBOOK}"
+        ) from None
+    except BotoCoreError as exc:  # no credentials, no endpoint, a timeout
+        raise PreflightError(
+            f"cannot read the Databricks client secret {parameter} from SSM "
+            f"({type(exc).__name__}); check the AWS credentials and network, see {RUNBOOK}"
         ) from None
     value = str(response.get("Parameter", {}).get("Value", ""))
     if not value.strip():

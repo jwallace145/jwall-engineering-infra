@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from jwall_engineering_sites import stack as stack_module
 from jwall_engineering_sites.databricks_auth import terraform_env
@@ -840,7 +841,7 @@ def test_databricks_account_tfvars(databricks: Project, settings: Settings) -> N
         "vpc_cidr": "10.40.0.0/16",
         "nat_ami_name": settings.databricks.nat_ami,
         "metastore_name": "jwall-engineering-us-east-1",
-        "deployment_name": "jwall-databricks-poc",
+        "deployment_name": None,  # no prefix configured: Databricks picks the URL
         "admin_user_names": ["owner@example.com"],
         "user_names": [],
         "service_principal_application_id": settings.databricks.client_id,
@@ -855,24 +856,67 @@ def test_databricks_tfvars_are_json_serialisable(databricks: Project, settings: 
     json.dumps(_databricks_workspace_tfvars(databricks, settings, ACCOUNT_OUTPUTS))
 
 
-def test_deployment_name_is_derived_and_valid(databricks: Project, settings: Settings) -> None:
-    name = _databricks_account_tfvars(databricks, settings)["deployment_name"]
-    assert name == "jwall-databricks-poc"
+def _with_prefix(settings: Settings, prefix: str | None) -> Settings:
+    assert settings.databricks is not None
+    section = settings.databricks.model_copy(update={"deployment_name_prefix": prefix})
+    return settings.model_copy(update={"databricks": section})
+
+
+def _with_deployment_name(project: Project, name: str | None) -> Project:
+    components = tuple(
+        c.model_copy(update={"deployment_name": name}) for c in project.config.components
+    )
+    return project.model_copy(
+        update={"config": project.config.model_copy(update={"components": components})}
+    )
+
+
+def test_config_leaves_the_deployment_name_prefix_unset(settings: Settings) -> None:
+    assert settings.databricks is not None
+    assert settings.databricks.deployment_name_prefix is None
+
+
+def test_without_a_prefix_databricks_picks_the_url(databricks: Project, settings: Settings) -> None:
+    assert _databricks_account_tfvars(databricks, settings)["deployment_name"] is None
+    # The project file's name is ignored too: Databricks would reject it.
+    named = _with_deployment_name(databricks, "poc-one")
+    assert _databricks_account_tfvars(named, settings)["deployment_name"] is None
+
+
+def test_with_a_prefix_the_deployment_name_is_the_project(
+    databricks: Project, settings: Settings
+) -> None:
+    name = _databricks_account_tfvars(databricks, _with_prefix(settings, "acme"))["deployment_name"]
+    assert name == "databricks-poc"
     assert re.fullmatch(r"^[a-z0-9-]{3,30}$", name)
 
 
-def test_deployment_name_of_the_longest_project_fits(settings: Settings) -> None:
+def test_with_a_prefix_the_project_files_name_wins(databricks: Project, settings: Settings) -> None:
+    named = _with_deployment_name(databricks, "poc-one")
+    tfvars = _databricks_account_tfvars(named, _with_prefix(settings, "acme"))
+    assert tfvars["deployment_name"] == "poc-one"
+
+
+def test_deployment_name_of_the_longest_project_fits() -> None:
     longest = "a" * 21  # DATABRICKS_PROJECT_NAME_MAX
-    assert re.fullmatch(r"^[a-z0-9-]{3,30}$", deployment_name(longest, settings, None))
+    assert deployment_name(longest, "acme") == longest
 
 
-def test_deployment_name_from_the_project_file_wins(settings: Settings) -> None:
-    assert deployment_name("databricks-poc", settings, "poc-one") == "poc-one"
-
-
-def test_too_long_deployment_name_is_a_config_error(settings: Settings) -> None:
+def test_too_long_deployment_name_is_a_config_error() -> None:
     with pytest.raises(ConfigError, match="deployment_name"):
-        deployment_name("databricks-poc", settings, "x" * 31)
+        deployment_name("databricks-poc", "acme", "x" * 31)
+
+
+def test_too_long_url_label_is_a_config_error() -> None:
+    with pytest.raises(ConfigError, match="URL label"):
+        deployment_name("databricks-poc", "p" * 40, "x" * 30)
+
+
+def test_prefix_must_be_kebab_case(settings: Settings) -> None:
+    raw = settings.model_dump()
+    raw["databricks"]["deployment_name_prefix"] = "Acme_Corp"
+    with pytest.raises(ValidationError):
+        Settings.model_validate(raw)
 
 
 def test_workspace_tfvars_take_account_outputs(databricks: Project, settings: Settings) -> None:
@@ -1106,4 +1150,4 @@ def test_extra_env_is_not_in_the_parent_environment(
     )
     assert terraform._environment()["DATABRICKS_CLIENT_SECRET"] == DATABRICKS_SENTINEL
     assert "DATABRICKS_CLIENT_SECRET" not in os.environ
-    assert DATABRICKS_SENTINEL not in repr(terraform.__dict__.get("tfvars_override"))
+    assert DATABRICKS_SENTINEL not in repr(terraform)

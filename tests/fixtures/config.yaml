@@ -127,6 +127,9 @@ databricks:
   governance_project: databricks-poc # owns the metastore; needs a databricks entry below
   # Pinned Amazon Linux 2023 arm64 image for the NAT instance, by its Amazon image name.
   nat_ami: al2023-ami-2023.12.20261026.1-kernel-6.18-arm64
+  # Set to the prefix Databricks configured for this account to get <prefix>-<project>
+  # workspace URLs; null lets Databricks pick the URL.
+  deployment_name_prefix: null
   audit_bucket: jwall-engineering-databricks-audit-logs
   events_prefix: events/
   readiness_timeout: 20m # how long apply waits for a new workspace to be RUNNING
