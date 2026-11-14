@@ -359,3 +359,67 @@ def test_credentials_commands_refuse_non_databricks_projects(bot_workspace: Path
             result = runner.invoke(cli.app, ["databricks", "credentials", command], input="x\n")
             assert result.exit_code == 2, result.output
             assert "databricks" in result.output
+
+
+def _log(workspace: Path) -> str:
+    return (workspace / ".jwall-engineering-sites" / "jwall-engineering-sites.log").read_text()
+
+
+def test_load_secret_masks_it_on_a_github_runner(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with mock_aws():
+        _put_secret()
+        ssm = boto3.client("ssm", region_name="us-east-1")
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        assert cli._load_databricks_secret(ssm, PARAM) == SENTINEL
+        assert capsys.readouterr().out == ""
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        assert cli._load_databricks_secret(ssm, PARAM) == SENTINEL
+    assert capsys.readouterr().out == f"::add-mask::{SENTINEL}\n"
+
+
+def test_doctor_masks_the_secret_once_on_a_github_runner(
+    databricks_workspace: Path,
+    fake_terraform: Path,
+    recorded: list[tuple[Stage, CheckContext]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _account_outputs(tmp_path, monkeypatch)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    with mock_aws(), _as_role(PLAN_ROLE):
+        _put_secret()
+        result = runner.invoke(cli.app, ["databricks", "doctor"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines.count(f"::add-mask::{SENTINEL}") == 1
+    assert sum(SENTINEL in line for line in lines) == 1
+
+
+def test_doctor_never_logs_the_secret(
+    databricks_workspace: Path,
+    fake_terraform: Path,
+    recorded: list[tuple[Stage, CheckContext]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terraform's output and a check's traceback both carry the secret; neither reaches the
+    debug log or the console."""
+    _account_outputs(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_TF_ECHO_SECRET", "1")
+
+    def leaky(ctx: CheckContext) -> Iterable[CheckResult]:
+        assert ctx.databricks is not None
+        raise RuntimeError(f"request failed with secret {ctx.databricks.secret}")  # type: ignore[attr-defined]
+        yield  # pragma: no cover
+
+    framework.check("DBX-TST-009", "leaky", Stage.AFTER, frozenset({"databricks"}))(leaky)
+    with mock_aws(), _as_role(PLAN_ROLE):
+        _put_secret()
+        result = runner.invoke(cli.app, ["databricks", "doctor"])
+    log = _log(databricks_workspace)
+    assert "token request for" in log  # Terraform's output was logged, masked
+    assert "request failed with secret" in log  # and so was the traceback
+    assert SENTINEL not in log
+    assert SENTINEL not in result.output

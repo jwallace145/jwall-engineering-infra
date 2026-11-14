@@ -1452,6 +1452,15 @@ def _doctor_failure(
     )
 
 
+def _load_databricks_secret(ssm: object, parameter: str) -> str:
+    """The client secret from SSM. On a GitHub runner it is masked at once: the runner then
+    hides it in every later line of the job's log, whatever prints it."""
+    secret = databricks_auth.load_secret(ssm, parameter)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        typer.echo(f"::add-mask::{secret}")
+    return secret
+
+
 def _databricks_deployment(
     run: Run, role: Role | None, live: bool
 ) -> databricks.DatabricksDeployment:
@@ -1474,7 +1483,7 @@ def _databricks_deployment(
     env: dict[str, str] = {}
     if live:
         assert session is not None
-        secret = databricks_auth.load_secret(session.client("ssm"), section.secret_parameter)
+        secret = _load_databricks_secret(session.client("ssm"), section.secret_parameter)
         clients = databricks_auth.DatabricksClients(run.settings, secret)
         env = databricks_auth.terraform_env(run.settings, secret)
     events = EventLog(
@@ -1517,6 +1526,9 @@ def databricks_doctor(
     ] = None,
 ) -> None:
     """Run the read-only checks against the live project and print the table."""
+    # Filled once the secret is loaded: everything the logger writes from then on (Terraform's
+    # output, a check's traceback, the final error) is masked, as in plan and apply.
+    secrets: list[str] = []
 
     def body(run: Run) -> None:
         project = _databricks_project(run)
@@ -1544,9 +1556,10 @@ def databricks_doctor(
                     # may not exist.
                     try:
                         if section.enabled:
-                            secret = databricks_auth.load_secret(
+                            secret = _load_databricks_secret(
                                 session.client("ssm"), section.secret_parameter
                             )
+                            secrets.append(secret)
                     except SitesError as exc:
                         run.logger.warning("%s", exc)
                         results.append(
@@ -1606,7 +1619,9 @@ def databricks_doctor(
         typer.echo(checks_render.console_table(results))
         raise_on_errors(results)
 
-    _command(body)(ctx)
+    run: Run = ctx.obj
+    with databricks.redacting(run.logger, secrets):
+        _command(body)(ctx)
 
 
 def _credentials_session(run: Run) -> tuple[boto3.session.Session, str]:
