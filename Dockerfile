@@ -1,6 +1,6 @@
-# jwall-engineering-sites: the CLI, a pinned Terraform, the site, bot and
-# Databricks (account, workspace) stacks with their modules and providers
-# vendored, and config.yaml. Only the S3 backend touches the network at run time.
+# jwall-engineering-sites: the CLI, a pinned Terraform, the site and bot stacks
+# with their modules and providers vendored, and config.yaml. Only the S3 backend touches
+# the network at run time.
 #
 # Build: docker build --build-arg TERRAFORM_VERSION=<terraform.version from config.yaml> .
 # The CLI refuses to run if the Terraform inside differs from config.yaml.
@@ -54,15 +54,15 @@ RUN cd /opt/jwall-engineering-sites/venv/lib/python3.13/site-packages/botocore/d
 COPY --from=terraform /tmp/terraform/terraform /usr/local/bin/terraform
 COPY stacks/site /opt/jwall-engineering-sites/stacks/site
 COPY stacks/bot /opt/jwall-engineering-sites/stacks/bot
-COPY stacks/databricks-account /opt/jwall-engineering-sites/stacks/databricks-account
-COPY stacks/databricks-workspace /opt/jwall-engineering-sites/stacks/databricks-workspace
+# The Databricks stacks are not in the image: their plan and apply workflows
+# run the CLI with `uv run` from this repository, and their providers
+# (databricks, time) would put the image over its size budget for nothing.
 # Fetch the library modules and mirror the providers so run-time init is offline.
-# The stacks share one provider mirror: aws for all of them, plus
-# databricks/databricks and hashicorp/time for the Databricks stacks. A
-# provider version two stacks resolve to is stored once. The unpacked copies that `init` leaves under
+# Both stacks share one provider mirror (their lock files pin the same
+# provider). The unpacked copies that `init` leaves under
 # .terraform/providers are the single largest thing in the image and run time
 # never reads them, so they go. The modules stay.
-RUN for stack in site bot databricks-account databricks-workspace; do \
+RUN for stack in site bot; do \
       cd "/opt/jwall-engineering-sites/stacks/$stack" \
       && terraform init -backend=false -input=false \
       && terraform providers mirror /opt/jwall-engineering-sites/plugins \
