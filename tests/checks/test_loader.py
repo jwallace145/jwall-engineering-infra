@@ -21,11 +21,15 @@ def test_loader_registers_the_databricks_checks() -> None:
     live = [c.check_id for c in registered(Stage.LIVE, "databricks")]
     assert config == [f"DBX-CFG-00{i}" for i in range(1, 6)]
     assert live == [f"DBX-LIVE-{i:03d}" for i in range(1, 11)]
+    between = [c.check_id for c in registered(Stage.BETWEEN, "databricks")]
+    after = [c.check_id for c in registered(Stage.AFTER, "databricks")]
+    assert between == [f"DBX-BTW-00{i}" for i in range(1, 5)]
+    assert after == [f"DBX-AFT-00{i}" for i in range(1, 5)]
     assert registered(Stage.LIVE, "site") == []
 
 
 def test_every_check_runbook_is_a_known_anchor() -> None:
     load_builtin_checks()
-    for stage in (Stage.CONFIG, Stage.LIVE):
+    for stage in (Stage.CONFIG, Stage.LIVE, Stage.BETWEEN, Stage.AFTER):
         for entry in registered(stage, "databricks"):
             assert entry.runbook in RUNBOOK_ANCHORS, entry.check_id

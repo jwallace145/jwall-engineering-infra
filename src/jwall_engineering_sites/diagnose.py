@@ -256,6 +256,11 @@ CHECK_ANCHORS: tuple[str, ...] = tuple(
         "vcpu-quota",
         "nat-ami",
         "deployment-name",
+        "workspace-readiness",
+        "workspace-admin",
+        "metastore-assignment",
+        "catalog",
+        "egress",
     )
 )
 

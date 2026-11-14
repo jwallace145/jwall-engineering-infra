@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import importlib
 
-_BUILTIN = ("databricks_config", "databricks_live")
+_BUILTIN = (
+    "databricks_config",
+    "databricks_live",
+    "databricks_between",
+    "databricks_after",
+)
 
 
 def load_builtin_checks() -> None:

@@ -56,8 +56,11 @@ def _section(ctx: CheckContext) -> DatabricksSection:
     return ctx.settings.databricks
 
 
-def _live(meta: Meta, *, needs_ids: bool = False) -> Callable[[CheckFn], CheckFn]:
-    """Register a LIVE check that SKIPs until Databricks is enabled (and, with `needs_ids`,
+def _live(
+    meta: Meta, *, needs_ids: bool = False, stage: Stage = Stage.LIVE
+) -> Callable[[CheckFn], CheckFn]:
+    """Register a check (LIVE unless `stage` says otherwise; the BETWEEN and AFTER modules reuse
+    this) that SKIPs until Databricks is enabled (and, with `needs_ids`,
     until `account_id`/`client_id` are real)."""
 
     def wrap(fn: CheckFn) -> CheckFn:
@@ -98,9 +101,7 @@ def _live(meta: Meta, *, needs_ids: bool = False) -> Callable[[CheckFn], CheckFn
             yield from results
 
         guarded.__doc__ = fn.__doc__
-        return check(meta.check_id, meta.title, Stage.LIVE, _DBX, meta.severity, meta.runbook)(
-            guarded
-        )
+        return check(meta.check_id, meta.title, stage, _DBX, meta.severity, meta.runbook)(guarded)
 
     return wrap
 
