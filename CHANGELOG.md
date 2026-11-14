@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.19.0...v0.20.0) (2026-11-14)
+
+
+### Features
+
+* **bots:** trust rusty-chess's repository under its new name, jwallace145/braveheart ([#100](https://github.com/jwallace145/jwall-engineering-infra/issues/100)) ([cd42a5a](https://github.com/jwallace145/jwall-engineering-infra/commit/cd42a5a65febd58f6a0661e7900ad2de650d7466))
+
 ## [0.19.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.18.0...v0.19.0) (2026-11-04)
 
 
