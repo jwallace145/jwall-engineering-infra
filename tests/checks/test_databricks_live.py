@@ -7,6 +7,7 @@ from typing import Any
 
 import boto3
 import pytest
+from botocore.exceptions import DataNotFoundError, UnknownServiceError
 from moto import mock_aws
 
 from jwall_engineering_sites.checks import databricks_live  # noqa: F401  (registers the checks)
@@ -286,6 +287,23 @@ def test_live006_fails_when_someone_else_owns_a_bucket(
     assert "project name" in (result.remediation or "")
 
 
+def test_live006_fails_when_a_bucket_exists_in_another_region(
+    databricks: Project, live: Settings, aws: Any
+) -> None:
+    taken = derived_names(databricks).catalog_bucket
+
+    def head_bucket(Bucket: str) -> dict[str, Any]:  # noqa: N803
+        if Bucket == taken:
+            raise client_error("301", "HeadBucket")
+        raise client_error("404", "HeadBucket")
+
+    session = OverlaySession(aws, s3=Overlay(aws.client("s3"), head_bucket=head_bucket))
+    result = _run("DBX-LIVE-006", databricks, live, session)
+    assert result.outcome is Outcome.FAIL
+    assert "bucket name taken (exists in another region)" in (result.remediation or "")
+    assert taken in (result.remediation or "")
+
+
 # -- DBX-LIVE-007 ----------------------------------------------------------------
 
 
@@ -341,6 +359,58 @@ def test_live008_fails_without_headroom(databricks: Project, live: Settings, aws
     assert result.outcome is Outcome.FAIL
     assert "quota" in (result.remediation or "").lower()
     assert "num_workers" in (result.remediation or "")
+
+
+QUOTA_SKIP = (
+    "quota check needs servicequotas:GetServiceQuota, not granted to the CI roles yet "
+    "(planned library change)"
+)
+
+
+@pytest.mark.parametrize("code", ["AccessDenied", "AccessDeniedException"])
+def test_live008_skips_when_the_quota_read_is_denied(
+    databricks: Project, live: Settings, aws: Any, code: str
+) -> None:
+    def denied(**_: Any) -> dict[str, Any]:
+        raise client_error(code, "GetServiceQuota")
+
+    session = OverlaySession(aws, **{"service-quotas": SimpleNamespace(get_service_quota=denied)})
+    result = _run("DBX-LIVE-008", databricks, live, session)
+    assert result.outcome is Outcome.SKIP
+    assert result.remediation == QUOTA_SKIP
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        UnknownServiceError(service_name="service-quotas", known_service_names="ec2, s3"),
+        DataNotFoundError(data_path="service-quotas"),
+    ],
+)
+def test_live008_skips_when_the_service_model_is_missing(
+    databricks: Project, live: Settings, aws: Any, error: Exception
+) -> None:
+    class Pruned(OverlaySession):
+        def client(self, service: str, **kwargs: Any) -> Any:
+            if service == "service-quotas":
+                raise error
+            return super().client(service, **kwargs)
+
+    result = _run("DBX-LIVE-008", databricks, live, Pruned(aws))
+    assert result.outcome is Outcome.SKIP
+    assert result.remediation == QUOTA_SKIP
+
+
+def test_live008_other_quota_errors_still_fail(
+    databricks: Project, live: Settings, aws: Any
+) -> None:
+    def throttled(**_: Any) -> dict[str, Any]:
+        raise client_error("ThrottlingException", "GetServiceQuota")
+
+    session = OverlaySession(
+        aws, **{"service-quotas": SimpleNamespace(get_service_quota=throttled)}
+    )
+    assert _run("DBX-LIVE-008", databricks, live, session).outcome is Outcome.FAIL
 
 
 # -- DBX-LIVE-009 ----------------------------------------------------------------

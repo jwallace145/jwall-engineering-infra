@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, DataNotFoundError, UnknownServiceError
 from databricks.sdk.errors.base import DatabricksError
 
 from ..databricks_auth import load_secret
@@ -30,6 +30,10 @@ SKIP_HINT = (
 _PLACEHOLDER_HINT = "fill in config.yaml databricks.account_id/client_id (not the nil UUID)"
 #: EC2 "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances", in vCPUs.
 _STANDARD_VCPU_QUOTA = "L-1216C47A"
+_QUOTA_NOT_GRANTED = (
+    "quota check needs servicequotas:GetServiceQuota, not granted to the CI roles yet "
+    "(planned library change)"
+)
 
 LIVE_001 = Meta("DBX-LIVE-001", "The Databricks client secret is in SSM", "credentials")
 LIVE_002 = Meta("DBX-LIVE-002", "Databricks issues an OAuth token", "credentials")
@@ -249,6 +253,7 @@ def buckets_available(ctx: CheckContext) -> Iterable[CheckResult]:
     s3 = _session(ctx).client("s3")
     names = derived_names(ctx.project)
     taken = []
+    elsewhere = []
     for name in names.buckets.values():
         try:
             s3.head_bucket(Bucket=name)
@@ -256,8 +261,20 @@ def buckets_available(ctx: CheckContext) -> Iterable[CheckResult]:
             code = str(exc.response.get("Error", {}).get("Code", ""))
             if code in ("403", "AccessDenied"):
                 taken.append(name)
+            elif code in ("301", "PermanentRedirect"):
+                # HeadBucket redirects when the bucket lives in another region; the modules
+                # create every bucket in us-east-1, so the name is not ours to use.
+                elsewhere.append(name)
             elif code not in ("404", "NoSuchBucket", "NotFound"):
                 raise
+    if elsewhere:
+        yield LIVE_006.failed(
+            f"bucket name taken (exists in another region): {', '.join(elsewhere)}; choose a "
+            "different project name (the project file's `project`), since the modules derive "
+            "the bucket names from it",
+            taken=", ".join(elsewhere),
+        )
+        return
     if taken:
         yield LIVE_006.failed(
             f"the bucket name(s) {', '.join(taken)} are taken by another AWS account, or not "
@@ -328,11 +345,21 @@ def vcpu_headroom(ctx: CheckContext) -> Iterable[CheckResult]:
         need = (workers + 1) * max((vcpus.get(t, 0) for t in types), default=0)
         if need > worst:
             worst, worst_policy = need, name
-    quota = float(
-        session.client("service-quotas").get_service_quota(
-            ServiceCode="ec2", QuotaCode=_STANDARD_VCPU_QUOTA
-        )["Quota"]["Value"]
-    )
+    try:
+        quota = float(
+            session.client("service-quotas").get_service_quota(
+                ServiceCode="ec2", QuotaCode=_STANDARD_VCPU_QUOTA
+            )["Quota"]["Value"]
+        )
+    except (UnknownServiceError, DataNotFoundError):
+        # The image prunes botocore's service models; service-quotas is not among them.
+        yield LIVE_008.skipped(_QUOTA_NOT_GRANTED, needed_vcpus=str(worst))
+        return
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("AccessDenied", "AccessDeniedException"):
+            yield LIVE_008.skipped(_QUOTA_NOT_GRANTED, needed_vcpus=str(worst))
+            return
+        raise
     facts = {"needed_vcpus": str(worst), "quota_vcpus": str(int(quota)), "policy": worst_policy}
     if worst > quota:
         yield LIVE_008.failed(
