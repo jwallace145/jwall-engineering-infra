@@ -145,7 +145,8 @@ def registered(stage: Stage, kind: str) -> list[RegisteredCheck]:
 def run_stage(stage: Stage, ctx: CheckContext) -> list[CheckResult]:
     """Run every check for the stage and the project's kind.
 
-    A check that raises becomes a FAIL result with `facts["error"]`; one broken
+    A check that raises becomes a FAIL result with `facts["error"]` (the exception's type;
+    its message and traceback go to the debug log); one broken
     check never stops the others.
     """
     results: list[CheckResult] = []
@@ -164,7 +165,9 @@ def run_stage(stage: Stage, ctx: CheckContext) -> list[CheckResult]:
                     title=registered_check.title,
                     outcome=Outcome.FAIL,
                     severity=registered_check.severity,
-                    facts={"error": f"{type(exc).__name__}: {exc}"},
+                    # The type only: an SDK's message may quote a credential, and the table
+                    # and checks.json are not redacted. The (redacted) debug log has it all.
+                    facts={"error": type(exc).__name__},
                     remediation="The check itself failed to run; the debug log has the traceback.",
                     runbook=registered_check.runbook,
                 )

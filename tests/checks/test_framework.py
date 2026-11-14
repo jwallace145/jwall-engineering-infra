@@ -119,7 +119,7 @@ def test_check_exception_becomes_fail_not_crash(
     assert failed.severity is Severity.ERROR
     assert failed.title == "Boom"
     assert failed.runbook == "docs/databricks.md#boom"
-    assert failed.facts["error"] == "RuntimeError: kaboom | with pipe"
+    assert failed.facts["error"] == "RuntimeError"  # the message may quote a credential
     assert results[1].outcome is Outcome.PASS
 
 
@@ -228,7 +228,7 @@ def test_partial_results_kept_before_crash(
         ("first", Outcome.PASS),
         ("Partial", Outcome.FAIL),
     ]
-    assert results[1].facts["error"] == "RuntimeError: late"
+    assert results[1].facts["error"] == "RuntimeError"
 
 
 def test_non_check_result_item_becomes_fail(
@@ -241,7 +241,7 @@ def test_non_check_result_item_becomes_fail(
 
     results = run_stage(Stage.CONFIG, _ctx(bot, settings, logger))
     assert [r.outcome for r in results] == [Outcome.PASS, Outcome.FAIL]
-    assert "str" in results[1].facts["error"]
+    assert results[1].facts["error"] == "TypeError"
     markdown_table(results)  # renders without crashing
 
 
