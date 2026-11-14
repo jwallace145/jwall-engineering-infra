@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
+from databricks.sdk.errors.base import DatabricksError
 
 from ..databricks_auth import load_secret
 from ..databricks_names import REGION, ZONES, derived_names
@@ -70,7 +71,31 @@ def _live(meta: Meta, *, needs_ids: bool = False) -> Callable[[CheckFn], CheckFn
                     f"{_PLACEHOLDER_HINT}; DBX-LIVE-002 reports this", runbook=meta.runbook
                 )
                 return
-            yield from fn(ctx)
+            try:
+                results = list(fn(ctx))
+            except DatabricksError as exc:
+                yield meta.failed(
+                    "the Databricks call failed: check databricks.account_id and "
+                    "databricks.client_id in config.yaml and the service principal's "
+                    "permissions; DBX-LIVE-002 and the credentials runbook cover them",
+                    error=type(exc).__name__,
+                )
+                return
+            except ClientError as exc:
+                yield meta.failed(
+                    f"the AWS call {exc.operation_name} was refused: check the CI role's "
+                    "databricks/read permissions",
+                    error=type(exc).__name__,
+                )
+                return
+            except BotoCoreError as exc:
+                yield meta.failed(
+                    "an AWS call failed before reaching AWS: check the credentials, region "
+                    "and network",
+                    error=type(exc).__name__,
+                )
+                return
+            yield from results
 
         guarded.__doc__ = fn.__doc__
         return check(meta.check_id, meta.title, Stage.LIVE, _DBX, meta.severity, meta.runbook)(
@@ -95,8 +120,9 @@ def _account(ctx: CheckContext) -> Any:
 @_live(LIVE_001)
 def secret_exists(ctx: CheckContext) -> Iterable[CheckResult]:
     parameter = _section(ctx).secret_parameter
+    ssm = _session(ctx).client("ssm")
     try:
-        load_secret(_session(ctx).client("ssm"), parameter)
+        load_secret(ssm, parameter)
     except PreflightError as exc:
         yield LIVE_001.failed(
             f"store the service principal's secret as a SecureString at {parameter} (or point "
@@ -130,23 +156,26 @@ def token_issued(ctx: CheckContext) -> Iterable[CheckResult]:
 @_live(LIVE_003, needs_ids=True)
 def is_account_admin(ctx: CheckContext) -> Iterable[CheckResult]:
     client_id = _section(ctx).client_id
-    principals = [
+    accounts = _account(ctx).service_principals
+    found = [
         sp
-        for sp in _account(ctx).service_principals.list(filter=f"applicationId eq '{client_id}'")
+        for sp in accounts.list(filter=f"applicationId eq '{client_id}'")
         if str(sp.application_id).lower() == client_id.lower()
     ]
-    if not principals:
+    if not found:
         yield LIVE_003.failed(
             f"no service principal with application ID {client_id} is in the account: check "
             "databricks.client_id in config.yaml",
             client_id=client_id,
         )
         return
-    roles = {r.value for sp in principals for r in (sp.roles or [])}
+    # The list response may omit `roles`; read each principal in full.
+    roles = {r.value for sp in found for r in (accounts.get(sp.id).roles or [])}
     if "account_admin" not in roles:
         yield LIVE_003.failed(
-            f"grant the service principal {client_id} the account admin role in the account "
-            "console (databricks.client_id in config.yaml)",
+            f"grant the service principal {client_id} the account admin role directly in the "
+            "account console (databricks.client_id in config.yaml); admin through a group "
+            "is not detected",
             client_id=client_id,
         )
         return
@@ -223,9 +252,10 @@ def buckets_available(ctx: CheckContext) -> Iterable[CheckResult]:
                 raise
     if taken:
         yield LIVE_006.failed(
-            f"the bucket name(s) {', '.join(taken)} belong to another AWS account: choose a "
-            "different project name (the project file's `project`), since the modules derive "
-            "the bucket names from it",
+            f"the bucket name(s) {', '.join(taken)} are taken by another AWS account, or not "
+            "readable by this role (check databricks/read); if taken, choose a different "
+            "project name (the project file's `project`), since the modules derive the "
+            "bucket names from it",
             taken=", ".join(taken),
         )
         return

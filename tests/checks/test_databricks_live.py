@@ -410,3 +410,53 @@ def test_live010_fails_when_the_name_is_taken(databricks: Project, live: Setting
     result = _run("DBX-LIVE-010", databricks, _prefixed(live), None, api)
     assert result.outcome is Outcome.FAIL
     assert "deployment_name" in (result.remediation or "")
+
+
+# -- API failures become actionable FAILs ---------------------------------------------
+
+
+def test_a_databricks_error_names_the_credentials(databricks: Project, live: Settings) -> None:
+    from databricks.sdk.errors import PermissionDenied
+
+    api = _account(list_error=PermissionDenied(f"nope {SECRET}"))
+    result = _run("DBX-LIVE-004", databricks, live, None, api)
+    assert result.outcome is Outcome.FAIL
+    assert "databricks.client_id" in (result.remediation or "")
+    assert result.facts == {"error": "PermissionDenied"}
+    assert SECRET not in repr(result)
+
+
+def test_an_aws_error_names_the_permission(databricks: Project, live: Settings, aws: Any) -> None:
+    def denied(**_: Any) -> dict[str, Any]:
+        raise client_error("UnauthorizedOperation", "DescribeImages")
+
+    session = OverlaySession(aws, ec2=Overlay(aws.client("ec2"), describe_images=denied))
+    result = _run("DBX-LIVE-009", databricks, live, session)
+    assert result.outcome is Outcome.FAIL
+    assert "DescribeImages" in (result.remediation or "")
+    assert "databricks/read" in (result.remediation or "")
+    assert result.facts == {"error": "ClientError"}
+
+
+def test_live003_reads_roles_from_get_not_list(databricks: Project, live: Settings) -> None:
+    api = _account(service_principals=[service_principal(CLIENT_ID, admin=True)])
+    sp = next(iter(api.account.service_principals.list()))
+    assert not sp.roles  # the list response carries none
+    assert _run("DBX-LIVE-003", databricks, live, None, api).outcome is Outcome.PASS
+
+
+def test_live003_remediation_says_group_admin_is_not_detected(
+    databricks: Project, live: Settings
+) -> None:
+    api = _account(service_principals=[service_principal(CLIENT_ID, admin=False)])
+    result = _run("DBX-LIVE-003", databricks, live, None, api)
+    assert "group" in (result.remediation or "")
+
+
+def test_live001_without_a_session_is_not_a_missing_secret(
+    databricks: Project, live: Settings
+) -> None:
+    from jwall_engineering_sites.errors import PreflightError
+
+    with pytest.raises(PreflightError, match="AWS session"):
+        _run("DBX-LIVE-001", databricks, live, None)

@@ -1,54 +1,90 @@
 """In-memory stand-ins for the Databricks account client and boto3 overlays.
 
-Nothing here touches the network.
+Objects are the SDK's own dataclasses; the fake `list()` methods take only the
+keyword arguments the real ones do. Nothing here touches the network.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
+from databricks.sdk.service.catalog import MetastoreInfo
+from databricks.sdk.service.iam import ComplexValue, ServicePrincipal, User
+from databricks.sdk.service.provisioning import Workspace
 
 
-class _Listing:
-    def __init__(self, items: list[Any]) -> None:
+class _Metastores:
+    def __init__(self, items: list[MetastoreInfo]) -> None:
         self._items = items
 
-    def list(self, **_: Any) -> Iterable[Any]:
+    def list(self) -> Iterator[MetastoreInfo]:
         return iter(self._items)
+
+
+class _Workspaces:
+    def __init__(self, items: list[Workspace]) -> None:
+        self._items = items
+
+    def list(self) -> Iterator[Workspace]:
+        return iter(self._items)
+
+
+class _Users:
+    def __init__(self, items: list[User]) -> None:
+        self._items = items
+
+    def list(self, *, filter: str | None = None) -> Iterator[User]:
+        return iter(self._items)
+
+
+class _ServicePrincipals:
+    """`list` omits roles (as SCIM may); only `get` returns them."""
+
+    def __init__(self, items: list[ServicePrincipal]) -> None:
+        self._items = items
+
+    def list(self, *, filter: str | None = None) -> Iterator[ServicePrincipal]:
+        return iter(replace(sp, roles=None) for sp in self._items)
+
+    def get(self, id: str) -> ServicePrincipal:
+        return next(sp for sp in self._items if sp.id == id)
 
 
 @dataclass
 class FakeAccount:
-    metastores: list[Any] = field(default_factory=list)
-    users: list[Any] = field(default_factory=list)
-    service_principals: list[Any] = field(default_factory=list)
-    workspaces: list[Any] = field(default_factory=list)
+    metastores: list[MetastoreInfo] = field(default_factory=list)
+    users: list[User] = field(default_factory=list)
+    service_principals: list[ServicePrincipal] = field(default_factory=list)
+    workspaces: list[Workspace] = field(default_factory=list)
     token_error: Exception | None = None
-
-    @property
-    def config(self) -> Any:
-        def authenticate() -> dict[str, str]:
-            if self.token_error is not None:
-                raise self.token_error
-            return {"Authorization": "Bearer fake-token"}
-
-        return SimpleNamespace(authenticate=authenticate)
+    list_error: Exception | None = None
 
 
 class _Account:
-    """The attribute surface checks use: `.metastores.list()` and friends."""
-
     def __init__(self, fake: FakeAccount) -> None:
-        self.metastores = _Listing(fake.metastores)
-        self.users = _Listing(fake.users)
-        self.service_principals = _Listing(fake.service_principals)
-        self.workspaces = _Listing(fake.workspaces)
-        self.config = fake.config
+        self.metastores = _Metastores(fake.metastores)
+        self.users = _Users(fake.users)
+        self.service_principals = _ServicePrincipals(fake.service_principals)
+        self.workspaces = _Workspaces(fake.workspaces)
+
+        def authenticate() -> dict[str, str]:
+            if fake.token_error is not None:
+                raise fake.token_error
+            return {"Authorization": "Bearer fake-token"}
+
+        self.config = SimpleNamespace(authenticate=authenticate)
+        if fake.list_error is not None:
+            error = fake.list_error
+
+            def boom(**_: Any) -> Iterator[Any]:
+                raise error
+
+            self.metastores.list = boom  # type: ignore[method-assign]
 
 
 class FakeDatabricks:
@@ -67,21 +103,23 @@ class FakeDatabricks:
         raise AssertionError(f"unexpected workspace client for {host}")
 
 
-def metastore(name: str, region: str = "us-east-1") -> Any:
-    return SimpleNamespace(name=name, region=region, metastore_id=f"id-{name}")
+def metastore(name: str, region: str = "us-east-1") -> MetastoreInfo:
+    return MetastoreInfo(name=name, region=region, metastore_id=f"id-{name}")
 
 
-def user(email: str) -> Any:
-    return SimpleNamespace(user_name=email)
+def user(email: str) -> User:
+    return User(user_name=email)
 
 
-def service_principal(application_id: str, *, admin: bool) -> Any:
-    roles = [SimpleNamespace(value="account_admin")] if admin else []
-    return SimpleNamespace(application_id=application_id, roles=roles, display_name="ci")
+def service_principal(application_id: str, *, admin: bool) -> ServicePrincipal:
+    roles = [ComplexValue(value="account_admin")] if admin else []
+    return ServicePrincipal(
+        id="sp-1", application_id=application_id, display_name="ci", roles=roles
+    )
 
 
-def workspace(name: str, deployment_name: str) -> Any:
-    return SimpleNamespace(workspace_name=name, deployment_name=deployment_name)
+def workspace(name: str, deployment_name: str) -> Workspace:
+    return Workspace(workspace_name=name, deployment_name=deployment_name)
 
 
 class Overlay:
