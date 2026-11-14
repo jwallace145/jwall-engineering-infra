@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.20.0...v0.21.0) (2026-11-14)
+
+
+### Features
+
+* add Databricks workspace projects with preflight checks, failure diagnosis and an event log ([#102](https://github.com/jwallace145/jwall-engineering-infra/issues/102)) ([05447fd](https://github.com/jwallace145/jwall-engineering-infra/commit/05447fd434eadd9f1cc0764651c36c6354c16ce2))
+
 ## [0.20.0](https://github.com/jwallace145/jwall-engineering-infra/compare/v0.19.0...v0.20.0) (2026-11-14)
 
 
