@@ -203,7 +203,6 @@ def test_runbook_anchors_are_one_list_and_cover_the_catalogue() -> None:
     assert all(a.startswith("docs/databricks.md#") for a in RUNBOOK_ANCHORS)
 
 
-@pytest.mark.xfail(strict=True, reason="docs/databricks.md is created in Task 12")
 def test_every_runbook_anchor_exists() -> None:
     headings = {
         re.sub(r"[^a-z0-9 -]", "", m.group(1).lower()).strip().replace(" ", "-")
