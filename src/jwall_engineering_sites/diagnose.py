@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -270,11 +271,13 @@ RUNBOOK_ANCHORS: tuple[str, ...] = tuple(
 )
 
 
-def _redact(text: str) -> str:
-    """Mask secret values, keep the surrounding text (the SDK puts them in the summary line)."""
-    secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
-    if secret:
-        text = text.replace(secret, _MASK)
+def _redact(text: str, secrets: Iterable[str] = ()) -> str:
+    """Mask secret values, keep the surrounding text (the SDK puts them in the summary line).
+
+    `secrets` are values to mask wherever they appear, beside the environment's."""
+    for secret in (os.environ.get("DATABRICKS_CLIENT_SECRET"), *secrets):
+        if secret:
+            text = text.replace(secret, _MASK)
     return _SECRET_VALUE.sub(rf"\1\2{_MASK}", text)
 
 

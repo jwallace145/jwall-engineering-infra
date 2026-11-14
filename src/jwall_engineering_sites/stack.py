@@ -614,7 +614,7 @@ class Terraform:
                     part.strip() for part in lock.group(1).splitlines() if part.strip()
                 )
                 self.logger.error("the state is locked: %s", details)
-            raise RunError(f"terraform {args[0]} failed with exit code {returncode}")
+            raise RunError(f"terraform {args[0]} failed with exit code {returncode}", output=output)
         return CommandResult(returncode=returncode, output=output, seconds=seconds)
 
     def _environment(self) -> Mapping[str, str]:

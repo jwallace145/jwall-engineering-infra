@@ -8,6 +8,7 @@ configuration, 3 preflight.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -27,7 +28,9 @@ from . import (
     aws,
     checks,
     costs,
+    databricks,
     databricks_auth,
+    databricks_destroy,
     github,
     image,
     releases,
@@ -51,6 +54,7 @@ from .checks.framework import (
 )
 from .components import CPU_PROFILE, TaskRunner
 from .errors import ConfigError, PreflightError, RunError, SitesError
+from .events import EventLog, base_fields
 from .log import annotate_error, artifacts_dir, phase, setup_logging
 from .project import Project, Role
 from .settings import (
@@ -280,14 +284,15 @@ def validate(ctx: typer.Context) -> None:
 
     def body(run: Run) -> None:
         project = run.project
+        if project.kind == "databricks":
+            run.logger.info("project file ok: project %s, kind databricks", project.project)
+            _databricks_deployment(run, role=None, live=False).validate()
+            return
         with phase("validate"):
             if project.kind == "site":
                 site = run.site
                 run.logger.info("site file ok: project %s, domain %s", site.project, site.domain)
                 run.logger.info("derived: bucket %s, state key %s", site.bucket, site.state_key)
-            elif project.kind == "databricks":
-                run.logger.info("project file ok: project %s, kind databricks", project.project)
-                run.logger.info("derived: state key %s", project.state_key)
             elif project.kind == "research":
                 run.logger.info("project file ok: project %s, kind research", project.project)
                 run.logger.info("derived: state key %s", project.state_key)
@@ -315,6 +320,9 @@ def plan(ctx: typer.Context) -> None:
     """Plan the site's infrastructure and write the plan comment."""
 
     def body(run: Run) -> None:
+        if run.project.kind == "databricks":
+            _databricks_deployment(run, role="plan", live=True).plan()
+            return
         _preflight(run, "plan", prefix="")
         exit_code = stack.PLAN_ERROR
         plan_text = ""
@@ -486,6 +494,9 @@ def apply(ctx: typer.Context) -> None:
     """Apply the site's infrastructure and write outputs.json."""
 
     def body(run: Run) -> None:
+        if run.project.kind == "databricks":
+            _databricks_deployment(run, role="apply", live=True).apply()
+            return
         _preflight(run, "apply", prefix="")
 
         def tf(terraform: stack.Terraform) -> None:
@@ -586,12 +597,17 @@ def destroy(
     ctx: typer.Context,
     yes: Annotated[bool, typer.Option("--yes", help="Confirm: destroy the stack.")] = False,
 ) -> None:
-    """Destroy a bot or research project's stack. Its buckets and any secrets are kept."""
+    """Destroy a project's stacks. A bot or research project keeps its buckets and
+    secrets; a Databricks project loses both its buckets and their data, and the
+    full deletion list is printed first."""
 
     def body(run: Run) -> None:
         project = run.project
         if not project.has_components:
             raise PreflightError("destroy is not supported for sites")
+        if project.kind == "databricks":
+            _destroy_databricks(run, project, yes)
+            return
         if not yes:
             raise PreflightError(
                 f"pass --yes to destroy {project.project}: {_destroy_warning(project)}"
@@ -665,9 +681,13 @@ def destroy(
 
 @app.command()
 def outputs(ctx: typer.Context) -> None:
-    """Print the stack's outputs as JSON."""
+    """Print the stack's outputs as JSON (both stacks' for a Databricks project)."""
 
     def body(run: Run) -> None:
+        if run.project.kind == "databricks":
+            merged = _databricks_deployment(run, role="plan", live=False).outputs()
+            print(json.dumps(merged, indent=2, sort_keys=True))
+            return
         _preflight(run, "plan", prefix=None)
 
         def tf(terraform: stack.Terraform) -> None:
@@ -690,8 +710,18 @@ def config_show(ctx: typer.Context) -> None:
 # -- bot and research projects -------------------------------------------------------
 
 
+def _refuse_databricks(project: Project, commands: str) -> None:
+    if project.kind == "databricks":
+        raise ConfigError(
+            f"{project.project} is a databricks project; {commands} work on "
+            "bot and research projects (a Databricks project uses validate, plan, apply, "
+            "destroy, outputs and the databricks commands)"
+        )
+
+
 def _bot_project(run: Run) -> Project:
     project = run.project
+    _refuse_databricks(project, "the bot commands")
     if project.kind != "bot":
         raise PreflightError(
             f"{project.project} is a {project.kind} project; the bot commands work on bot projects"
@@ -700,8 +730,10 @@ def _bot_project(run: Run) -> Project:
 
 
 def _component_project(run: Run) -> Project:
-    """A project made of components, for the commands a bot and a research project share."""
+    """A bot or research project, for the commands they share (the task commands).
+    A site or a Databricks project is refused."""
     project = run.project
+    _refuse_databricks(project, "the task commands")
     if not project.has_components:
         raise PreflightError(
             f"{project.project} is a site; this command works on bot and research projects"
@@ -1418,6 +1450,59 @@ def _doctor_failure(
         remediation=remediation,
         runbook=f"docs/databricks.md#{anchor}",
     )
+
+
+def _databricks_deployment(
+    run: Run, role: Role | None, live: bool
+) -> databricks.DatabricksDeployment:
+    """The orchestrator for a Databricks project. `live` commands (plan, apply,
+    destroy) need the account enabled and the client secret; `role` is the CI role
+    to check (None: offline, as `validate` is)."""
+    project = run.project
+    section = _databricks_section(run)
+    if live and not section.enabled:
+        raise PreflightError(
+            f"{project.project}: the Databricks account is not set up yet "
+            f"(config.yaml databricks.enabled is false); see {databricks.SETUP_RUNBOOK}"
+        )
+    session: boto3.session.Session | None = None
+    if role is not None:
+        _preflight(run, role, prefix=None)
+        session = boto3.session.Session(region_name=project.region)
+    secret = ""
+    clients: databricks_auth.DatabricksClients | None = None
+    env: dict[str, str] = {}
+    if live:
+        assert session is not None
+        secret = databricks_auth.load_secret(session.client("ssm"), section.secret_parameter)
+        clients = databricks_auth.DatabricksClients(run.settings, secret)
+        env = databricks_auth.terraform_env(run.settings, secret)
+    events = EventLog(
+        session.client("s3") if session is not None else None,
+        section.audit_bucket,
+        section.events_prefix,
+        base_fields(project, run.settings, tool_version()),
+        run.logger,
+    )
+    factory = functools.partial(stack.Terraform, project, run.settings, run.logger, extra_env=env)
+    return databricks.DatabricksDeployment(
+        run,
+        project,
+        events,
+        clients,
+        factory,
+        session=session,
+        secret=secret,
+        version=tool_version(),
+    )
+
+
+def _destroy_databricks(run: Run, project: Project, yes: bool) -> None:
+    typer.echo(databricks_destroy.render_deletion_list(project))
+    if not yes:
+        raise PreflightError(f"pass --yes to destroy {project.project} and everything listed above")
+    deleted = _databricks_deployment(run, role="apply", live=True).destroy()
+    run.logger.info("destroyed %s: %s", project.project, "; ".join(deleted) or "nothing was left")
 
 
 @databricks_app.command("doctor")
