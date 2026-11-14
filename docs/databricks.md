@@ -49,6 +49,10 @@ pointer back here.
    jwall-engineering-sites --file jwall-engineering-sites.yaml databricks credentials check
    ```
 
+   `--file` is any Databricks project's file, for example the governance
+   project's `jwall-engineering-sites.yaml` checked out from its repository
+   (the commands refuse other kinds); the secret is account-wide, so the
+   project only tells the CLI which `config.yaml` section and region to use.
    `set` prompts without echo and writes a SecureString at
    `/jwall-engineering/databricks/client-secret` (`databricks.secret_parameter`).
    `check` exits 0 if it exists and decrypts and 3 if not; it never prints the
@@ -253,11 +257,14 @@ apply role (additionally delete and list, so `destroy` can empty it).
 
 ### Event log
 
-Every `validate`, `plan`, `apply`, `destroy` and `outputs` run appends one JSON
-record per stage (`checks-config`, `checks-live`, `account-plan`,
-`account-apply`, `readiness`, `workspace-plan`, `workspace-apply`, `verify`,
-`empty-catalog-bucket`, `workspace-destroy`, `account-destroy`) under
-`events/`. A record holds the event, time, run ID, project, stage, result
+Every `plan`, `apply` and `destroy` run appends two JSON records per stage
+(`started`, then `success`, `skipped` or `failure`) under `events/`.
+`validate` runs offline with no AWS credentials and `outputs` has no stages,
+so neither writes records. The stages are: `plan`: `checks-config`,
+`checks-live`, `account-plan`, `workspace-plan`; `apply`: `checks-config`,
+`checks-live`, `account-plan`, `account-apply`, `readiness`,
+`workspace-plan`, `workspace-apply`, `verify`; `destroy`:
+`empty-catalog-bucket`, `workspace-destroy`, `account-destroy`. A record holds the event, time, run ID, project, stage, result
 (started, success, skipped or failure), duration, CLI version, repository,
 commit, actor, workspace ID, state key, the failure class and the IDs of failed
 checks. Never secrets, plan bodies or raw errors. Keys are unique and written
@@ -313,12 +320,13 @@ no sweeper or budget enforces them.
 
 | Item | Cost |
 | --- | --- |
-| NAT instance (`t4g.nano`, 8 GB volume, its public IPv4) | about $3 per month per workspace, always on |
+| NAT instance (`t4g.nano`, 8 GB volume, its public IPv4) | about $7 per month per workspace, always on: `t4g.nano` about $3.10, the public IPv4 address about $3.65, the 8 GB gp3 volume about $0.64 |
 | S3 (root and catalog buckets, audit logs, events) | storage and requests only; small until data lands |
 | Cluster EC2 | on demand or spot, per policy; zero when no cluster runs |
 | DBUs | per policy: the node types and `num_workers` in the policy bound a cluster, and every cluster terminates after its `autotermination_minutes` |
 
-There is no NAT gateway and no Elastic IP. The S3 gateway endpoint is free and
+There is no NAT gateway (about $33 per month plus $0.045 per GB processed) and
+no Elastic IP. The S3 gateway endpoint is free and
 keeps same-region S3 traffic off the NAT. The NAT instance is a single
 instance with limited, burstable network throughput; it can be replaced by a
 larger Arm instance type if egress needs grow.
@@ -492,8 +500,9 @@ Re-run `apply`; if the NAT instance was replaced, apply re-points the route.
 ### Account state
 
 `DBX-DOC-001`. `doctor` could not read the account stack's state, so it
-skipped the between and after stages. Check that the project's `ci-plan` role
-can read the state bucket, and run `plan` to see Terraform's own error. The
+skipped the between and after stages. Check that the project's CI role
+(`ci-plan`, or `ci-apply` in the apply workflow's `doctor` action) can read the
+state bucket, and run `plan` to see Terraform's own error. The
 same section applies when `destroy` says the workspace stack still holds
 resources but the account stack has no `workspace_url`: re-apply the account
 stack so the workspace stack can be reached, or remove the remaining

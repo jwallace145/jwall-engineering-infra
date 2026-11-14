@@ -1605,7 +1605,7 @@ def databricks_doctor(
                                 "Account stack state readable",
                                 exc,
                                 "The between and after checks did not run. Check that the "
-                                "ci-plan role can read the state bucket; run "
+                                "CI role (ci-plan or ci-apply) can read the state bucket; run "
                                 "`jwall-engineering-sites plan` to see Terraform's own error.",
                                 "account-state",
                             )
