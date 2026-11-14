@@ -339,17 +339,17 @@ jobs:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-plan-pr-${{ github.event.pull_request.number }}
-      # The metastore and audit log delivery (foundation/databricks.tf) plan
-      # with the Databricks credential; skipped while databricks.enabled is false.
-      - name: Databricks credentials
-        uses: ./.github/actions/databricks-credentials
       - name: terraform init
         uses: ./.github/actions/terraform-init
         with:
           args: -backend-config=backend/prod.hcl
+      # The metastore and audit log delivery (foundation/databricks.tf) need the
+      # Databricks credential: each terraform step sources it into its own shell
+      # (never GITHUB_ENV); it does nothing while databricks.enabled is false.
       - name: terraform plan
         id: plan
         run: |
+          source ../scripts/databricks-credentials.sh ../config.yaml
           set +e
           terraform plan -no-color -lock-timeout=60s -out=tfplan -detailed-exitcode > plan.log 2>&1
           code=$?

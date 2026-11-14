@@ -11,7 +11,7 @@ provider "aws" {
 # The Databricks account API, for the metastore and audit log delivery
 # (databricks.tf). Credentials come from the environment only
 # (DATABRICKS_ACCOUNT_ID, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET, set
-# by .github/actions/databricks-credentials), never from variables, so the
+# by scripts/databricks-credentials.sh), never from variables, so the
 # secret is in no plan or state. While config.yaml databricks.enabled is false
 # nothing uses this provider and it makes no call.
 provider "databricks" {

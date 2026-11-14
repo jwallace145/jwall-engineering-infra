@@ -11,7 +11,7 @@
 # owner has not created the service principal yet) they are not planned, so
 # the foundation plan needs no Databricks credential and the databricks
 # provider makes no call. The workflows put the credential in the
-# environment only when it is true (.github/actions/databricks-credentials).
+# environment only when it is true (scripts/databricks-credentials.sh).
 #
 # The client secret is NOT created here: the owner writes the SSM parameter
 # with `jwall-engineering-sites databricks credentials set`, so it is in no

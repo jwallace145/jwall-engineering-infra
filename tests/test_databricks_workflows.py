@@ -15,7 +15,7 @@ import yaml
 from tests.conftest import REPO_ROOT
 
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
-CREDENTIALS_ACTION = REPO_ROOT / ".github" / "actions" / "databricks-credentials" / "action.yml"
+CREDENTIALS_SCRIPT = REPO_ROOT / "scripts" / "databricks-credentials.sh"
 PROJECTS_SCRIPT = REPO_ROOT / "scripts" / "databricks-projects.sh"
 SENTINEL = "dbx-SENTINEL-secret-0123"
 
@@ -39,22 +39,12 @@ def _index(steps: list[dict[str, Any]], predicate: Any) -> int:
     return next(i for i, s in enumerate(steps) if predicate(s))
 
 
-# --- the credential step -----------------------------------------------------
+# --- the credential script --------------------------------------------------
 
 
-def _credentials_script() -> str:
-    steps = _yaml(CREDENTIALS_ACTION)["runs"]["steps"]
-    assert len(steps) == 1
-    script: str = steps[0]["run"]
-    return script
-
-
-def _run_credentials(tmp_path: Path, *, enabled: bool) -> tuple[str, Path]:
-    """Run the action's script with a fake `aws` that returns SENTINEL.
-
-    GITHUB_ENV is the script's own stdout, so what it exports and what it
-    prints land in one stream, in order.
-    """
+def _run_credentials(tmp_path: Path, *, enabled: bool) -> tuple[str, Path, Path]:
+    """Source the script in a step-like shell (`bash -e`) with a fake `aws` that returns
+    SENTINEL, then print the environment the step's terraform would see."""
     config = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
     config["databricks"]["enabled"] = enabled
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
@@ -64,58 +54,111 @@ def _run_credentials(tmp_path: Path, *, enabled: bool) -> tuple[str, Path]:
     aws = bin_dir / "aws"
     aws.write_text(f'#!/usr/bin/env bash\necho "$*" >> "{calls}"\necho {SENTINEL}\n')
     aws.chmod(0o755)
+    github_env = tmp_path / "github-env"
+    github_env.touch()
     result = subprocess.run(
-        ["bash", "-e", "-c", _credentials_script()],
+        ["bash", "-e", "-c", f'source "{CREDENTIALS_SCRIPT}" config.yaml\necho ---\nenv'],
         cwd=tmp_path,
         env={
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "CONFIG": "config.yaml",
-            "GITHUB_ENV": "/dev/stdout",
+            "GITHUB_ENV": str(github_env),
+            "GITHUB_OUTPUT": str(github_env),
         },
         capture_output=True,
         text=True,
         check=True,
     )
-    return result.stdout, calls
+    return result.stdout, calls, github_env
 
 
 @needs_yq
-def test_the_secret_is_masked_before_it_is_exported(tmp_path: Path) -> None:
-    out, calls = _run_credentials(tmp_path, enabled=True)
-    lines = out.splitlines()
-    mask = lines.index(f"::add-mask::{SENTINEL}")
-    export = lines.index(f"DATABRICKS_CLIENT_SECRET={SENTINEL}")
-    assert mask < export
-    assert SENTINEL not in "\n".join(lines[:mask])
-    assert "DATABRICKS_ACCOUNT_ID=00000000-0000-0000-0000-000000000000" in lines
-    assert "DATABRICKS_CLIENT_ID=00000000-0000-0000-0000-000000000000" in lines
+def test_the_secret_is_masked_before_it_is_used_and_stays_in_the_step(tmp_path: Path) -> None:
+    out, calls, github_env = _run_credentials(tmp_path, enabled=True)
+    printed, environment = out.split("---\n", 1)
+    lines = printed.splitlines()
+    assert lines[0] == f"::add-mask::{SENTINEL}"
+    assert SENTINEL not in "\n".join(lines[1:])
+    assert f"DATABRICKS_CLIENT_SECRET={SENTINEL}" in environment.splitlines()
+    assert "DATABRICKS_ACCOUNT_ID=00000000-0000-0000-0000-000000000000" in environment
+    assert "DATABRICKS_CLIENT_ID=00000000-0000-0000-0000-000000000000" in environment
+    assert "_dbx_" not in environment  # its own variables are unset
+    # Nothing reaches GITHUB_ENV or GITHUB_OUTPUT, so no later step sees it.
+    assert github_env.read_text() == ""
     call = calls.read_text()
     assert "ssm get-parameter" in call and "--with-decryption" in call
     assert "--name /jwall-engineering/databricks/client-secret" in call
 
 
 @needs_yq
-def test_the_secret_step_does_nothing_while_disabled(tmp_path: Path) -> None:
-    out, calls = _run_credentials(tmp_path, enabled=False)
+def test_the_secret_script_does_nothing_while_disabled(tmp_path: Path) -> None:
+    out, calls, github_env = _run_credentials(tmp_path, enabled=False)
     assert not calls.exists(), "aws must not be called while databricks.enabled is false"
     assert "DATABRICKS_" not in out
+    assert github_env.read_text() == ""
 
 
-def _uses_credentials(step: dict[str, Any]) -> bool:
-    return step.get("uses") == "./.github/actions/databricks-credentials"
+@needs_yq
+def test_a_multiline_secret_fails_the_step_without_printing_it(tmp_path: Path) -> None:
+    config = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    config["databricks"]["enabled"] = True
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "aws").write_text(f"#!/usr/bin/env bash\nprintf '{SENTINEL}\\nline2\\n'\n")
+    (bin_dir / "aws").chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-e", "-c", f'source "{CREDENTIALS_SCRIPT}" config.yaml\necho reached'],
+        cwd=tmp_path,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "reached" not in result.stdout
+    assert SENTINEL not in result.stdout + result.stderr
+
+
+_SOURCE = "source ../scripts/databricks-credentials.sh ../config.yaml"
 
 
 @pytest.mark.parametrize(
-    ("workflow", "job"), [("ci.yml", "terraform-plan"), ("release-please.yml", "apply")]
+    ("workflow", "job", "terraform_steps"),
+    [
+        ("ci.yml", "terraform-plan", {"terraform plan"}),
+        ("release-please.yml", "apply", {"terraform plan", "terraform apply"}),
+    ],
 )
-def test_the_foundation_jobs_get_the_credential_after_aws_and_before_plan(
-    workflow: str, job: str
+def test_only_the_terraform_steps_get_the_credential(
+    workflow: str, job: str, terraform_steps: set[str]
 ) -> None:
-    steps = _steps(workflow, job)
-    credentials = _index(steps, _uses_credentials)
+    data = _yaml(WORKFLOWS / workflow)["jobs"][job]
+    steps: list[dict[str, Any]] = data["steps"]
+    sourcing = {s.get("name") for s in steps if "databricks-credentials" in str(s)}
+    assert sourcing == terraform_steps
+    for step in steps:
+        if step.get("name") in terraform_steps:
+            run = step["run"]
+            # Sourced first, in the step's own shell, before terraform runs.
+            assert run.splitlines()[0] == _SOURCE
+        text = json.dumps(step)
+        assert "GITHUB_ENV" not in text or "DATABRICKS" not in text
+        assert "DATABRICKS_CLIENT_SECRET" not in json.dumps(step.get("env", {}))
+    assert "DATABRICKS" not in json.dumps(data.get("env", {}))
     aws = _index(steps, lambda s: "configure-aws-credentials" in s.get("uses", ""))
     plan = _index(steps, lambda s: s.get("name") == "terraform plan")
-    assert aws < credentials < plan
+    assert aws < plan
+
+
+def test_no_workflow_exports_a_databricks_secret() -> None:
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for line in path.read_text().splitlines():
+            if "GITHUB_ENV" in line:
+                assert "DATABRICKS" not in line and "SECRET" not in line.upper(), path.name
+    assert not (REPO_ROOT / ".github" / "actions" / "databricks-credentials").exists()
+    assert "GITHUB_ENV" not in CREDENTIALS_SCRIPT.read_text().replace(
+        "It never writes to GITHUB_ENV", ""
+    )
 
 
 # --- the project registry ----------------------------------------------------
@@ -197,7 +240,7 @@ def test_the_plan_job_uses_the_projects_plan_role_and_skips_until_it_exists() ->
     assert plan["if"] == "steps.assume.outcome == 'success'"
     assert plan["run"].endswith("--file .consumer/jwall-engineering-sites.yaml plan")
     # The CLI reads the secret itself, with the project's plan role.
-    assert not any(_uses_credentials(s) for s in steps)
+    assert not any("databricks-credentials" in str(s) for s in steps)
 
 
 # --- the apply workflow ------------------------------------------------------
