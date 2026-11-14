@@ -78,6 +78,8 @@ class CheckContext:
 
 CheckFn = Callable[[CheckContext], Iterable[CheckResult]]
 
+KINDS = frozenset({"site", "bot", "research", "databricks"})
+
 _ID = re.compile(r"^[A-Z]{2,5}-[A-Z]{2,5}-\d{3}$")
 
 
@@ -118,6 +120,10 @@ def check(
     """Register a check. A malformed or duplicate id raises when the decorator is applied."""
     if not _ID.fullmatch(check_id):
         raise ValueError(f"check id {check_id!r} must match {_ID.pattern}")
+    if not kinds or not kinds <= KINDS:
+        raise ValueError(
+            f"check kinds {sorted(kinds)} must be a non-empty subset of {sorted(KINDS)}"
+        )
 
     def register(fn: CheckFn) -> CheckFn:
         if check_id in _REGISTRY:
@@ -145,7 +151,11 @@ def run_stage(stage: Stage, ctx: CheckContext) -> list[CheckResult]:
     results: list[CheckResult] = []
     for registered_check in registered(stage, ctx.project.config.kind):
         try:
-            results.extend(registered_check.fn(ctx))
+            # Items yielded before an exception are kept on purpose; the crash FAIL follows them.
+            for item in registered_check.fn(ctx):
+                if not isinstance(item, CheckResult):
+                    raise TypeError(f"yielded {type(item).__name__}, expected CheckResult")
+                results.append(item)
         except Exception as exc:
             ctx.logger.debug("check %s raised", registered_check.check_id, exc_info=True)
             results.append(

@@ -213,3 +213,39 @@ def test_json_round_trip(tmp_path: Path) -> None:
         CheckResult(**{**d, "outcome": Outcome(d["outcome"]), "severity": Severity(d["severity"])})
         for d in data
     ] == results
+
+
+def test_partial_results_kept_before_crash(
+    bot: Project, settings: Settings, logger: logging.Logger
+) -> None:
+    @check("BOT-CFG-001", "Partial", Stage.CONFIG, ALL)
+    def partial(ctx: CheckContext) -> Iterable[CheckResult]:
+        yield _passing("BOT-CFG-001", "first")
+        raise RuntimeError("late")
+
+    results = run_stage(Stage.CONFIG, _ctx(bot, settings, logger))
+    assert [(r.title, r.outcome) for r in results] == [
+        ("first", Outcome.PASS),
+        ("Partial", Outcome.FAIL),
+    ]
+    assert results[1].facts["error"] == "RuntimeError: late"
+
+
+def test_non_check_result_item_becomes_fail(
+    bot: Project, settings: Settings, logger: logging.Logger
+) -> None:
+    @check("BOT-CFG-001", "Bad", Stage.CONFIG, ALL)
+    def bad(ctx: CheckContext) -> Iterable[CheckResult]:
+        yield _passing("BOT-CFG-001", "good")
+        yield "oops"  # type: ignore[misc]
+
+    results = run_stage(Stage.CONFIG, _ctx(bot, settings, logger))
+    assert [r.outcome for r in results] == [Outcome.PASS, Outcome.FAIL]
+    assert "str" in results[1].facts["error"]
+    markdown_table(results)  # renders without crashing
+
+
+@pytest.mark.parametrize("kinds", [frozenset(), frozenset({"site", "bogus"})])
+def test_bad_kinds_rejected(kinds: frozenset[str]) -> None:
+    with pytest.raises(ValueError, match="kinds"):
+        check("DBX-CFG-001", "t", Stage.CONFIG, kinds)
