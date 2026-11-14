@@ -287,10 +287,10 @@ def test_databricks_apply_refuses_an_unregistered_project(tmp_path: Path) -> Non
     result = subprocess.run(
         ["bash", "-e", "-c", lookup["run"]],
         cwd=REPO_ROOT,
-        env={**os.environ, "PROJECT": "databricks-poc", "GITHUB_OUTPUT": str(tmp_path / "o")},
+        env={**os.environ, "PROJECT": "not-a-project", "GITHUB_OUTPUT": str(tmp_path / "o")},
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode != 0
-    assert "databricks-poc is not in foundation/databricks.tf" in result.stdout
+    assert "not-a-project is not in foundation/databricks.tf" in result.stdout
