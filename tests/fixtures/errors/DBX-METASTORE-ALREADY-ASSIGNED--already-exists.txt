@@ -1,0 +1,6 @@
+# Source: PLACEHOLDER wording, confirm on the first live apply (Task 14)
+Error: cannot create metastore assignment: Metastore assignment for workspace 1234567890123456 already exists
+
+  with databricks_metastore_assignment.this,
+  on main.tf line 42, in resource "databricks_metastore_assignment" "this":
+  42: resource "databricks_metastore_assignment" "this" {

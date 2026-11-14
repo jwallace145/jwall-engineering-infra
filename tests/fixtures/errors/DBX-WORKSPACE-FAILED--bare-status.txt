@@ -1,0 +1,6 @@
+# Source: https://github.com/databricks/terraform-provider-databricks/blob/main/mws/resource_mws_workspaces.go (explainWorkspaceFailure returns the bare status message when there is no network)
+Error: cannot create mws workspaces: Workspace failed to launch because the storage configuration could not be validated
+
+  with databricks_mws_workspaces.this,
+  on main.tf line 42, in resource "databricks_mws_workspaces" "this":
+  42: resource "databricks_mws_workspaces" "this" {

@@ -1,9 +1,6 @@
-# Source: https://github.com/hashicorp/terraform-provider-aws/issues (search "EntityAlreadyExists: Role with name"); standard AWS IAM error.
-╷
-│ Error: creating IAM Role (databricks-poc-cross-account): operation error IAM: CreateRole, https response error StatusCode: 409, RequestID: 00000000-0000-0000-0000-000000000000, EntityAlreadyExists: Role with name databricks-poc-cross-account already exists.
-│
-│   with aws_iam_role.cross_account,
-│   on main.tf line 12, in resource "aws_iam_role" "cross_account":
-│   12: resource "aws_iam_role" "cross_account" {
-│
-╵
+# Source: https://github.com/hashicorp/terraform-provider-aws/issues (EntityAlreadyExists; standard AWS IAM error)
+Error: creating IAM Role (databricks-poc-cross-account): operation error IAM: CreateRole, https response error StatusCode: 409, RequestID: 00000000-0000-0000-0000-000000000000, EntityAlreadyExists: Role with name databricks-poc-cross-account already exists.
+
+  with aws_iam_role.cross_account,
+  on main.tf line 42, in resource "aws_iam_role" "cross_account":
+  42: resource "aws_iam_role" "cross_account" {

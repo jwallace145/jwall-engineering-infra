@@ -1,9 +1,6 @@
-# Source: https://github.com/databricks/terraform-provider-databricks/blob/main/mws/resource_mws_workspaces.go ("failed to reach RUNNING"); the provider polls workspace status after create.
-╷
-│ Error: cannot create mws workspaces: failed to reach RUNNING, got FAILED: Workspace failed to launch. Please check the credential, storage and network configuration
-│
-│   with databricks_mws_workspaces.this,
-│   on main.tf line 100, in resource "databricks_mws_workspaces" "this":
-│   100: resource "databricks_mws_workspaces" "this" {
-│
-╵
+# Source: https://github.com/databricks/terraform-provider-databricks/blob/main/mws/resource_mws_workspaces.go (explainWorkspaceFailure: 'Workspace failed to create: %v, network error message: %v')
+Error: cannot create mws workspaces: Workspace failed to create: Workspace failed to launch because the credential could not be validated, network error message: error: VPC_NOT_FOUND;error_msg: vpc not found;
+
+  with databricks_mws_workspaces.this,
+  on main.tf line 42, in resource "databricks_mws_workspaces" "this":
+  42: resource "databricks_mws_workspaces" "this" {

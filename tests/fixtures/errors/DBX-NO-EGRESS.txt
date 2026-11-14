@@ -1,9 +1,6 @@
-# Source: https://github.com/databricks/terraform-provider-databricks/issues (search "NPIP_TUNNEL_SETUP_FAILURE" / "BOOTSTRAP_TIMEOUT"); cluster launch in a no-public-IP workspace without outbound internet.
-╷
-│ Error: cannot create cluster: failed to reach RUNNING, got TERMINATED: Unexpected state for cluster (0101-000000-abcdefgh): NPIP_TUNNEL_SETUP_FAILURE (CLIENT_ERROR): instance bootstrap failed, the cluster could not reach the control plane (BOOTSTRAP_TIMEOUT)
-│
-│   with databricks_cluster.smoke,
-│   on main.tf line 20, in resource "databricks_cluster" "smoke":
-│   20: resource "databricks_cluster" "smoke" {
-│
-╵
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (NPIP_TUNNEL_SETUP_FAILURE / BOOTSTRAP_TIMEOUT termination codes)
+Error: cannot create cluster: failed to reach RUNNING, got TERMINATED: Unexpected state for cluster (0101-000000-abcdefgh): NPIP_TUNNEL_SETUP_FAILURE (CLIENT_ERROR): instance bootstrap failed, the cluster could not reach the control plane (BOOTSTRAP_TIMEOUT)
+
+  with databricks_cluster.smoke,
+  on main.tf line 42, in resource "databricks_cluster" "smoke":
+  42: resource "databricks_cluster" "smoke" {

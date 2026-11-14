@@ -12,6 +12,7 @@ heading for each.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,9 +22,9 @@ from .report import truncate_tail
 MAX_RAW_BYTES = 6_000
 RUNBOOK_DOC = "docs/databricks.md"
 
-_SECRET_LINE = re.compile(r"DATABRICKS_CLIENT_SECRET|client_secret", re.IGNORECASE)
-_BOX = re.compile(r"^[│╷╵\s]*(?:│ ?)?")
-_ERROR_START = re.compile(r"^\s*Error: ")
+_SECRET_VALUE = re.compile(r"(client_secret\s*[=:]\s*)(\"?)[^\s\",]+", re.IGNORECASE)
+_MASK = "***"
+_BOX_CHARS = "╷╵│ "
 _ADDRESS = re.compile(r"^\s*with (\S+?),\s*$", re.MULTILINE)
 _RE_RUN_SAFE = "re-running apply is safe"
 
@@ -56,10 +57,31 @@ def _re(pattern: str, flags: int = re.IGNORECASE) -> re.Pattern[str]:
     return re.compile(pattern, flags)
 
 
+# First match wins: specific before generic (auth and validations first, the broad
+# `already exists` and metastore entries last).
 CATALOGUE: tuple[Diagnosis, ...] = (
     Diagnosis(
+        error_class="DBX-AUTH",
+        pattern=_re(
+            r"invalid_client|Client authentication failed|invalid client secret|"
+            r"cannot configure default credentials|oauth-m2m"
+        ),
+        title="Databricks rejected the service principal credentials",
+        likely_cause=(
+            "The OAuth client ID or secret is wrong, expired or not in the SSM parameter the "
+            "job reads."
+        ),
+        next_steps=(
+            "Check `/jwall-engineering/databricks/client-secret` holds the current secret.",
+            "Confirm the service principal is an account admin and its secret has not expired.",
+            "Re-run apply; no partial state is lost.",
+        ),
+        runbook=_anchor("dbx-auth"),
+        retry_safe=False,
+    ),
+    Diagnosis(
         error_class="DBX-CRED-VALIDATION",
-        pattern=_re(r"Failed credentials validation checks"),
+        pattern=_re(r"Failed credentials? (?:configuration )?validation checks"),
         title="Databricks rejected the cross-account role",
         likely_cause=(
             "The cross-account IAM role is missing EC2 permissions, or its trust policy does not "
@@ -91,7 +113,11 @@ CATALOGUE: tuple[Diagnosis, ...] = (
     ),
     Diagnosis(
         error_class="DBX-NETWORK-VALIDATION",
-        pattern=_re(r"Failed network validation|network validation (?:failed|error)"),
+        pattern=_re(
+            r"Failed network validation|network validation (?:failed|error)|"
+            r"already used by another Network|is missing default route|"
+            r"could not be updated with latest Security Group Rules"
+        ),
         title="Databricks rejected the VPC configuration",
         likely_cause=(
             "Subnets, security group or routes do not meet the customer-managed VPC rules: "
@@ -106,39 +132,60 @@ CATALOGUE: tuple[Diagnosis, ...] = (
         retry_safe=False,
     ),
     Diagnosis(
-        error_class="AWS-IAM-PROPAGATION",
-        pattern=_re(
-            r"MalformedPolicyDocument: Invalid principal in policy|"
-            r"InvalidParameterValue: Value \(.*\) for parameter iamInstanceProfile"
+        error_class="DBX-WORKSPACE-FAILED",
+        pattern=_re(r"Workspace failed to (?:create|launch)|failed to reach RUNNING, got FAILED"),
+        title="The workspace entered the FAILED state",
+        likely_cause=(
+            "Databricks provisioned the workspace but could not finish: usually a credential, "
+            "storage or network configuration it accepted but cannot use."
         ),
+        next_steps=(
+            "Fix the cause named in the error (credential, storage or network) and re-run apply.",
+            "The provider deletes the failed workspace itself; only if the error also reports a "
+            "delete failure, remove it by hand in the account console first.",
+        ),
+        runbook=_anchor("dbx-workspace-failed"),
+        retry_safe=False,
+    ),
+    Diagnosis(
+        error_class="DBX-NO-EGRESS",
+        pattern=_re(
+            r"NPIP_TUNNEL_SETUP_FAILURE|BOOTSTRAP_TIMEOUT|NPIP_TUNNEL_TOKEN_FAILURE|"
+            r"CONTROL_PLANE_CONNECTION_FAILURE|NETWORK_CHECK_CONTROL_PLANE_FAILURE"
+        ),
+        title="Cluster nodes cannot reach the Databricks control plane",
+        likely_cause=(
+            "No outbound path from the private subnets (NAT, route table or endpoint) so the "
+            "secure cluster connectivity tunnel never came up."
+        ),
+        next_steps=(
+            "Check the NAT instance is running and the private route tables point at it.",
+            "Check the security group allows outbound 443 and the Databricks relay port.",
+            "Re-run apply once egress works.",
+        ),
+        runbook=_anchor("dbx-no-egress"),
+        retry_safe=False,
+    ),
+    Diagnosis(
+        error_class="AWS-IAM-PROPAGATION",
+        pattern=_re(r"MalformedPolicy(?:Document)?: Invalid principal in policy"),
         title="A new IAM role is not visible yet",
         likely_cause=(
             "IAM is eventually consistent: a policy referenced a role created seconds earlier."
         ),
-        next_steps=("Re-run apply; it resumes where it stopped.",),
+        next_steps=(
+            "Re-run apply; it resumes where it stopped.",
+            "The provider already retried; if it repeats, check the principal ARN in the "
+            "policy exists.",
+        ),
         runbook=_anchor("aws-iam-propagation"),
         retry_safe=True,
     ),
     Diagnosis(
-        error_class="TF-ALREADY-EXISTS",
-        pattern=_re(
-            r"EntityAlreadyExists|BucketAlreadyOwnedByYou|AlreadyExistsException|already exists"
-        ),
-        title="The resource already exists outside Terraform state",
-        likely_cause=(
-            "A previous run created it but state was not saved, or it was created by hand."
-        ),
-        next_steps=(
-            "Confirm the existing resource belongs to this project.",
-            "Import it: `terraform import <address> <id>` (the address is in the error).",
-            "Never delete a resource this stack does not own; ask the owner.",
-        ),
-        runbook=_anchor("tf-already-exists"),
-        retry_safe=False,
-    ),
-    Diagnosis(
         error_class="DBX-METASTORE-ALREADY-ASSIGNED",
-        pattern=_re(r"already assigned to metastore|already has a metastore"),
+        pattern=_re(
+            r"already assigned to metastore|already has a metastore|metastore[^\n]*already exists"
+        ),
         title="The workspace was already assigned to the region's metastore",
         likely_cause=(
             "Databricks auto-assigned the new workspace to the metastore for its region, so "
@@ -157,9 +204,8 @@ CATALOGUE: tuple[Diagnosis, ...] = (
     Diagnosis(
         error_class="DBX-METASTORE-ASSIGNMENT",
         pattern=_re(
-            r"\A(?!.*(?:already assigned to metastore|already has a metastore))"
-            r".*(?:metastore assignment|databricks_metastore_assignment)",
-            re.IGNORECASE | re.DOTALL,
+            r"cannot (?:create|update) metastore assignment:.*"
+            r"(?:permission|metastore admin|region)"
         ),
         title="The metastore could not be assigned to the workspace",
         likely_cause=(
@@ -174,53 +220,20 @@ CATALOGUE: tuple[Diagnosis, ...] = (
         retry_safe=False,
     ),
     Diagnosis(
-        error_class="DBX-WORKSPACE-FAILED",
-        pattern=_re(r"failed to reach RUNNING, got FAILED|Workspace failed to launch"),
-        title="The workspace entered the FAILED state",
-        likely_cause=(
-            "Databricks provisioned the workspace but could not finish: usually a credential, "
-            "storage or network configuration it accepted but cannot use."
-        ),
-        next_steps=(
-            "Read the status message in the error and the debug log.",
-            "A FAILED workspace cannot be repaired; remove it in the account console, then re-run.",
-        ),
-        runbook=_anchor("dbx-workspace-failed"),
-        retry_safe=False,
-    ),
-    Diagnosis(
-        error_class="DBX-NO-EGRESS",
-        pattern=_re(r"NPIP_TUNNEL_SETUP_FAILURE|BOOTSTRAP_TIMEOUT"),
-        title="Cluster nodes cannot reach the Databricks control plane",
-        likely_cause=(
-            "No outbound path from the private subnets (NAT, route table or endpoint) so the "
-            "secure cluster connectivity tunnel never came up."
-        ),
-        next_steps=(
-            "Check the NAT instance is running and the private route tables point at it.",
-            "Check the security group allows outbound 443 and the Databricks relay port.",
-            "Re-run apply once egress works.",
-        ),
-        runbook=_anchor("dbx-no-egress"),
-        retry_safe=False,
-    ),
-    Diagnosis(
-        error_class="DBX-AUTH",
+        error_class="TF-ALREADY-EXISTS",
         pattern=_re(
-            r"invalid_client|Client authentication failed|invalid client secret|"
-            r"cannot configure default credentials|oauth-m2m"
+            r"EntityAlreadyExists|BucketAlreadyOwnedByYou|AlreadyExistsException|already exists"
         ),
-        title="Databricks rejected the service principal credentials",
+        title="The resource already exists outside Terraform state",
         likely_cause=(
-            "The OAuth client ID or secret is wrong, expired or not in the SSM parameter the "
-            "job reads."
+            "A previous run created it but state was not saved, or it was created by hand."
         ),
         next_steps=(
-            "Check `/jwall-engineering/databricks/client-secret` holds the current secret.",
-            "Confirm the service principal is an account admin and its secret has not expired.",
-            "Re-run apply; no partial state is lost.",
+            "Confirm the existing resource belongs to this project.",
+            "Import it: `terraform import <address> <id>` (the address is in the error).",
+            "Never delete a resource this stack does not own; ask the owner.",
         ),
-        runbook=_anchor("dbx-auth"),
+        runbook=_anchor("tf-already-exists"),
         retry_safe=False,
     ),
 )
@@ -228,21 +241,33 @@ CATALOGUE: tuple[Diagnosis, ...] = (
 RUNBOOK_ANCHORS: tuple[str, ...] = tuple(d.runbook for d in CATALOGUE)
 
 
+def _redact(text: str) -> str:
+    """Mask secret values, keep the surrounding text (the SDK puts them in the summary line)."""
+    secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
+    if secret:
+        text = text.replace(secret, _MASK)
+    return _SECRET_VALUE.sub(rf"\1\2{_MASK}", text)
+
+
 def _error_blocks(output: str) -> str:
-    """Only the error block(s) of Terraform's output, secrets removed."""
+    """Only the error block(s) of Terraform's output, secrets masked.
+
+    A block starts at an `Error: ` line and ends at the next `Error:` or `Warning:` line,
+    a box-drawing `╵` or the end of the output. Plain (`-no-color`) and boxed layouts both work.
+    """
     blocks: list[list[str]] = []
     current: list[str] | None = None
     for line in output.splitlines():
-        text = _BOX.sub("", line).rstrip()
-        if _ERROR_START.match(text):
-            current = [text]
+        text = line.lstrip(_BOX_CHARS) if line[:1] in ("╷", "╵", "│") else line
+        if text.startswith("Error: "):
+            current = [text.rstrip()]
             blocks.append(current)
-        elif "╵" in line:
+        elif text.startswith("Warning: ") or "╵" in line:
             current = None
         elif current is not None:
-            current.append(text)
+            current.append(text.rstrip())
     lines = [ln for block in blocks for ln in block] if blocks else output.splitlines()[-40:]
-    return "\n".join(ln for ln in lines if not _SECRET_LINE.search(ln)).strip()
+    return _redact("\n".join(lines)).strip()
 
 
 def _head(text: str, max_bytes: int) -> str:
@@ -272,10 +297,11 @@ def diagnose(stack: str, output: str, debug_log: Path) -> Failure:
 
 def render_failure(failure: Failure, partial: str | None = None) -> str:
     """Markdown for the console and the job summary."""
-    other = "workspace" if partial == "account" else "account"
+    if partial not in (None, "account"):
+        raise ValueError(f"partial must be None or 'account', got {partial!r}")
     lines: list[str] = []
     if partial:
-        lines += [f"{partial} stack applied; {other} stack failed; {_RE_RUN_SAFE}", ""]
+        lines += [f"{partial} stack applied; workspace stack failed; {_RE_RUN_SAFE}", ""]
     where = f"`{failure.stack}`" + (f", resource `{failure.resource}`" if failure.resource else "")
     d = failure.diagnosis
     if d is None:

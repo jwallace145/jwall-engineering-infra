@@ -1,0 +1,6 @@
+# Source: https://docs.databricks.com/aws/en/admin/workspace/troubleshooting
+Error: cannot create mws credentials: Malformed request: Failed credential configuration validation checks
+
+  with databricks_mws_credentials.this,
+  on main.tf line 42, in resource "databricks_mws_credentials" "this":
+  42: resource "databricks_mws_credentials" "this" {

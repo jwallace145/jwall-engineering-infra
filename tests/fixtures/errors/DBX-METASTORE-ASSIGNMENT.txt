@@ -1,9 +1,6 @@
-# Source: https://github.com/databricks/terraform-provider-databricks/issues (search "cannot create metastore assignment"); Unity Catalog permission error.
-╷
-│ Error: cannot create metastore assignment: PERMISSION_DENIED: User is not a metastore admin or account admin of metastore 11111111-2222-3333-4444-555555555555
-│
-│   with databricks_metastore_assignment.this,
-│   on main.tf line 88, in resource "databricks_metastore_assignment" "this":
-│   88: resource "databricks_metastore_assignment" "this" {
-│
-╵
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (message shape 'cannot create metastore assignment: ...'; the region wording from the coordinator's verified example)
+Error: cannot create metastore assignment: Workspace is not in the same region as metastore.
+
+  with databricks_metastore_assignment.this,
+  on main.tf line 42, in resource "databricks_metastore_assignment" "this":
+  42: resource "databricks_metastore_assignment" "this" {

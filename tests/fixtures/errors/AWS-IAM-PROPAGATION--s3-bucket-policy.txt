@@ -1,0 +1,6 @@
+# Source: https://github.com/hashicorp/terraform-provider-aws/issues/43640 and internal/service/s3/bucket_policy.go ('putting S3 Bucket (%s) Policy: %s')
+Error: putting S3 Bucket (team-a-databricks-poc-catalog) Policy: operation error S3: PutBucketPolicy, https response error StatusCode: 400, RequestID: EXAMPLE0000000000, HostID: example, api error MalformedPolicy: Invalid principal in policy
+
+  with aws_s3_bucket_policy.catalog,
+  on main.tf line 42, in resource "aws_s3_bucket_policy" "catalog":
+  42: resource "aws_s3_bucket_policy" "catalog" {

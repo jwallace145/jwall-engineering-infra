@@ -18,26 +18,65 @@ LOG = Path("/tmp/terraform-debug.log")
 SAMPLES = sorted(ERRORS.glob("*.txt"))
 
 
+def entry_of(path: Path) -> str:
+    """`CLASS.txt` is the entry's sample; `CLASS--variant.txt` another wording or a cross-cut."""
+    return path.stem.split("--")[0]
+
+
 def sample(path: Path) -> str:
     return "".join(ln for ln in path.read_text().splitlines(keepends=True) if ln[0] != "#")
 
 
 def test_every_entry_has_a_sample() -> None:
-    assert {d.error_class for d in CATALOGUE} == {p.stem for p in SAMPLES}
+    assert {d.error_class for d in CATALOGUE} == {entry_of(p) for p in SAMPLES}
 
 
 @pytest.mark.parametrize("path", SAMPLES, ids=lambda p: p.stem)
 def test_sample_matches_its_entry(path: Path) -> None:
     failure = diagnose("databricks-account", sample(path), LOG)
     assert failure.diagnosis is not None
-    assert failure.diagnosis.error_class == path.stem
+    assert failure.diagnosis.error_class == entry_of(path)
 
 
 def test_entries_do_not_overlap() -> None:
+    """Under the real first-match order each sample gets its own entry.
+
+    Plain samples match exactly one entry; a `--` sample may also match a later, broader
+    entry, but never an earlier one.
+    """
+    names = [d.error_class for d in CATALOGUE]
     for path in SAMPLES:
-        text = sample(path)
-        matching = [d.error_class for d in CATALOGUE if d.pattern.search(text)]
-        assert matching == [path.stem]
+        matching = [d.error_class for d in CATALOGUE if d.pattern.search(sample(path))]
+        assert matching, path.stem
+        assert matching[0] == entry_of(path), (path.stem, matching)
+        if "--" not in path.stem:
+            assert matching == [entry_of(path)], (path.stem, matching)
+        assert names.index(matching[0]) == min(names.index(m) for m in matching)
+
+
+def test_auth_error_on_a_metastore_resource_is_auth() -> None:
+    failure = diagnose(
+        "databricks-workspace", sample(ERRORS / "DBX-AUTH--metastore-assignment.txt"), LOG
+    )
+    assert failure.diagnosis is not None
+    assert failure.diagnosis.error_class == "DBX-AUTH"
+
+
+def test_address_line_alone_is_not_a_metastore_assignment_error() -> None:
+    out = "Error: cannot read something else\n\n  with databricks_metastore_assignment.this,\n"
+    assert diagnose("databricks-workspace", out, LOG).diagnosis is None
+
+
+def test_eventual_consistency_read_is_left_unmatched() -> None:
+    """Not 'make the SP a metastore admin': the read races the assignment, so no entry claims it."""
+    out = (
+        "Error: cannot read metastore assignment: "
+        "No metastore assigned for the current workspace.\n\n"
+        "  with databricks_metastore_assignment.this,\n"
+    )
+    failure = diagnose("databricks-workspace", out, LOG)
+    assert failure.diagnosis is None
+    assert "metastore admin" not in render_failure(failure)
 
 
 def test_only_iam_propagation_is_retry_safe_by_default() -> None:
@@ -56,7 +95,7 @@ def test_raw_is_only_the_error_block_and_truncated() -> None:
     out = noise + sample(ERRORS / "DBX-AUTH.txt")
     failure = diagnose("databricks-workspace", out, LOG)
     assert "Creating..." not in failure.raw
-    assert "invalid_client" in failure.raw
+    assert "client_id=" in failure.raw
     big = "Error: boom\n\n  with a.b,\n" + "x" * 50_000
     assert len(diagnose("site", big, LOG).raw.encode()) <= 8_000
 
@@ -102,20 +141,55 @@ def test_partial_run_message() -> None:
     assert "account stack applied; workspace stack failed; re-running apply is safe" in text
 
 
-def test_client_secret_never_stored_or_rendered() -> None:
+def test_secret_values_are_masked_but_the_error_survives(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = "SENTINEL-s3cr3t-value"
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", sentinel)
     out = (
-        "Error: cannot configure default credentials\n"
-        f"  DATABRICKS_CLIENT_SECRET={sentinel}\n"
-        f'  client_secret = "{sentinel}"\n'
-        "  invalid_client: Client authentication failed\n\n"
-        "  with databricks_mws_credentials.this,\n"
+        "Error: cannot create mws credentials: default auth: cannot configure default credentials. "
+        f"Config: host=https://accounts.example.com, client_id=abc, client_secret={sentinel}. "
+        "Env: DATABRICKS_HOST, DATABRICKS_CLIENT_SECRET\n\n"
+        f"  with databricks_mws_credentials.this,\n  detail echoed {sentinel} and "
+        f'client_secret = "{sentinel}"\n'
     )
     failure = diagnose("databricks-account", out, LOG)
     assert sentinel not in failure.raw
     assert sentinel not in render_failure(failure, partial="account")
+    assert "cannot create mws credentials" in failure.raw
     assert failure.diagnosis is not None
     assert failure.diagnosis.error_class == "DBX-AUTH"
+
+
+def test_secret_masked_without_the_environment_variable() -> None:
+    out = "Error: boom. Config: client_secret=abc123def, host=h\n"
+    failure = diagnose("site", out, LOG)
+    assert "abc123def" not in failure.raw
+    assert "host=h" in failure.raw
+
+
+def test_plain_block_ends_at_the_next_warning_or_end_of_output() -> None:
+    out = (
+        "Error: first problem\n\n  with a.b,\n\n"
+        "Warning: a deprecation\n\n  with c.d,\n\n"
+        "Error: second problem\n\n  with e.f,\n"
+    )
+    failure = diagnose("site", out, LOG)
+    assert "first problem" in failure.raw
+    assert "second problem" in failure.raw
+    assert "deprecation" not in failure.raw
+
+
+def test_boxed_layout_still_parses() -> None:
+    path = ERRORS / "DBX-STORAGE-VALIDATION.txt"
+    assert "│" in path.read_text()
+    failure = diagnose("databricks-account", sample(path), LOG)
+    assert failure.resource == "databricks_mws_storage_configurations.this"
+    assert "│" not in failure.raw
+
+
+def test_partial_only_accepts_account() -> None:
+    failure = diagnose("site", "Error: x\n", LOG)
+    with pytest.raises(ValueError, match="partial"):
+        render_failure(failure, partial="workspace")
 
 
 def test_metastore_entries_name_the_import_command() -> None:
