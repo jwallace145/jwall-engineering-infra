@@ -265,7 +265,9 @@ def test_foundation_reads_lists_from_config() -> None:
     for name in ("bot_task_types", "bot_task_profiles", "bot_datasets"):
         match = re.search(rf"^\s+{name}\s*=\s*(.*)$", text, re.MULTILINE)
         assert match and "local.tool_config.projects" in match.group(1), name
-    assert set(_projects()) <= set(registry())
+    # A project with only a `databricks` entry is a workspace project, not a bot.
+    bots = {k for k, p in _projects().items() if set(p) - {"databricks"}}
+    assert bots <= set(registry())
     assert set(_task_profiles()) == set(_task_types())
 
 

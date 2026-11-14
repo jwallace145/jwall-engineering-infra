@@ -99,3 +99,50 @@ projects:
     datasets:
       jwall-engineering-rusty-chess-nnue: {}
     # max_run_cost_usd: 80 # optional per-project override of tasks.max_run_cost_usd
+  databricks-poc:
+    # A Databricks workspace project. `vpc_cidr` is allocated here so IP capacity is
+    # central (/16 to /20; no overlap with another project or the bot VPC 10.0.0.0/16).
+    databricks:
+      compute_policies: [small-interactive, jobs]
+      cost_center: cc-0000
+      vpc_cidr: 10.40.0.0/16
+      admins: [owner@example.com] # replace with the owner's email
+      users: []
+
+# Databricks workspaces (projects with a `databricks` entry above). The account
+# stack uses a service principal whose client secret lives in SSM at
+# `secret_parameter` (never in this file). Reviewed here; a project's own file
+# cannot widen the compute policies or pick its own network range.
+databricks:
+  # Placeholders (the nil UUID) until the owner creates the service principal and
+  # sets the secret; then replace both IDs and flip `enabled` to true. The foundation's
+  # Databricks resources and the `live` checks wait for `enabled: true` and real IDs.
+  enabled: false
+  account_id: 00000000-0000-0000-0000-000000000000
+  client_id: 00000000-0000-0000-0000-000000000000
+  secret_parameter: /jwall-engineering/databricks/client-secret
+  metastore_name: jwall-engineering-us-east-1
+  # Replace the placeholder with the owner's email.
+  metastore_admins: [owner@example.com]
+  governance_project: databricks-poc # owns the metastore; needs a databricks entry below
+  # Pinned Amazon Linux 2023 arm64 image for the NAT instance, by its Amazon image name.
+  nat_ami: al2023-ami-2023.12.20261026.1-kernel-6.18-arm64
+  audit_bucket: jwall-engineering-databricks-audit-logs
+  events_prefix: events/
+  readiness_timeout: 20m # how long apply waits for a new workspace to be RUNNING
+  # Cluster policy definitions, by kebab-case name. A project lists the names it gets.
+  compute_policies:
+    small-interactive:
+      description: Small interactive clusters on cheap Graviton spot nodes
+      definition:
+        num_workers: {type: range, maxValue: 2}
+        autotermination_minutes: {type: fixed, value: 30, hidden: false}
+        node_type_id: {type: allowlist, values: [m7g.large, m7g.xlarge]}
+        aws_attributes.availability: {type: fixed, value: SPOT_WITH_FALLBACK}
+    jobs:
+      description: Job clusters, up to four workers
+      definition:
+        cluster_type: {type: fixed, value: job}
+        num_workers: {type: range, maxValue: 4}
+        node_type_id: {type: allowlist, values: [m7g.large, m7g.xlarge]}
+        aws_attributes.availability: {type: fixed, value: SPOT_WITH_FALLBACK}
