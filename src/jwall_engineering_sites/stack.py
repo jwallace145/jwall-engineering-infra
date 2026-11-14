@@ -321,7 +321,11 @@ def _databricks_workspace_tfvars(
                 "databricks.compute_policies in config.yaml"
             )
         policy = section.compute_policies[name]
-        policies[name] = {"description": policy.description, "definition": policy.definition}
+        # The module takes the definition as a JSON string; sorted keys keep the plan stable.
+        policies[name] = {
+            "description": policy.description,
+            "definition": json.dumps(policy.definition, sort_keys=True),
+        }
     account = settings.aws.account_id
     return {
         "project": project.project,

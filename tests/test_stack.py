@@ -1037,12 +1037,15 @@ def test_compute_policies_are_filtered_to_the_projects_file(
     assert policies == {
         "jobs": {
             "description": central["jobs"].description,
-            "definition": central["jobs"].definition,
+            "definition": json.dumps(central["jobs"].definition, sort_keys=True),
         }
     }
     full = _databricks_workspace_tfvars(databricks, widened, ACCOUNT_OUTPUTS)["compute_policies"]
     assert set(full) == {"small-interactive", "jobs"}
-    assert full["small-interactive"]["definition"]["num_workers"] == {
+    definition = full["small-interactive"]["definition"]
+    assert isinstance(definition, str)
+    assert definition == json.dumps(json.loads(definition), sort_keys=True)
+    assert json.loads(definition)["num_workers"] == {
         "type": "range",
         "maxValue": 2,
     }

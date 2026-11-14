@@ -92,7 +92,7 @@ variable "compute_policies" {
   description = "The project's compute policies (projects.<project>.databricks.compute_policies), defined centrally under databricks.compute_policies in config.yaml, by policy name."
   type = map(object({
     description = string
-    definition  = any
+    definition  = string
   }))
 }
 
