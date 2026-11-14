@@ -339,6 +339,10 @@ jobs:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-plan-pr-${{ github.event.pull_request.number }}
+      # The metastore and audit log delivery (foundation/databricks.tf) plan
+      # with the Databricks credential; skipped while databricks.enabled is false.
+      - name: Databricks credentials
+        uses: ./.github/actions/databricks-credentials
       - name: terraform init
         uses: ./.github/actions/terraform-init
         with:
@@ -475,6 +479,126 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: bot-plan-${{ matrix.project }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  databricks-projects:
+    name: Databricks projects
+    runs-on: ubuntu-latest
+    # Never for forks: the plan role trusts this repository's pull requests,
+    # and GitHub issues fork runs no OIDC token anyway.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.list.outputs.enabled }}
+      projects: ${{ steps.list.outputs.projects }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: List the Databricks projects (foundation/databricks.tf)
+        id: list
+        run: |
+          # Assigned first, so a failing command fails the step (bash -e).
+          enabled=$(yq -r .databricks.enabled config.yaml)
+          projects=$(scripts/databricks-projects.sh)
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+
+  databricks-plan:
+    name: Databricks plan (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    # Plans both stacks of each Databricks project in foundation/databricks.tf.
+    # Skipped while there are none or config.yaml databricks.enabled is false,
+    # and never for forks. A project's CI roles are created by the foundation
+    # apply that follows the PR registering it; until they exist, the plan is
+    # skipped with a notice instead of failing.
+    needs: [terraform-static, databricks-projects]
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.databricks-projects.outputs.enabled == 'true' &&
+      needs.databricks-projects.outputs.projects != '[]'
+    permissions:
+      contents: read
+      id-token: write # assume the project's plan role through GitHub OIDC
+      pull-requests: write # post and update the plan comment
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.databricks-projects.outputs.projects) }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check out the project's file (its default branch)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ matrix.repository }}
+          path: .consumer
+          sparse-checkout: |
+            jwall-engineering-sites.yaml
+          sparse-checkout-cone-mode: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.7" # exact: the CLI refuses any other version
+          terraform_wrapper: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Build the plan role ARN from config.yaml
+        id: role
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          account=$(yq -r .aws.account_id config.yaml)
+          organization=$(yq -r .context.organization config.yaml)
+          [[ "$account" =~ ^[0-9]{12}$ && -n "$organization" && "$organization" != null ]] || { echo "::error::config.yaml has no aws.account_id or context.organization"; exit 1; }
+          echo "arn=arn:aws:iam::${account}:role/${organization}-${PROJECT}-ci-plan" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v6
+        id: assume
+        continue-on-error: true # the role does not exist until the foundation apply
+        with:
+          role-to-assume: ${{ steps.role.outputs.arn }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-databricks-plan-${{ matrix.project }}-pr-${{ github.event.pull_request.number }}
+      - name: Skip the plan until the project's roles exist
+        if: steps.assume.outcome != 'success'
+        env:
+          ROLE: ${{ steps.role.outputs.arn }}
+        run: |
+          echo "::warning::could not assume $ROLE; the Databricks plan runs after the release that creates the project's roles"
+          {
+            echo "## Databricks plan skipped"
+            echo
+            echo "$ROLE cannot be assumed yet. It is created by the foundation apply of the release that registers the project."
+          } >> "$GITHUB_STEP_SUMMARY"
+      # The CLI reads the Databricks secret from SSM itself, with the plan role,
+      # and hands it to Terraform's environment only.
+      - name: jwall-engineering-sites plan
+        if: steps.assume.outcome == 'success'
+        env:
+          JES_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          JES_STACKS_ROOT: ${{ github.workspace }}/stacks
+        run: uv run jwall-engineering-sites --file .consumer/jwall-engineering-sites.yaml plan
+      - name: Mint a comment token for the JWall Engineering Sites app
+        id: app-token
+        if: always() && vars.JES_APP_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JES_APP_PRIVATE_KEY }}
+      - name: Post plan comment (updated on each push)
+        if: always() && hashFiles('.jwall-engineering-sites/plan-comment.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          header: databricks-plan-${{ matrix.project }}
+          path: .jwall-engineering-sites/plan-comment.md
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: databricks-plan-${{ matrix.project }}-${{ github.run_attempt }}
           path: .jwall-engineering-sites/
           retention-days: 14
           if-no-files-found: ignore

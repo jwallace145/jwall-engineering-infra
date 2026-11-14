@@ -78,6 +78,10 @@ jobs:
           role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-apply-${{ needs.release-please.outputs.tag_name }}
+      # The metastore and audit log delivery (foundation/databricks.tf) apply
+      # with the Databricks credential; skipped while databricks.enabled is false.
+      - name: Databricks credentials
+        uses: ./.github/actions/databricks-credentials
       - name: terraform init
         uses: ./.github/actions/terraform-init
         with:
