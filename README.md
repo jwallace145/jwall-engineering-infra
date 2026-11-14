@@ -400,7 +400,8 @@ The state bucket does not exist before the first apply, so the first apply uses 
 - `Terraform plan`: assumes the plan role through OIDC and posts the foundation plan as the branded sticky PR comment (rendered by `jwall-engineering-sites report plan-comment`), updated on every push
 - `Python lint, types, tests`: ruff, mypy and pytest for the sites CLI
 - `Image build and smoke test`: builds the CLI image, runs `validate` inside it offline, checks its Terraform version and enforces the compressed-size budget
-- `Bot stack validate, tflint` (`stacks/bot/`)
+- `Bot stack validate, tflint` (`stacks/bot/`), `Databricks account stack validate, tflint` (`stacks/databricks-account/`) and `Databricks workspace stack validate, tflint` (`stacks/databricks-workspace/`)
+- `Stack plans against mock providers`: `scripts/test-stack-plans.sh` plans `stacks/bot` and both Databricks stacks with tfvars the CLI renders for the cases in `tests/stack_plans/<stack>/`; no AWS or Databricks
 - `Bot plan (<project>)`: for each bot in `bots.tf`, assumes the bot's plan role and posts its plan as a sticky comment. Until the release that creates the bot's roles, it skips with a notice instead of failing.
 
 Every `terraform init` goes through `.github/actions/terraform-init`, which retries the registry's few-minute lag after a library release.

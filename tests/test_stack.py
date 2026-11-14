@@ -940,6 +940,46 @@ def test_workspace_tfvars_take_account_outputs(databricks: Project, settings: Se
     assert tfvars["catalog_tags"] == {"Project": "databricks-poc", "Owner": "owner@example.com"}
 
 
+@pytest.mark.parametrize("stack", ["account", "workspace"])
+def test_databricks_tfvars_are_valid_for_the_stack_variables(
+    stack: str, databricks: Project, settings: Settings
+) -> None:
+    """Every variable stacks/databricks-<stack> declares is rendered, and nothing else."""
+    tfvars = render_tfvars(databricks, settings, stack=stack, account_outputs=ACCOUNT_OUTPUTS)
+    assert set(tfvars) == _declared(f"databricks-{stack}")
+
+
+def test_account_stack_outputs_what_the_workspace_stack_takes() -> None:
+    declared = {
+        labels[0]
+        for kind, labels, _ in _blocks(REPO_ROOT / "stacks" / "databricks-account" / "outputs.tf")
+        if kind == "output"
+    }
+    assert declared == set(ACCOUNT_OUTPUTS)
+
+
+@pytest.mark.parametrize("stack", ["databricks-account", "databricks-workspace"])
+def test_databricks_providers_take_credentials_from_the_environment(stack: str) -> None:
+    """The client secret reaches Terraform only through the child's environment: no
+    provider block names a credential, and no variable could carry one."""
+    providers = [
+        attributes
+        for kind, labels, attributes in _blocks(REPO_ROOT / "stacks" / stack / "providers.tf")
+        if kind == "provider" and labels == ["databricks"]
+    ]
+    assert len(providers) == 1
+    (provider,) = providers
+    assert provider["auth_type"] == '"oauth-m2m"'
+    assert not {"client_id", "client_secret", "token", "password", "account_id"} & set(provider)
+    assert not {v for v in _declared(stack) if "secret" in v or "token" in v}
+    if stack == "databricks-account":
+        assert provider["alias"] == '"account"'
+        assert provider["host"] == '"https://accounts.cloud.databricks.com"'
+    else:
+        assert provider["alias"] == '"workspace"'
+        assert provider["host"] == "var.workspace_url"
+
+
 def test_workspace_tfvars_render_through_render_tfvars(
     databricks: Project, settings: Settings
 ) -> None:
