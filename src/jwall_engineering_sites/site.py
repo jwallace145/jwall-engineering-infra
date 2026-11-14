@@ -13,7 +13,14 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from .components import Component, ContainerImage, Dataset, LichessBot, TaskRunner
+from .components import (
+    Component,
+    ContainerImage,
+    DatabricksWorkspace,
+    Dataset,
+    LichessBot,
+    TaskRunner,
+)
 from .errors import ConfigError
 from .settings import Settings
 
@@ -113,7 +120,8 @@ class SiteConfig(_Model):
             raise ValueError(
                 "a file describes either a site (domain and site, no components), a bot "
                 "project (components: a container-image and a lichess-bot) or a research "
-                "project (components: a dataset and a task-runner), without domain, site, "
+                "project (components: a dataset and a task-runner) or a Databricks project "
+                "(components: a databricks-workspace), without domain, site, "
                 "dev or preview"
             )
         if has_components:
@@ -128,6 +136,11 @@ class SiteConfig(_Model):
             runners = sum(1 for c in self.components if c.kind == "task-runner")
             if runners > 1:
                 raise ValueError(f"components may hold at most one task-runner, got {runners}")
+            workspaces = sum(1 for c in self.components if c.kind == "databricks-workspace")
+            if workspaces > 1:
+                raise ValueError(
+                    f"components may hold at most one databricks-workspace, got {workspaces}"
+                )
             names = [c.name for c in self.datasets]
             if len(names) != len(set(names)):
                 raise ValueError(f"dataset names must be unique, got {names}")
@@ -147,9 +160,11 @@ class SiteConfig(_Model):
         return self
 
     @property
-    def kind(self) -> Literal["site", "bot", "research"]:
+    def kind(self) -> Literal["site", "bot", "research", "databricks"]:
         if not self.components:
             return "site"
+        if any(isinstance(c, DatabricksWorkspace) for c in self.components):
+            return "databricks"  # combining it with other components is refused by guardrails
         return "bot" if any(isinstance(c, LichessBot) for c in self.components) else "research"
 
     @property
@@ -159,6 +174,10 @@ class SiteConfig(_Model):
     @property
     def bot(self) -> LichessBot:
         return next(c for c in self.components if isinstance(c, LichessBot))
+
+    @property
+    def databricks(self) -> DatabricksWorkspace:
+        return next(c for c in self.components if isinstance(c, DatabricksWorkspace))
 
     @property
     def task_runner(self) -> TaskRunner | None:

@@ -48,12 +48,19 @@ locals {
         write = [module.bot_ci_apply[key].role_arn]
       }
     },
+    {
+      # Both stacks of a Databricks project: its account and workspace keys.
+      for key, project in local.databricks_projects : "project=${key}/" => {
+        read  = [module.databricks_ci_plan[key].role_arn]
+        write = [module.databricks_ci_apply[key].role_arn]
+      }
+    },
   )
 }
 
 module "state_bucket" {
   source  = "jwallace145/jwall-engineering/aws//modules/tfstate-bucket"
-  version = "0.17.0"
+  version = "0.18.1"
 
   name = local.state_bucket_name
 

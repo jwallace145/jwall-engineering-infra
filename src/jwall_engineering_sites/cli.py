@@ -8,6 +8,7 @@ configuration, 3 preflight.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -23,14 +24,47 @@ from typing import Annotated, Literal
 import boto3
 import typer
 
-from . import aws, costs, github, image, releases, report, rollout, stack, sync, tasks
+from . import (
+    aws,
+    checks,
+    costs,
+    databricks,
+    databricks_auth,
+    databricks_destroy,
+    github,
+    image,
+    releases,
+    report,
+    rollout,
+    stack,
+    sync,
+    tasks,
+)
 from . import bot as botlib
+from .checks import render as checks_render
+from .checks.framework import (
+    CheckContext,
+    CheckResult,
+    Outcome,
+    Severity,
+    Stage,
+    raise_on_errors,
+    registered,
+    run_stage,
+)
 from .components import CPU_PROFILE, TaskRunner
 from .errors import ConfigError, PreflightError, RunError, SitesError
+from .events import EventLog, base_fields
 from .log import annotate_error, artifacts_dir, phase, setup_logging
 from .project import Project, Role
-from .settings import Settings, default_config_path, load_settings, parse_duration
-from .site import DEV_PREFIX, PROD_PREFIX, SITE_FILE, Site, load_site_config
+from .settings import (
+    DatabricksSection,
+    Settings,
+    default_config_path,
+    load_settings,
+    parse_duration,
+)
+from .site import DEV_PREFIX, ENVIRONMENT, PROD_PREFIX, SITE_FILE, Site, load_site_config
 
 app = typer.Typer(
     name="jwall-engineering-sites",
@@ -58,6 +92,10 @@ task_app = typer.Typer(
     help="Remote CI tasks on ephemeral EC2 instances (projects with a task-runner).",
     no_args_is_help=True,
 )
+databricks_app = typer.Typer(help="Databricks workspace projects.", no_args_is_help=True)
+credentials_app = typer.Typer(
+    help="The Databricks service principal's client secret.", no_args_is_help=True
+)
 cost_app = typer.Typer(
     help="The account's spend from Cost Explorer, by the tags every resource carries.",
     no_args_is_help=True,
@@ -69,6 +107,8 @@ app.add_typer(preview_app, name="preview")
 app.add_typer(config_app, name="config")
 app.add_typer(report_app, name="report")
 app.add_typer(cost_app, name="cost")
+app.add_typer(databricks_app, name="databricks")
+databricks_app.add_typer(credentials_app, name="credentials")
 
 LOG_FILE = "jwall-engineering-sites.log"
 
@@ -171,6 +211,15 @@ def _preflight(run: Run, role: Role, prefix: str | None) -> None:
         project = run.project
         session = boto3.session.Session(region_name=project.region)
         aws.check_role(session.client("sts"), project.role_name(role), run.logger)
+        if project.kind == "databricks":
+            # Two stacks, two state files; `project.state_key` is neither.
+            run.logger.info(
+                "databricks %s: state %s and %s",
+                project.project,
+                run.settings.state_key(project.project, ENVIRONMENT, "account"),
+                run.settings.state_key(project.project, ENVIRONMENT, "workspace"),
+            )
+            return
         if project.has_components:
             run.logger.info("%s %s: state %s", project.kind, project.project, project.state_key)
             return
@@ -244,6 +293,10 @@ def validate(ctx: typer.Context) -> None:
 
     def body(run: Run) -> None:
         project = run.project
+        if project.kind == "databricks":
+            run.logger.info("project file ok: project %s, kind databricks", project.project)
+            _databricks_deployment(run, role=None, live=False).validate()
+            return
         with phase("validate"):
             if project.kind == "site":
                 site = run.site
@@ -276,6 +329,9 @@ def plan(ctx: typer.Context) -> None:
     """Plan the site's infrastructure and write the plan comment."""
 
     def body(run: Run) -> None:
+        if run.project.kind == "databricks":
+            _databricks_deployment(run, role="plan", live=True).plan()
+            return
         _preflight(run, "plan", prefix="")
         exit_code = stack.PLAN_ERROR
         plan_text = ""
@@ -447,6 +503,9 @@ def apply(ctx: typer.Context) -> None:
     """Apply the site's infrastructure and write outputs.json."""
 
     def body(run: Run) -> None:
+        if run.project.kind == "databricks":
+            _databricks_deployment(run, role="apply", live=True).apply()
+            return
         _preflight(run, "apply", prefix="")
 
         def tf(terraform: stack.Terraform) -> None:
@@ -547,12 +606,17 @@ def destroy(
     ctx: typer.Context,
     yes: Annotated[bool, typer.Option("--yes", help="Confirm: destroy the stack.")] = False,
 ) -> None:
-    """Destroy a bot or research project's stack. Its buckets and any secrets are kept."""
+    """Destroy a project's stacks. A bot or research project keeps its buckets and
+    secrets; a Databricks project loses both its buckets and their data, and the
+    full deletion list is printed first."""
 
     def body(run: Run) -> None:
         project = run.project
         if not project.has_components:
             raise PreflightError("destroy is not supported for sites")
+        if project.kind == "databricks":
+            _destroy_databricks(run, project, yes)
+            return
         if not yes:
             raise PreflightError(
                 f"pass --yes to destroy {project.project}: {_destroy_warning(project)}"
@@ -626,9 +690,13 @@ def destroy(
 
 @app.command()
 def outputs(ctx: typer.Context) -> None:
-    """Print the stack's outputs as JSON."""
+    """Print the stack's outputs as JSON (both stacks' for a Databricks project)."""
 
     def body(run: Run) -> None:
+        if run.project.kind == "databricks":
+            merged = _databricks_deployment(run, role="plan", live=False).outputs()
+            print(json.dumps(merged, indent=2, sort_keys=True))
+            return
         _preflight(run, "plan", prefix=None)
 
         def tf(terraform: stack.Terraform) -> None:
@@ -651,8 +719,18 @@ def config_show(ctx: typer.Context) -> None:
 # -- bot and research projects -------------------------------------------------------
 
 
+def _refuse_databricks(project: Project, commands: str) -> None:
+    if project.kind == "databricks":
+        raise ConfigError(
+            f"{project.project} is a databricks project; {commands} work on "
+            "bot and research projects (a Databricks project uses validate, plan, apply, "
+            "destroy, outputs and the databricks commands)"
+        )
+
+
 def _bot_project(run: Run) -> Project:
     project = run.project
+    _refuse_databricks(project, "the bot commands")
     if project.kind != "bot":
         raise PreflightError(
             f"{project.project} is a {project.kind} project; the bot commands work on bot projects"
@@ -661,8 +739,10 @@ def _bot_project(run: Run) -> Project:
 
 
 def _component_project(run: Run) -> Project:
-    """A project made of components, for the commands a bot and a research project share."""
+    """A bot or research project, for the commands they share (the task commands).
+    A site or a Databricks project is refused."""
     project = run.project
+    _refuse_databricks(project, "the task commands")
     if not project.has_components:
         raise PreflightError(
             f"{project.project} is a site; this command works on bot and research projects"
@@ -1304,5 +1384,302 @@ def cost_report(
             "%s from %s to %s; Cost Explorer lags about a day and charges $0.01 a request",
             costs.METRIC, start, end - timedelta(days=1),
         )  # fmt: skip
+
+    _command(body)(ctx)
+
+
+# -- databricks -----------------------------------------------------------------
+
+STAGE_ORDER = (Stage.CONFIG, Stage.LIVE, Stage.BETWEEN, Stage.AFTER)
+
+
+def _databricks_project(run: Run, command: str = "`databricks doctor`") -> Project:
+    project = run.project
+    if project.kind != "databricks":
+        raise ConfigError(
+            f"{project.project} is a {project.kind} project; {command} works on databricks projects"
+        )
+    return project
+
+
+def _databricks_section(run: Run) -> DatabricksSection:
+    section = run.settings.databricks
+    if section is None:
+        raise ConfigError("config.yaml has no databricks section")
+    return section
+
+
+def _account_outputs(run: Run, project: Project, secret: str) -> dict[str, object]:
+    """The account stack's outputs (read-only: init and output), None if it has none yet."""
+    terraform = stack.Terraform(
+        project,
+        run.settings,
+        run.logger,
+        stack="account",
+        extra_env=databricks_auth.terraform_env(run.settings, secret),
+    )
+    failed = True
+    try:
+        terraform.prepare()
+        with phase("account outputs"):
+            terraform.init()
+            outputs = terraform.outputs()
+        failed = False
+    finally:
+        terraform.cleanup(failed=failed)
+    return outputs
+
+
+def _skipped_for_missing_account(stage: Stage, project: Project) -> list[CheckResult]:
+    return [
+        CheckResult(
+            check_id=c.check_id,
+            title=c.title,
+            outcome=Outcome.SKIP,
+            severity=Severity.WARNING,
+            facts={"reason": "the account stack has no outputs"},
+            remediation="apply the account stack first",
+            runbook=c.runbook,
+        )
+        for c in registered(stage, project.config.kind)
+    ]
+
+
+def _doctor_failure(
+    check_id: str, title: str, error: Exception, remediation: str, anchor: str
+) -> CheckResult:
+    """A failed ERROR finding for something doctor itself could not do. The facts carry the
+    error's type only: its text could name a path or a value."""
+    return CheckResult(
+        check_id=check_id,
+        title=title,
+        outcome=Outcome.FAIL,
+        severity=Severity.ERROR,
+        facts={"error": type(error).__name__},
+        remediation=remediation,
+        runbook=f"docs/databricks.md#{anchor}",
+    )
+
+
+def _load_databricks_secret(ssm: object, parameter: str) -> str:
+    """The client secret from SSM. On a GitHub runner it is masked at once: the runner then
+    hides it in every later line of the job's log, whatever prints it."""
+    secret = databricks_auth.load_secret(ssm, parameter)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        typer.echo(f"::add-mask::{secret}")
+    return secret
+
+
+def _databricks_deployment(
+    run: Run, role: Role | None, live: bool
+) -> databricks.DatabricksDeployment:
+    """The orchestrator for a Databricks project. `live` commands (plan, apply,
+    destroy) need the account enabled and the client secret; `role` is the CI role
+    to check (None: offline, as `validate` is)."""
+    project = run.project
+    section = _databricks_section(run)
+    if live and not section.enabled:
+        raise PreflightError(
+            f"{project.project}: the Databricks account is not set up yet "
+            f"(config.yaml databricks.enabled is false); see {databricks.SETUP_RUNBOOK}"
+        )
+    session: boto3.session.Session | None = None
+    if role is not None:
+        _preflight(run, role, prefix=None)
+        session = boto3.session.Session(region_name=project.region)
+    secret = ""
+    clients: databricks_auth.DatabricksClients | None = None
+    env: dict[str, str] = {}
+    if live:
+        assert session is not None
+        secret = _load_databricks_secret(session.client("ssm"), section.secret_parameter)
+        clients = databricks_auth.DatabricksClients(run.settings, secret)
+        env = databricks_auth.terraform_env(run.settings, secret)
+    events = EventLog(
+        session.client("s3") if session is not None else None,
+        section.audit_bucket,
+        section.events_prefix,
+        base_fields(project, run.settings, tool_version()),
+        run.logger,
+    )
+    factory = functools.partial(stack.Terraform, project, run.settings, run.logger, extra_env=env)
+    return databricks.DatabricksDeployment(
+        run,
+        project,
+        events,
+        clients,
+        factory,
+        session=session,
+        secret=secret,
+        version=tool_version(),
+    )
+
+
+def _destroy_databricks(run: Run, project: Project, yes: bool) -> None:
+    typer.echo(databricks_destroy.render_deletion_list(project))
+    if not yes:
+        raise PreflightError(f"pass --yes to destroy {project.project} and everything listed above")
+    deleted = _databricks_deployment(run, role="apply", live=True).destroy()
+    run.logger.info("destroyed %s: %s", project.project, "; ".join(deleted) or "nothing was left")
+
+
+@databricks_app.command("doctor")
+def databricks_doctor(
+    ctx: typer.Context,
+    stage: Annotated[
+        list[Stage] | None,
+        typer.Option(
+            "--stage",
+            help="A check stage to run: config, live, between or after. Repeatable; default all.",
+        ),
+    ] = None,
+) -> None:
+    """Run the read-only checks against the live project and print the table."""
+    # Filled once the secret is loaded: everything the logger writes from then on (Terraform's
+    # output, a check's traceback, the final error) is masked, as in plan and apply.
+    secrets: list[str] = []
+
+    def body(run: Run) -> None:
+        project = _databricks_project(run)
+        section = _databricks_section(run)
+        wanted = set(stage) if stage else set(STAGE_ORDER)
+        stages = [s for s in STAGE_ORDER if s in wanted]
+        with phase("preflight"):
+            session = boto3.session.Session(region_name=project.region)
+            # Read-only: the plan role (a PR or a shell) or the apply role (the Databricks
+            # apply workflow's `doctor` action).
+            aws.check_any_role(
+                session.client("sts"),
+                [project.role_name("plan"), project.role_name("apply")],
+                run.logger,
+            )
+        checks.load_builtin_checks()
+        results: list[CheckResult] = []
+        clients: databricks_auth.DatabricksClients | None = None
+        secret = ""
+        outputs: dict[str, object] | None = None
+        # Doctor reports what is broken: a finding below stands in for the stages that
+        # cannot run, and the table and checks.json are still written.
+        credential_failed = False
+        state_failed = False
+        for current in stages:
+            if current is not Stage.CONFIG:
+                if credential_failed:
+                    continue
+                if clients is None:
+                    # Until the owner enables the account, the checks SKIP and the secret
+                    # may not exist.
+                    try:
+                        if section.enabled:
+                            secret = _load_databricks_secret(
+                                session.client("ssm"), section.secret_parameter
+                            )
+                            secrets.append(secret)
+                    except SitesError as exc:
+                        run.logger.warning("%s", exc)
+                        results.append(
+                            _doctor_failure(
+                                "DBX-DOC-002",
+                                "Databricks credential loadable",
+                                exc,
+                                "The live, between and after checks did not run. Run "
+                                "`jwall-engineering-sites databricks credentials set` as the "
+                                "owner, then `databricks credentials check`.",
+                                "credentials",
+                            )
+                        )
+                        credential_failed = True
+                        continue
+                    clients = databricks_auth.DatabricksClients(run.settings, secret)
+            if current in (Stage.BETWEEN, Stage.AFTER) and section.enabled:
+                if state_failed:
+                    continue
+                if outputs is None:
+                    try:
+                        outputs = _account_outputs(run, project, secret)
+                    except SitesError as exc:
+                        run.logger.warning("%s", exc)
+                        results.append(
+                            _doctor_failure(
+                                "DBX-DOC-001",
+                                "Account stack state readable",
+                                exc,
+                                "The between and after checks did not run. Check that the "
+                                "CI role (ci-plan or ci-apply) can read the state bucket; run "
+                                "`jwall-engineering-sites plan` to see Terraform's own error.",
+                                "account-state",
+                            )
+                        )
+                        state_failed = True
+                        continue
+                if not outputs:
+                    run.logger.warning(
+                        "the account stack has no outputs: apply the account stack first "
+                        "(skipping the %s checks)",
+                        current.value,
+                    )
+                    results += _skipped_for_missing_account(current, project)
+                    continue
+                if clients is not None:
+                    clients.account_outputs = outputs
+            context = CheckContext(
+                project=project,
+                settings=run.settings,
+                logger=run.logger,
+                session=None if current is Stage.CONFIG else session,
+                databricks=None if current is Stage.CONFIG else clients,
+            )
+            results += run_stage(current, context)
+        checks_render.write_json(results, run.artifacts / "checks.json")
+        typer.echo(checks_render.console_table(results))
+        raise_on_errors(results)
+
+    run: Run = ctx.obj
+    with databricks.redacting(run.logger, secrets):
+        _command(body)(ctx)
+
+
+def _credentials_session(run: Run) -> tuple[boto3.session.Session, str]:
+    project = _databricks_project(run, command="`databricks credentials`")
+    section = _databricks_section(run)
+    session = boto3.session.Session(region_name=project.region)
+    with phase("preflight"):
+        _, arn = aws.caller_identity(session.client("sts"))
+        run.logger.info("running as %s", arn)
+    return session, section.secret_parameter
+
+
+@credentials_app.command("set")
+def databricks_credentials_set(ctx: typer.Context) -> None:
+    """Prompt for the service principal's client secret (no echo) and store it. Owner's shell."""
+
+    def body(run: Run) -> None:
+        session, parameter = _credentials_session(run)
+        value = typer.prompt("Databricks client secret", hide_input=True)
+        if not value.strip():
+            raise PreflightError("the client secret must not be empty")
+        botlib.put_secret(session.client("ssm"), parameter, value.strip())
+        run.logger.info("wrote the Databricks client secret to %s", parameter)
+
+    _command(body)(ctx)
+
+
+@credentials_app.command("check")
+def databricks_credentials_check(ctx: typer.Context) -> None:
+    """Exit 0 if the client secret is stored and decrypts, 3 if not. Never prints it."""
+
+    def body(run: Run) -> None:
+        session, parameter = _credentials_session(run)
+        present, modified = databricks_auth.secret_status(session.client("ssm"), parameter)
+        if not present:
+            raise PreflightError(
+                f"the Databricks client secret is not set: {parameter} does not exist "
+                f"(run `databricks credentials set`, see {databricks_auth.RUNBOOK})"
+            )
+        run.logger.info(
+            "the Databricks client secret is set at %s, last modified %s",
+            parameter,
+            modified.strftime("%Y-%m-%d") if modified else "unknown",
+        )
 
     _command(body)(ctx)

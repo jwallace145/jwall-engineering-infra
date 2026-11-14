@@ -1,0 +1,9 @@
+# Source: https://docs.databricks.com/aws/en/admin/workspace/troubleshooting (boxed sample: Terraform's default layout)
+╷
+│ Error: cannot create mws storage configurations: Malformed request: Failed storage configuration validation checks
+│
+│   with databricks_mws_storage_configurations.this,
+│   on main.tf line 42, in resource "databricks_mws_storage_configurations" "this":
+│   42: resource "databricks_mws_storage_configurations" "this" {
+│
+╵

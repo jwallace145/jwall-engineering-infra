@@ -82,10 +82,17 @@ jobs:
         uses: ./.github/actions/terraform-init
         with:
           args: -backend-config=backend/prod.hcl
+      # The metastore and audit log delivery (foundation/databricks.tf) need the
+      # Databricks credential: each terraform step sources it into its own shell
+      # (never GITHUB_ENV); it does nothing while databricks.enabled is false.
       - name: terraform plan
-        run: terraform plan -no-color -lock-timeout=120s -out=tfplan
+        run: |
+          source ../scripts/databricks-credentials.sh ../config.yaml
+          terraform plan -no-color -lock-timeout=120s -out=tfplan
       - name: terraform apply
-        run: terraform apply -no-color -lock-timeout=120s tfplan
+        run: |
+          source ../scripts/databricks-credentials.sh ../config.yaml
+          terraform apply -no-color -lock-timeout=120s tfplan
 
   image:
     name: Publish image (${{ needs.release-please.outputs.tag_name || inputs.tag }})

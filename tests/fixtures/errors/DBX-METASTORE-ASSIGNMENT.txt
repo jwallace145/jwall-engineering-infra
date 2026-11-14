@@ -1,0 +1,6 @@
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (message shape 'cannot create metastore assignment: ...'; the region wording from the coordinator's verified example)
+Error: cannot create metastore assignment: Workspace is not in the same region as metastore.
+
+  with databricks_metastore_assignment.this,
+  on main.tf line 42, in resource "databricks_metastore_assignment" "this":
+  42: resource "databricks_metastore_assignment" "this" {

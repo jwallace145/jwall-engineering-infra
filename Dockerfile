@@ -54,6 +54,9 @@ RUN cd /opt/jwall-engineering-sites/venv/lib/python3.13/site-packages/botocore/d
 COPY --from=terraform /tmp/terraform/terraform /usr/local/bin/terraform
 COPY stacks/site /opt/jwall-engineering-sites/stacks/site
 COPY stacks/bot /opt/jwall-engineering-sites/stacks/bot
+# The Databricks stacks are not in the image: their plan and apply workflows
+# run the CLI with `uv run` from this repository, and their providers
+# (databricks, time) would put the image over its size budget for nothing.
 # Fetch the library modules and mirror the providers so run-time init is offline.
 # Both stacks share one provider mirror (their lock files pin the same
 # provider). The unpacked copies that `init` leaves under

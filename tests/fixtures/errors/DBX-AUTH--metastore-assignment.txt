@@ -1,0 +1,6 @@
+# Source: same SDK wording as DBX-AUTH, on the metastore-assignment resource
+Error: cannot create metastore assignment: oauth-m2m: oauth2: cannot fetch token: invalid_client: Client authentication failed. Config: host=https://accounts.cloud.databricks.com, client_id=00000000-0000-0000-0000-000000000000, client_secret=***. Env: DATABRICKS_CLIENT_SECRET
+
+  with databricks_metastore_assignment.this,
+  on main.tf line 42, in resource "databricks_metastore_assignment" "this":
+  42: resource "databricks_metastore_assignment" "this" {

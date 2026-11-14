@@ -1,0 +1,101 @@
+name: Databricks apply
+
+# Applies a Databricks workspace project's two stacks (stacks/databricks-account,
+# then stacks/databricks-workspace): its VPC, NAT instance, workspace, catalog
+# and workspace configuration. Run by hand, after reading the Databricks plan
+# comment. Re-running after a partial apply is safe. The CLI reads the
+# Databricks client secret from SSM with the project's apply role. The `doctor`
+# action runs the read-only checks with the same role (the first runbook step).
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        # A free-form name, not a choice: the registry may be empty. The first
+        # step refuses a project that is not registered.
+        description: The Databricks project to apply (foundation/databricks.tf).
+        required: true
+        type: string
+      action:
+        description: >-
+          apply both stacks; destroy them (the catalog bucket is emptied first); or
+          doctor: run the read-only checks and print the table (changes nothing).
+        required: false
+        type: choice
+        options: [apply, destroy, doctor]
+        default: apply
+
+concurrency:
+  group: databricks-apply-${{ inputs.project }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  apply:
+    name: ${{ inputs.action }} ${{ inputs.project }}
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+    permissions:
+      contents: read
+      id-token: write # assume the project's apply role through GitHub OIDC
+    steps:
+      - uses: actions/checkout@v7
+      - name: Look up the project's repository
+        id: project
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          repository=$(scripts/databricks-projects.sh | jq -r --arg p "$PROJECT" '.[] | select(.project == $p) | .repository')
+          test -n "$repository" || { echo "::error::$PROJECT is not in foundation/databricks.tf"; exit 1; }
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+      - name: Check out the project's file (its default branch)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.project.outputs.repository }}
+          path: .consumer
+          sparse-checkout: |
+            jwall-engineering-sites.yaml
+          sparse-checkout-cone-mode: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.7"
+          terraform_wrapper: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Build the apply role ARN from config.yaml
+        id: role
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          account=$(yq -r .aws.account_id config.yaml)
+          organization=$(yq -r .context.organization config.yaml)
+          [[ "$account" =~ ^[0-9]{12}$ && -n "$organization" && "$organization" != null ]] || { echo "::error::config.yaml has no aws.account_id or context.organization"; exit 1; }
+          echo "arn=arn:aws:iam::${account}:role/${organization}-${PROJECT}-ci-apply" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ steps.role.outputs.arn }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-databricks-apply-${{ inputs.project }}-${{ github.run_id }}
+      - name: jwall-engineering-sites ${{ inputs.action }}
+        env:
+          JES_STACKS_ROOT: ${{ github.workspace }}/stacks
+          COMMAND: ${{ inputs.action == 'destroy' && 'destroy --yes' || inputs.action == 'doctor' && 'databricks doctor' || 'apply' }}
+        run: |
+          # COMMAND is `apply`, `destroy --yes` or `databricks doctor`: words on purpose.
+          # shellcheck disable=SC2086
+          uv run jwall-engineering-sites --file .consumer/jwall-engineering-sites.yaml $COMMAND
+      - name: Upload the run log and artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: databricks-apply-${{ inputs.project }}-${{ github.run_attempt }}
+          path: .jwall-engineering-sites/
+          retention-days: 14
+          if-no-files-found: ignore

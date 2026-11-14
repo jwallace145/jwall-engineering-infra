@@ -1,0 +1,17 @@
+# A sample Databricks workspace project file. The only component is a
+# databricks-workspace; the VPC range, cost center and members come from
+# `projects.databricks-poc.databricks` in config.yaml.
+version: 1
+project: databricks-poc
+repository: example-org/databricks-poc
+
+tags:
+  Organization: jwall-engineering
+  Project: databricks-poc
+  Environment: prod
+  Repository: example-org/databricks-poc
+  Owner: owner@example.com
+
+components:
+  - kind: databricks-workspace
+    compute_policies: [small-interactive, jobs]

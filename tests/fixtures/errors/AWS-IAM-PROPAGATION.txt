@@ -1,0 +1,6 @@
+# Source: https://github.com/hashicorp/terraform-provider-aws/blob/main/internal/service/iam/role.go (retryCreateRole: MalformedPolicyDocumentException 'Invalid principal in policy')
+Error: creating IAM Role (team-a-databricks-poc-uc-role): operation error IAM: CreateRole, https response error StatusCode: 400, RequestID: 00000000-0000-0000-0000-000000000000, MalformedPolicyDocument: Invalid principal in policy
+
+  with aws_iam_role.uc,
+  on main.tf line 42, in resource "aws_iam_role" "uc":
+  42: resource "aws_iam_role" "uc" {

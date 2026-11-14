@@ -1,0 +1,6 @@
+# Source: https://community.databricks.com/ (thread td-p/160953)
+Error: cannot create mws credentials: MALFORMED_REQUEST: Failed credential validation checks: please use a valid cross account IAM role with permissions setup correctly.
+
+  with databricks_mws_credentials.this,
+  on main.tf line 42, in resource "databricks_mws_credentials" "this":
+  42: resource "databricks_mws_credentials" "this" {

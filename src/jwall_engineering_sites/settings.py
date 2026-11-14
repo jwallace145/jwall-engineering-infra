@@ -7,10 +7,11 @@ which lives in each site repository's jwall-engineering-sites.yaml.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import (
@@ -210,6 +211,128 @@ class DatasetRetention(_Section):
         return self
 
 
+#: The default CIDR of the bot VPC; a Databricks project's `vpc_cidr` may not overlap it.
+BOT_VPC_CIDR = "10.0.0.0/16"
+#: The longest project name with a `databricks` entry: IAM role names are limited
+#: to 64 characters and `<name_root>-<project>-databricks-cross-account` must fit.
+DATABRICKS_PROJECT_NAME_MAX = 21
+PLACEHOLDER_UUID = "00000000-0000-0000-0000-000000000000"
+
+_KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_UUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _check_emails(value: tuple[str, ...]) -> tuple[str, ...]:
+    for email in value:
+        if not _EMAIL.match(email):
+            raise ValueError(f"{email!r} is not an email address")
+    return value
+
+
+class DatabricksPolicy(_Section):
+    """One cluster policy, centrally reviewed; a project lists the names it gets."""
+
+    description: str
+    #: The Databricks policy definition: attribute path to its rule.
+    definition: dict[str, Any]
+
+
+class DatabricksProject(_Section):
+    """What one project's Databricks workspace is approved for."""
+
+    compute_policies: tuple[str, ...]
+    cost_center: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    #: Allocated centrally so IP capacity is owned here and overlaps are checkable.
+    vpc_cidr: str
+    #: Workspace members, by email.
+    admins: tuple[str, ...] = Field(min_length=1)
+    users: tuple[str, ...] = ()
+
+    @field_validator("vpc_cidr")
+    @classmethod
+    def _vpc_cidr(cls, value: str) -> str:
+        try:
+            network = ipaddress.IPv4Network(value, strict=True)
+        except ValueError as exc:
+            raise ValueError(f"vpc_cidr {value!r} is not an IPv4 network: {exc}") from exc
+        if not 16 <= network.prefixlen <= 20:
+            raise ValueError(f"vpc_cidr {value!r} must be between /16 and /20")
+        return value
+
+    @field_validator("admins", "users")
+    @classmethod
+    def _emails(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _check_emails(value)
+
+
+class DatabricksSection(_Section):
+    """The Databricks account the workspace projects live in (the `databricks:` section)."""
+
+    #: False until the owner has created the service principal and set its secret;
+    #: the foundation's Databricks resources and the live checks wait for true.
+    enabled: bool
+    account_id: str = Field(pattern=_UUID)
+    client_id: str = Field(pattern=_UUID)
+    secret_parameter: str = "/jwall-engineering/databricks/client-secret"
+    metastore_name: str = "jwall-engineering-us-east-1"
+    metastore_admins: tuple[str, ...] = Field(min_length=1)
+    #: The project whose workspace enables the metastore-wide system schemas (the foundation
+    #: owns the metastore); must have a `projects.<name>.databricks` guardrail entry.
+    governance_project: str | None = None
+    #: The pinned Amazon Linux 2023 arm64 image name of the NAT instance.
+    nat_ami: str
+    #: The deployment-name prefix Databricks configured for this account, if any. With
+    #: one, a workspace's URL is `<prefix>-<project>`; without, Databricks picks the URL.
+    deployment_name_prefix: str | None = Field(default=None, pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
+    audit_bucket: str = "jwall-engineering-databricks-audit-logs"
+    events_prefix: str = Field(default="events/", pattern=r"^([a-z0-9][a-z0-9-]*/)+$")
+    compute_policies: dict[str, DatabricksPolicy] = {}
+    readiness_timeout: str = "20m"
+
+    @field_validator("metastore_admins")
+    @classmethod
+    def _emails(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _check_emails(value)
+
+    @field_validator("nat_ami")
+    @classmethod
+    def _nat_ami(cls, value: str) -> str:
+        if value.startswith("ami-") or not re.fullmatch(r"[A-Za-z0-9._()/-]{3,128}", value):
+            raise ValueError(f"{value!r} must be an Amazon image name, not an ID")
+        if not value.endswith("-arm64"):
+            raise ValueError(f"{value!r} must be an arm64 image (end in -arm64)")
+        return value
+
+    @field_validator("compute_policies")
+    @classmethod
+    def _policy_names(cls, value: dict[str, DatabricksPolicy]) -> dict[str, DatabricksPolicy]:
+        for name in value:
+            if not _KEBAB.match(name):
+                raise ValueError(f"compute_policies: name {name!r} must be kebab-case")
+            if "autotermination_minutes" not in value[name].definition:
+                raise ValueError(
+                    f"compute_policies.{name}.definition must set autotermination_minutes "
+                    "(the workspace module rejects a policy without it)"
+                )
+        return value
+
+    @field_validator("readiness_timeout")
+    @classmethod
+    def _readiness_timeout(cls, value: str) -> str:
+        parse_duration(value)
+        return value
+
+    @property
+    def readiness_timeout_seconds(self) -> int:
+        return parse_duration(self.readiness_timeout)
+
+    @property
+    def has_placeholder_ids(self) -> bool:
+        """True while `account_id` or `client_id` is still the nil UUID."""
+        return PLACEHOLDER_UUID in (self.account_id.lower(), self.client_id.lower())
+
+
 class ProjectGuardrails(_Section):
     """What one project's task launch role and buckets are approved for.
 
@@ -221,6 +344,8 @@ class ProjectGuardrails(_Section):
     datasets: dict[str, DatasetRetention] = {}
     #: Per-project override of `tasks.max_run_cost_usd`.
     max_run_cost_usd: float | None = None
+    #: Present for a Databricks workspace project (needs the top-level `databricks`).
+    databricks: DatabricksProject | None = None
 
 
 class TasksSection(_Section):
@@ -271,6 +396,49 @@ class Settings(_Section):
     bot: BotSection
     tasks: TasksSection
     projects: dict[str, ProjectGuardrails] = {}
+    databricks: DatabricksSection | None = None
+
+    @model_validator(mode="after")
+    def _databricks_consistency(self) -> Settings:
+        projects = {n: g.databricks for n, g in self.projects.items() if g.databricks}
+        if self.databricks is None:
+            if projects:
+                raise ValueError(
+                    f"projects {', '.join(sorted(projects))} have a databricks entry "
+                    "but config.yaml has no databricks section"
+                )
+            return self
+        governance = self.databricks.governance_project
+        if governance is not None and governance not in projects:
+            raise ValueError(
+                f"databricks.governance_project {governance!r} must name a project "
+                "with a databricks guardrail entry"
+            )
+        central = self.databricks.compute_policies
+        taken: list[tuple[str, ipaddress.IPv4Network]] = [
+            ("the bot VPC", ipaddress.IPv4Network(BOT_VPC_CIDR))
+        ]
+        for name, project in sorted(projects.items()):
+            if len(name) > DATABRICKS_PROJECT_NAME_MAX:
+                raise ValueError(
+                    f"project {name!r} has a databricks entry, so its name may be at most "
+                    f"{DATABRICKS_PROJECT_NAME_MAX} characters (IAM role name limit)"
+                )
+            for policy in project.compute_policies:
+                if policy not in central:
+                    raise ValueError(
+                        f"projects.{name}.databricks: compute policy {policy!r} is not "
+                        "defined under databricks.compute_policies"
+                    )
+            network = ipaddress.IPv4Network(project.vpc_cidr)
+            for other, other_network in taken:
+                if network.overlaps(other_network):
+                    raise ValueError(
+                        f"projects.{name}.databricks.vpc_cidr {project.vpc_cidr} overlaps "
+                        f"{other} ({other_network})"
+                    )
+            taken.append((f"project {name!r}", network))
+        return self
 
     def run_cost_ceiling(self, project: str) -> float:
         """The project's `max_run_cost_usd` override, else `tasks.max_run_cost_usd`."""
@@ -279,8 +447,19 @@ class Settings(_Section):
             return guardrails.max_run_cost_usd
         return self.tasks.max_run_cost_usd
 
-    def state_key(self, project: str, environment: str) -> str:
-        return self.state.key_template.format(project=project, environment=environment)
+    def state_key(self, project: str, environment: str, stack: str | None = None) -> str:
+        """The state key of a project's environment, or of one of its stacks.
+
+        A Databricks project has several stacks (`account`, `workspace`); each gets
+        `<project>-<environment>-<stack>` as its file name. Without `stack` the key
+        is unchanged.
+        """
+        key = self.state.key_template.format(project=project, environment=environment)
+        if stack is None:
+            return key
+        if not key.endswith(".tfstate"):
+            raise ValueError("key_template must end in .tfstate to add a stack suffix")
+        return f"{key.removesuffix('.tfstate')}-{stack}.tfstate"
 
 
 def default_config_path() -> Path:

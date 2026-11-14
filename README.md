@@ -47,6 +47,9 @@ reusable workflows this repository publishes. The design is in
 | `task list` | `ci-plan` or `ci-task` | The project's running task instances (read-only) |
 | `task terminate (--instance ID \| --run-id ID [--task-id ID] \| --all)`, `task sweep [--dry-run]` | `ci-task` | Terminate task instances; sweep those past their lifetime (by hand: there is no scheduled sweeper) |
 | `cost report [--project NAME [--by workflow\|profile]] [--months N]` | the owner's shell | Monthly spend from Cost Explorer: one project by component (task spend split by workflow or profile), or every project plus the untagged spend by service ([docs/costs.md](docs/costs.md)) |
+| `databricks doctor [--stage config\|live\|between\|after]` | `ci-plan` or `ci-apply` | Databricks projects: run the read-only checks against the live project and print the table ([docs/databricks.md](docs/databricks.md#doctor)) |
+| `databricks credentials set\|check` | the owner's shell | Write (no echo) or check the Databricks service principal's client secret in SSM |
+| Databricks projects: `validate`, `plan`, `apply`, `destroy --yes`, `outputs` | none, `ci-plan`, `ci-apply`, `ci-apply`, `ci-plan` | Run across the account and workspace stacks: config and live checks, a deferred or stale workspace plan, apply with a readiness wait and after checks, destroy that empties the catalog bucket first, both stacks' outputs merged |
 
 Every command checks that the credentials are the role it expects, that the
 built site and bucket exist, and that the Terraform in the image is the
@@ -153,6 +156,19 @@ ceiling, are central guardrails in `config.yaml`. Onboarding, the
 `task-artifact` helper, resuming a training across runs, costs and destroy:
 [docs/research-projects.md](docs/research-projects.md).
 
+### Databricks workspaces
+
+A repository whose only component is a `databricks-workspace` is a Databricks
+workspace project. Two stacks (`stacks/databricks-account`, then
+`stacks/databricks-workspace`) give it a customer-managed VPC with a NAT
+instance, a workspace on the owner's Databricks-on-AWS account, its own Unity
+Catalog catalog and bucket, and central compute policies. Preflight checks run
+before, between and after the stacks, and every run appends event records to
+S3. The pull request plans both stacks (the `Databricks plan` job) and the
+**Databricks apply** workflow applies or destroys them by hand. One-time
+setup, the checks and the runbook, costs and known gaps:
+[docs/databricks.md](docs/databricks.md).
+
 ### The pull request comments
 
 The plan and preview comments are the product's face in a site repository, so
@@ -247,6 +263,8 @@ CLI and `config.yaml`, the tool configuration shared by the stack and the CLI
 | `bots.tf` | The `bots` map: one entry per bot or research project, each with plan and apply roles, a release role for bots, and a task role where `config.yaml` lists instance types |
 | `docs/lichess-bot.md`, `docs/consumer-note.md` | The bot projects guide and the note a bot repository links to |
 | `docs/remote-tasks.md`, `docs/datasets.md`, `docs/research-projects.md`, `docs/costs.md` | Task instances, dataset buckets, research projects, and cost reports |
+| `docs/databricks.md` | Databricks workspace projects: setup, checks, apply and destroy, layout, costs, known gaps and the runbook |
+| `stacks/databricks-account/`, `stacks/databricks-workspace/`, `foundation/databricks.tf` | The two stacks of a Databricks project; the metastore, audit log delivery and the project registry |
 | `Dockerfile` | The CLI image: a pinned Terraform, the stack with modules and providers vendored, `config.yaml` |
 | `.github/actions/terraform-init` | `terraform init` with a retry for the registry's lag after a library release |
 | `projects.tf` | The `projects` map: one entry per site, each fed to the registry `site-bucket`, `ci-plan-role`, `ci-preview-role` and `ci-apply-role` modules |
@@ -400,8 +418,10 @@ The state bucket does not exist before the first apply, so the first apply uses 
 - `Terraform plan`: assumes the plan role through OIDC and posts the foundation plan as the branded sticky PR comment (rendered by `jwall-engineering-sites report plan-comment`), updated on every push
 - `Python lint, types, tests`: ruff, mypy and pytest for the sites CLI
 - `Image build and smoke test`: builds the CLI image, runs `validate` inside it offline, checks its Terraform version and enforces the compressed-size budget
-- `Bot stack validate, tflint` (`stacks/bot/`)
+- `Bot stack validate, tflint` (`stacks/bot/`), `Databricks account stack validate, tflint` (`stacks/databricks-account/`) and `Databricks workspace stack validate, tflint` (`stacks/databricks-workspace/`)
+- `Stack plans against mock providers`: `scripts/test-stack-plans.sh` plans `stacks/bot` and both Databricks stacks with tfvars the CLI renders for the cases in `tests/stack_plans/<stack>/`; no AWS or Databricks
 - `Bot plan (<project>)`: for each bot in `bots.tf`, assumes the bot's plan role and posts its plan as a sticky comment. Until the release that creates the bot's roles, it skips with a notice instead of failing.
+- `Databricks plan (<project>)`: for each project in `foundation/databricks.tf`, while `databricks.enabled` is true, plans both stacks with the project's plan role and posts one sticky comment (the workspace plan is deferred until the workspace exists, and marked stale if the account plan replaces it).
 
 Every `terraform init` goes through `.github/actions/terraform-init`, which retries the registry's few-minute lag after a library release.
 
@@ -412,6 +432,8 @@ Merges to `main` accumulate in a Release Please PR. Merging that PR creates a ta
 Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AWS_APPLY_ROLE_ARN`. Bot role ARNs need no variable: the workflows build them from `aws.account_id` and `context.organization` in `config.yaml` and the bot's name.
 
 **Bot projects** (`.github/workflows/bot-apply.yml`, by hand): applies or destroys one bot's stack in the `prod` environment with its apply role. `.github/workflows/container-release.yml` is the reusable workflow a bot repository calls on each release ([guide](docs/lichess-bot.md#the-caller-workflow)).
+
+**Databricks projects** (`.github/workflows/databricks-apply.yml`, by hand): `workflow_dispatch` with the project name applies both stacks in the `prod` environment with the project's apply role (`action: apply`, the default); `action: destroy` empties the catalog bucket and destroys them; `action: doctor` runs the read-only checks and changes nothing. Re-running after a partial apply is safe ([guide](docs/databricks.md#what-apply-does)).
 
 ## Local development
 
@@ -455,6 +477,7 @@ Not automated; these need the owner's credentials or the GitHub UI.
   - add the caller workflow to the bot repository ([docs/remote-tasks.md](docs/remote-tasks.md#the-caller)).
 - For projects with `dataset` components (listed under `projects.<name>.datasets` in `config.yaml`), after the release that grants `dataset/*` to their roles: run the **Bot apply** workflow; it creates the buckets ([docs/datasets.md](docs/datasets.md)). A versioned bucket needs the foundation apply that grants `s3:PutBucketVersioning` first.
 - For a new research project, follow the onboarding order in [docs/research-projects.md](docs/research-projects.md#onboarding-a-research-project).
+- For Databricks workspace projects, follow [One-time setup](docs/databricks.md#one-time-setup): the service principal, the IDs and emails in `config.yaml`, `databricks credentials set`, deleting a pre-existing us-east-1 metastore (only with the owner's go-ahead), then `databricks.enabled: true`.
 - Work through [docs/migration.md](docs/migration.md) to retire the legacy resources.
 
 ## License

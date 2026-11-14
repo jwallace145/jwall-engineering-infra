@@ -1,0 +1,6 @@
+# Source: https://docs.databricks.com/aws/en/admin/workspace/troubleshooting
+Error: cannot create mws networks: MALFORMED_REQUEST: Malformed parameters: subnet_id subnet-0123456789abcdef0 is already used by another Network
+
+  with databricks_mws_networks.this,
+  on main.tf line 42, in resource "databricks_mws_networks" "this":
+  42: resource "databricks_mws_networks" "this" {

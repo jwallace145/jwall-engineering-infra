@@ -277,6 +277,100 @@ def plan_comment(
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class StackSection:
+    """One stack of a multi-stack plan comment. `exit_code` is None when the
+    stack was not planned; `note` is Markdown shown above its plan."""
+
+    title: str
+    exit_code: int | None
+    plan_text: str = ""
+    note: str | None = None
+
+
+def _overall_exit_code(sections: list[StackSection]) -> int:
+    codes = [s.exit_code for s in sections if s.exit_code is not None]
+    if any(code not in (PLAN_NO_CHANGES, PLAN_CHANGES) for code in codes) or not codes:
+        return -1
+    return PLAN_CHANGES if PLAN_CHANGES in codes else PLAN_NO_CHANGES
+
+
+def _merged_summary(sections: list[StackSection]) -> PlanSummary:
+    summaries = [parse_plan(s.plan_text) for s in sections if s.exit_code is not None]
+
+    def total(values: list[int | None]) -> int | None:
+        return None if any(v is None for v in values) else sum(v or 0 for v in values)
+
+    return PlanSummary(
+        add=total([p.add for p in summaries]),
+        change=total([p.change for p in summaries]),
+        destroy=total([p.destroy for p in summaries]),
+        resources=tuple(r for p in summaries for r in p.resources),
+        outputs_changed=any(p.outputs_changed for p in summaries),
+    )
+
+
+def stacks_plan_comment(
+    sections: list[StackSection],
+    checks_markdown: str | None,
+    max_bytes: int,
+    subject: str,
+    provenance: Provenance,
+    applied_by: str | None = None,
+) -> str:
+    """One sticky plan comment for a project of several stacks, with the check
+    table. `max_bytes` bounds the whole comment; the plan bodies share it."""
+    exit_code = _overall_exit_code(sections)
+    head = _header("Terraform plan", subject)
+    head += _plan_alert(exit_code, _merged_summary(sections), subject, applied_by)
+    parts: list[tuple[list[str], str | None]] = []  # (lines before the body, the body)
+    for section in sections:
+        lines = [f"### {section.title}", ""]
+        if section.note:
+            lines += [section.note.rstrip("\n"), ""]
+        failed = section.exit_code not in (PLAN_NO_CHANGES, PLAN_CHANGES)
+        if section.exit_code is None or (failed and not section.plan_text.strip()):
+            parts.append((lines, None))
+            continue
+        summary = parse_plan(section.plan_text)
+        if section.exit_code == PLAN_NO_CHANGES:
+            lines += ["No changes.", ""]
+        if section.exit_code == PLAN_CHANGES and summary.add is not None:
+            lines += _counts_table(summary)
+        if section.exit_code == PLAN_CHANGES and summary.resources:
+            lines += _resource_table(summary)
+        details = "<details open>" if failed else "<details>"
+        title = "Terraform output" if failed else "Full plan output"
+        lines += [f"{details}<summary>📄 {title}</summary>", "", "```hcl"]
+        parts.append((lines, section.plan_text.rstrip("\n")))
+    after_body = ["```", "", "</details>", ""]
+    checks = ["### Preflight checks", "", checks_markdown, ""] if checks_markdown else []
+    tail = [*checks, *_footer(provenance, "Updated on every push"), ""]
+    truncated_note = "_Plan output truncated to its tail; the full plan is in the run's artifacts._"
+
+    bodies = [body for _, body in parts if body is not None]
+    fixed_lines = list(head)
+    for lines, body in parts:
+        fixed_lines += lines
+        if body is not None:
+            fixed_lines += [truncated_note, "", *after_body]
+    fixed = len("\n".join([*fixed_lines, *tail]).encode("utf-8")) + len(bodies)
+    budget = max((max_bytes - fixed) // max(len(bodies), 1), _MIN_BODY_BYTES)
+
+    out = list(head)
+    for lines, body in parts:
+        if body is None:
+            out += lines
+            continue
+        text, truncated = truncate_tail(body, budget)
+        if truncated:
+            out += [*lines[:-1], truncated_note, "", lines[-1]]
+        else:
+            out += lines
+        out += [text, *after_body]
+    return "\n".join([*out, *tail])
+
+
 def preview_comment(url: str, pr: int, subject: str, provenance: Provenance) -> str:
     built = "this pull request"
     if provenance.sha:

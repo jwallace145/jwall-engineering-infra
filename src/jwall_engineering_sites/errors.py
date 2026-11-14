@@ -24,6 +24,11 @@ class PreflightError(SitesError):
 
 
 class RunError(SitesError):
-    """Terraform or an AWS call failed."""
+    """Terraform or an AWS call failed. `output` is what a failed Terraform
+    command printed, kept for the failure's diagnosis (never in the message)."""
 
     exit_code = 1
+
+    def __init__(self, *args: object, output: str | None = None) -> None:
+        super().__init__(*args)
+        self.output = output

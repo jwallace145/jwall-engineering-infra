@@ -28,13 +28,15 @@ terraform fmt -recursive
 (cd foundation && terraform init -backend=false && terraform validate)
 (cd stacks/site && terraform init -backend=false && terraform validate)
 (cd stacks/bot && terraform init -backend=false && terraform validate)
+(cd stacks/databricks-account && terraform init -backend=false && terraform validate)
+(cd stacks/databricks-workspace && terraform init -backend=false && terraform validate)
 tflint --init && tflint --recursive
 npm ci && npm test
 uv sync && uv run ruff format --check && uv run ruff check && uv run mypy && uv run pytest
-scripts/test-stack-plans.sh   # plans stacks/bot against a mock provider; touches no AWS
+scripts/test-stack-plans.sh   # plans stacks/bot and the databricks stacks against mock providers; touches no AWS
 ```
 
-- **The sites CLI lives in `src/jwall_engineering_sites/`** with tests in `tests/`. Python 3.13, `uv`, Typer, Pydantic. `config.yaml` at the root is the tool configuration and the central guardrails (`tasks.limits`, `tasks.max_run_cost_usd`, and `projects.<name>` with its instance types, task profiles and dataset retention; `foundation/bots.tf` reads them into the IAM allow-lists). `stacks/site/` and `stacks/bot/` are the Terraform the CLI renders per site and per bot or research project; `kinds/lichess_bot/` holds the bot image's Dockerfile and entrypoint. A project is a `site`, a `bot` (`container-image` + `lichess-bot`) or a `research` project (`dataset`/`task-runner` only). Bot projects are documented in `docs/lichess-bot.md` and research projects in `docs/research-projects.md`; keep them current with any change to the commands, stack or image. A guardrail change is a config PR, a release, then a consumer pin bump (see `docs/research-projects.md`). Keep `tests/fixtures/config.yaml` identical to `config.yaml` (a test checks).
+- **The sites CLI lives in `src/jwall_engineering_sites/`** with tests in `tests/`. Python 3.13, `uv`, Typer, Pydantic. `config.yaml` at the root is the tool configuration and the central guardrails (`tasks.limits`, `tasks.max_run_cost_usd`, and `projects.<name>` with its instance types, task profiles and dataset retention; `foundation/bots.tf` reads them into the IAM allow-lists). `stacks/site/` and `stacks/bot/` are the Terraform the CLI renders per site and per bot or research project, and `stacks/databricks-account/` and `stacks/databricks-workspace/` (`stacks/databricks-*`) the two stacks it renders per Databricks workspace project; `kinds/lichess_bot/` holds the bot image's Dockerfile and entrypoint. A project is a `site`, a `bot` (`container-image` + `lichess-bot`), a `research` project (`dataset`/`task-runner` only) or a `databricks` workspace project (`databricks-workspace`). Bot projects are documented in `docs/lichess-bot.md`, research projects in `docs/research-projects.md` and Databricks projects in `docs/databricks.md`; keep them current with any change to the commands, stack or image. A guardrail change is a config PR, a release, then a consumer pin bump (see `docs/research-projects.md`). Keep `tests/fixtures/config.yaml` identical to `config.yaml` (a test checks).
 
 ## Things that need the owner
 

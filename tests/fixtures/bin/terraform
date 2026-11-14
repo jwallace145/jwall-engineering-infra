@@ -1,11 +1,42 @@
 #!/usr/bin/env bash
 # A fake terraform for tests: records every invocation, emits canned output.
+#
+# A Databricks project's two stacks are told apart by their backend key, and each
+# can be scripted on its own with FAKE_TF_<ACCOUNT|WORKSPACE>_<SETTING> (bash 3.2):
+#   FAIL_ON=<command> ERROR=<file>  print the file and exit 1 when running <command>
+#   PLAN=<file> PLAN_EXIT=<n>       the plan's text and exit code
+#   OUTPUTS=<file> STATE_LIST=<..>  `output -json` and `state list`
+# FAKE_TF_STACK_LOG records "<stack> <args>" per call; FAKE_TF_ECHO_SECRET=1 prints
+# the Databricks secret from the environment, as a careless provider log might.
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_TF_LOG:?}"
+if [ -n "${FAKE_TF_ENV:-}" ]; then env >> "$FAKE_TF_ENV"; fi
+stack=""
+if [ -f backend.hcl ]; then
+  case "$(grep '^key' backend.hcl)" in
+    *-account.tfstate*) stack=ACCOUNT ;;
+    *-workspace.tfstate*) stack=WORKSPACE ;;
+  esac
+fi
+setting() { local name="FAKE_TF_${stack}_$1"; printf '%s' "${!name:-}"; }
+if [ -n "$stack" ] && [ -n "${FAKE_TF_STACK_LOG:-}" ]; then
+  printf '%s %s\n' "$(printf '%s' "$stack" | tr 'A-Z' 'a-z')" "$*" >> "$FAKE_TF_STACK_LOG"
+fi
+case "$1" in
+  init|plan|apply|destroy)
+    if [ "${FAKE_TF_ECHO_SECRET:-0}" = "1" ]; then
+      echo "provider debug: token request for ${DATABRICKS_CLIENT_SECRET:-none}"
+    fi ;;
+esac
+if [ -n "$stack" ] && [ "$(setting FAIL_ON)" = "$1" ]; then
+  cat "$(setting ERROR)"
+  exit 1
+fi
 case "$1" in
   version) printf '{"terraform_version":"%s"}\n' "${FAKE_TF_VERSION:-1.14.7}" ;;
   init)
     if [ -n "${FAKE_TF_TFVARS:-}" ] && [ -f terraform.tfvars.json ]; then cp terraform.tfvars.json "$FAKE_TF_TFVARS"; fi
+    if [ -n "$stack" ] && [ -n "${FAKE_TF_TFVARS_DIR:-}" ]; then cp terraform.tfvars.json "$FAKE_TF_TFVARS_DIR/$stack.json"; fi
     echo "Terraform has been successfully initialized!" ;;
   validate) echo "Success! The configuration is valid." ;;
   plan)
@@ -17,15 +48,26 @@ case "$1" in
       echo "  Created:   2026-10-16 00:00:00 UTC"
       exit 1
     fi
-    echo "Plan: ${FAKE_TF_PLAN_SUMMARY:-0 to add, 0 to change, 0 to destroy.}"
-    exit "${FAKE_TF_PLAN_EXIT:-0}" ;;
+    if [ -n "$(setting PLAN)" ]; then
+      cat "$(setting PLAN)"
+    else
+      echo "Plan: ${FAKE_TF_PLAN_SUMMARY:-0 to add, 0 to change, 0 to destroy.}"
+    fi
+    plan_exit="$(setting PLAN_EXIT)"
+    exit "${plan_exit:-${FAKE_TF_PLAN_EXIT:-0}}" ;;
   apply) echo "Apply complete! Resources: 1 added, 0 changed, 0 destroyed." ;;
   destroy) echo "Destroy complete! Resources: 9 destroyed." ;;
   state)
     case "$2" in
-      list) printf '%s\n' ${FAKE_TF_STATE_LIST:-} ;;
+      list)
+        if [ -n "$stack" ] && [ -n "$(setting STATE_LIST)" ]; then
+          printf '%s\n' $(setting STATE_LIST)
+        else
+          printf '%s\n' ${FAKE_TF_STATE_LIST:-}
+        fi ;;
       rm) echo "Removed $3" ;;
     esac ;;
-  output) cat "${FAKE_TF_OUTPUTS:?}" ;;
+  output)
+    if [ -n "$(setting OUTPUTS)" ]; then cat "$(setting OUTPUTS)"; else cat "${FAKE_TF_OUTPUTS:?}"; fi ;;
   *) echo "fake terraform: unknown command $1" >&2; exit 64 ;;
 esac

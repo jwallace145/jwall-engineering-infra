@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -208,6 +209,7 @@ def test_run_cost_ceiling_defaults_and_overrides(settings: Settings) -> None:
 def _with_projects(tmp_path: Path, projects: dict[str, object]) -> Path:
     raw = yaml.safe_load((FIXTURES / "config.yaml").read_text())
     raw["projects"] = projects
+    del raw["databricks"]  # its projects are replaced here, and it needs one
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(raw))
     return path
@@ -300,3 +302,156 @@ def test_central_prefixes_have_the_component_format(
     path = _with_projects(tmp_path, {"p": {"datasets": {"b": retention}}})
     with pytest.raises(ConfigError, match=r"prefix|sub-prefix"):
         load_settings(path, environ={})
+
+
+def _databricks_raw() -> dict[str, Any]:
+    raw: dict[str, Any] = yaml.safe_load((FIXTURES / "config.yaml").read_text())
+    return raw
+
+
+def _load_raw(tmp_path: Path, raw: dict[str, Any]) -> Settings:
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return load_settings(path, environ={})
+
+
+def _second_project(raw: dict[str, Any], name: str, cidr: str) -> None:
+    projects = raw["projects"]
+    entry = yaml.safe_load(yaml.safe_dump(projects["databricks-poc"]))
+    entry["databricks"]["vpc_cidr"] = cidr
+    projects[name] = entry
+
+
+def test_databricks_section_parses(settings: Settings) -> None:
+    section = settings.databricks
+    assert section is not None
+    assert section.enabled is False
+    assert section.has_placeholder_ids is True
+    assert section.secret_parameter == "/jwall-engineering/databricks/client-secret"
+    assert section.metastore_name == "jwall-engineering-us-east-1"
+    assert section.governance_project == "databricks-poc"
+    assert section.audit_bucket == "jwall-engineering-databricks-audit-logs"
+    assert section.events_prefix == "events/"
+    assert section.readiness_timeout_seconds == 1200
+    assert set(section.compute_policies) == {"small-interactive", "jobs"}
+    small = section.compute_policies["small-interactive"].definition
+    assert small["num_workers"] == {"type": "range", "maxValue": 2}
+    assert small["autotermination_minutes"] == {"type": "fixed", "value": 30, "hidden": False}
+    assert small["node_type_id"] == {"type": "allowlist", "values": ["m7g.large", "m7g.xlarge"]}
+    assert small["aws_attributes.availability"]["value"] == "SPOT_WITH_FALLBACK"
+    assert section.compute_policies["jobs"].definition["cluster_type"] == {
+        "type": "fixed",
+        "value": "job",
+    }
+    poc = settings.projects["databricks-poc"].databricks
+    assert poc is not None
+    assert poc.compute_policies == ("small-interactive", "jobs")
+    assert poc.cost_center == "cc-0000"
+    assert poc.vpc_cidr == "10.40.0.0/16"
+    assert poc.users == ()
+
+
+def test_real_ids_are_not_placeholders(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    raw["databricks"]["account_id"] = "11111111-2222-3333-4444-555555555555"
+    raw["databricks"]["client_id"] = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+    section = _load_raw(tmp_path, raw).databricks
+    assert section is not None
+    assert section.has_placeholder_ids is False
+
+
+def test_state_key_with_stack(settings: Settings) -> None:
+    assert (
+        settings.state_key("databricks-poc", "prod", "account")
+        == "project=databricks-poc/env=prod/databricks-poc-prod-account.tfstate"
+    )
+
+
+def test_state_key_without_stack_unchanged(settings: Settings) -> None:
+    assert (
+        settings.state_key("databricks-poc", "prod")
+        == "project=databricks-poc/env=prod/databricks-poc-prod.tfstate"
+    )
+
+
+def test_policy_name_must_be_kebab(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    policies = raw["databricks"]["compute_policies"]
+    policies["Small_Interactive"] = policies.pop("small-interactive")
+    raw["projects"]["databricks-poc"]["databricks"]["compute_policies"] = [
+        "Small_Interactive",
+        "jobs",
+    ]
+    with pytest.raises(ConfigError, match="Small_Interactive"):
+        _load_raw(tmp_path, raw)
+
+
+def test_policy_must_set_autotermination(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    del raw["databricks"]["compute_policies"]["jobs"]["definition"]["autotermination_minutes"]
+    with pytest.raises(ConfigError, match=r"jobs.*autotermination_minutes"):
+        _load_raw(tmp_path, raw)
+
+
+def test_project_policy_must_exist_centrally(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    raw["projects"]["databricks-poc"]["databricks"]["compute_policies"] = ["ghost-policy"]
+    with pytest.raises(ConfigError, match="ghost-policy"):
+        _load_raw(tmp_path, raw)
+
+
+def test_governance_project_must_have_databricks_guardrails(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    raw["databricks"]["governance_project"] = "rusty-chess"
+    with pytest.raises(ConfigError, match=r"governance_project.*rusty-chess"):
+        _load_raw(tmp_path, raw)
+
+
+def test_overlapping_vpc_cidrs_rejected(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    _second_project(raw, "team-a", "10.40.128.0/17")
+    with pytest.raises(ConfigError, match=r"databricks-poc.*team-a|team-a.*databricks-poc"):
+        _load_raw(tmp_path, raw)
+
+
+def test_disjoint_vpc_cidrs_accepted(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    _second_project(raw, "team-a", "10.41.0.0/16")
+    assert _load_raw(tmp_path, raw).projects["team-a"].databricks is not None
+
+
+def test_vpc_cidr_overlapping_bot_vpc_rejected(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    raw["projects"]["databricks-poc"]["databricks"]["vpc_cidr"] = "10.0.0.0/20"
+    with pytest.raises(ConfigError, match=r"10\.0\.0\.0/16"):
+        _load_raw(tmp_path, raw)
+
+
+@pytest.mark.parametrize("cidr", ["10.40.0.0/15", "10.40.0.0/21", "10.40.0.1/16", "nonsense"])
+def test_vpc_cidr_must_be_a_16_to_20_network(tmp_path: Path, cidr: str) -> None:
+    raw = _databricks_raw()
+    raw["projects"]["databricks-poc"]["databricks"]["vpc_cidr"] = cidr
+    with pytest.raises(ConfigError, match="vpc_cidr"):
+        _load_raw(tmp_path, raw)
+
+
+def test_databricks_project_name_limited_to_21_characters(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    long_name = "a" * 22
+    _second_project(raw, long_name, "10.41.0.0/16")
+    with pytest.raises(ConfigError, match=rf"{long_name}.*21"):
+        _load_raw(tmp_path, raw)
+
+
+def test_project_databricks_requires_section(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    del raw["databricks"]
+    with pytest.raises(ConfigError, match=r"databricks-poc.*databricks"):
+        _load_raw(tmp_path, raw)
+
+
+def test_member_emails_must_look_like_emails(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    raw["projects"]["databricks-poc"]["databricks"]["admins"] = ["not-an-email"]
+    with pytest.raises(ConfigError, match="not-an-email"):
+        _load_raw(tmp_path, raw)

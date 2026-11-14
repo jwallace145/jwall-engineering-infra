@@ -634,3 +634,109 @@ def test_rust_defaults_to_true_and_the_cpu_profile_follows_it(
     assert research_runner.rust is False
     assert research_runner.profile("cpu").rust is False
     assert research_runner.profile("train").rust is False
+
+
+# -- databricks projects: only a databricks-workspace --------------------------
+
+DATABRICKS_FILE = FIXTURES / "bots" / "databricks-poc.yaml"
+
+
+@pytest.fixture
+def databricks(settings: Settings) -> Project:
+    return Project.from_config(load_site_config(DATABRICKS_FILE), settings)
+
+
+def test_databricks_only_project_is_kind_databricks(databricks: Project) -> None:
+    assert databricks.kind == "databricks"
+    assert databricks.config.kind == "databricks"
+    assert databricks.stack_kind == "databricks"
+    assert databricks.has_components
+    assert databricks.databricks.compute_policies == ("small-interactive", "jobs")
+    assert databricks.databricks.deployment_name is None
+    assert databricks.state_key == "project=databricks-poc/env=prod/databricks-poc-prod.tfstate"
+
+
+def test_databricks_with_bot_rejected(tmp_path: Path, settings: Settings) -> None:
+    raw = _raw()
+    raw["components"].append({"kind": "databricks-workspace", "compute_policies": ["jobs"]})
+    with pytest.raises(ConfigError, match="only component"):
+        _load(tmp_path, raw, settings)
+
+
+def test_databricks_with_dataset_rejected(tmp_path: Path, settings: Settings) -> None:
+    raw: dict[str, Any] = yaml.safe_load(DATABRICKS_FILE.read_text())
+    raw["components"].append(
+        {
+            "kind": "dataset",
+            "name": "nnue",
+            "bucket": "jwall-engineering-databricks-poc-nnue",
+            "prefix": "data/",
+        }
+    )
+    with pytest.raises(ConfigError, match="only component"):
+        _load(tmp_path, raw, settings)
+
+
+def test_two_databricks_workspaces_fail(tmp_path: Path, settings: Settings) -> None:
+    raw: dict[str, Any] = yaml.safe_load(DATABRICKS_FILE.read_text())
+    raw["components"].append(dict(raw["components"][0]))
+    with pytest.raises(ConfigError, match="at most one databricks-workspace"):
+        _load(tmp_path, raw, settings)
+
+
+def test_policy_outside_guardrails_rejected(tmp_path: Path, settings: Settings) -> None:
+    raw: dict[str, Any] = yaml.safe_load(DATABRICKS_FILE.read_text())
+    raw["components"][0]["compute_policies"] = ["small-interactive", "gpu-everything"]
+    with pytest.raises(ConfigError, match=r"gpu-everything.*config\.yaml"):
+        _load(tmp_path, raw, settings)
+
+
+def test_databricks_project_without_guardrail_entry_rejected(
+    tmp_path: Path, settings: Settings
+) -> None:
+    bare = settings.model_copy(
+        update={
+            "projects": {
+                **settings.projects,
+                "databricks-poc": settings.projects["databricks-poc"].model_copy(
+                    update={"databricks": None}
+                ),
+            }
+        }
+    )
+    raw: dict[str, Any] = yaml.safe_load(DATABRICKS_FILE.read_text())
+    with pytest.raises(ConfigError, match=r"projects\.databricks-poc\.databricks.*config\.yaml"):
+        _load(tmp_path, raw, bare)
+
+
+def test_databricks_tags_include_cost_center_and_workspace(databricks: Project) -> None:
+    tags = databricks.databricks_tags
+    assert tags["CostCenter"] == "cc-0000"
+    assert tags["Workspace"] == "databricks-poc-prod"
+    required = {"Project", "Environment", "CostCenter", "Owner", "ManagedBy", "Workspace"}
+    assert required <= tags.keys()
+    assert not {"Vendor", "Creator", "ClusterName", "ClusterId", "Name"} & tags.keys()
+    assert tags["Project"] == "databricks-poc"
+
+
+def test_databricks_reserved_tag_keys_rejected(tmp_path: Path, settings: Settings) -> None:
+    raw: dict[str, Any] = yaml.safe_load(DATABRICKS_FILE.read_text())
+    raw["tags"]["Creator"] = "someone"
+    with pytest.raises(ConfigError, match="Creator"):
+        _load(tmp_path, raw, settings)
+
+
+def test_databricks_accessors_refuse_on_other_kinds(bot: Project) -> None:
+    with pytest.raises(ConfigError, match="not a databricks project"):
+        _ = bot.databricks
+    with pytest.raises(ConfigError, match="not a databricks project"):
+        _ = bot.databricks_tags
+
+
+def test_organization_tag_is_still_checked_for_databricks(
+    tmp_path: Path, settings: Settings
+) -> None:
+    raw: dict[str, Any] = yaml.safe_load(DATABRICKS_FILE.read_text())
+    raw["tags"]["Organization"] = "someone-else"
+    with pytest.raises(ConfigError, match="Organization"):
+        _load(tmp_path, raw, settings)

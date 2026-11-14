@@ -1,0 +1,6 @@
+# Source: https://github.com/databricks/databricks-sdk-go/blob/main/config/config.go (wrapDebug: fmt.Errorf("%w. %s", err, debug)) and config_attributes.go (DebugString: 'Config: ...' / 'Env: ...', secrets as ***)
+Error: cannot create mws credentials: default auth: cannot configure default credentials, please check https://docs.databricks.com/en/dev-tools/auth.html#databricks-client-unified-authentication to configure credentials for your preferred authentication method. Config: host=https://accounts.cloud.databricks.com, account_id=11111111-2222-3333-4444-555555555555, client_id=00000000-0000-0000-0000-000000000000, client_secret=***. Env: DATABRICKS_HOST, DATABRICKS_ACCOUNT_ID, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET
+
+  with databricks_mws_credentials.this,
+  on main.tf line 42, in resource "databricks_mws_credentials" "this":
+  42: resource "databricks_mws_credentials" "this" {

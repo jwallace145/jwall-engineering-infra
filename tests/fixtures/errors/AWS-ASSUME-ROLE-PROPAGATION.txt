@@ -1,0 +1,6 @@
+# Source: https://community.databricks.com/t5/administration-architecture/error-permission-denied-aws-iam-role-does/m-p/91704 ("Error: cannot create external location: AWS IAM role does not have READ permissions on url"); eventual consistency and time_sleep as the cause and workaround: https://community.databricks.com/t5/get-started-discussions/terraform-databricks-storage-credential-has-wrong-external-id/m-p/57071
+Error: cannot create external location: AWS IAM role does not have READ permissions on url s3://jwall-engineering-databricks-poc-databricks-catalog/managed. Please contact your account admin to update the storage credential.
+
+  with module.catalog.databricks_external_location.this,
+  on .terraform/modules/catalog/modules/databricks-catalog/main.tf line 181, in resource "databricks_external_location" "this":
+  181: resource "databricks_external_location" "this" {

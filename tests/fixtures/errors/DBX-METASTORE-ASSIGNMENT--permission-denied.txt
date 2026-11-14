@@ -1,0 +1,6 @@
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (message shape 'cannot create metastore assignment: ...')
+Error: cannot create metastore assignment: PERMISSION_DENIED: User is not a metastore admin or account admin of metastore 11111111-2222-3333-4444-555555555555
+
+  with databricks_metastore_assignment.this,
+  on main.tf line 42, in resource "databricks_metastore_assignment" "this":
+  42: resource "databricks_metastore_assignment" "this" {
