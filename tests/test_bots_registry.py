@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from jwall_engineering_sites.site import load_site_config
@@ -129,11 +130,11 @@ def test_foundation_takes_the_account_from_config() -> None:
     assert "local.account_id" in state
 
 
-def _module(name: str) -> str:
-    """The text of one module block in foundation/bots.tf."""
-    text = BOTS_TF.read_text()
+def _module(name: str, path: Path = BOTS_TF) -> str:
+    """The text of one module block in a foundation file (bots.tf by default)."""
+    text = path.read_text()
     match = re.search(rf'^module "{name}" \{{\n(.*?)^\}}', text, re.MULTILINE | re.DOTALL)
-    assert match, f"module {name} not found in bots.tf"
+    assert match, f"module {name} not found in {path.name}"
     return match.group(1)
 
 
@@ -333,3 +334,158 @@ def test_outputs_do_not_reach_for_a_research_projects_release_role() -> None:
     # Plan and apply roles exist for every project, so the state policy needs no change.
     state = (REPO_ROOT / "foundation" / "state.tf").read_text()
     assert "bot_ci_release" not in state
+
+
+# --- Databricks workspace projects (foundation/databricks.tf) ---------------
+
+DATABRICKS_TF = REPO_ROOT / "foundation" / "databricks.tf"
+CI_ROLES_TF = REPO_ROOT / "foundation" / "ci-roles.tf"
+
+
+def _databricks_block() -> str:
+    """The body of `databricks_projects = { ... }` in foundation/databricks.tf."""
+    match = re.search(
+        r"^  databricks_projects = \{\n(.*?)^  \}", DATABRICKS_TF.read_text(), re.M | re.S
+    )
+    assert match, "databricks.tf has no multi-line databricks_projects = { ... } local"
+    return match.group(1)
+
+
+def databricks_registry() -> dict[str, tuple[str, str]]:
+    return {m[0]: (m[1], m[2]) for m in _ENTRY.findall(_databricks_block())}
+
+
+def _squashed(text: str) -> str:
+    """HCL with runs of spaces collapsed, so `terraform fmt` alignment does not matter."""
+    return re.sub(r"[ \t]+", " ", text)
+
+
+def _hcl_list(block: str, attribute: str) -> list[str]:
+    match = re.search(rf"^\s*{attribute}\s*=\s*\[([^\]]*)\]", block, re.MULTILINE)
+    assert match, f"no {attribute} list"
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def test_databricks_registry_is_empty_until_the_repository_exists() -> None:
+    # databricks-poc is added (Task 14's first step) once the owner creates the repo.
+    assert databricks_registry() == {}
+    assert "databricks-poc" in _databricks_block()  # the comment says what to add
+
+
+def test_databricks_projects_are_not_bots_and_have_guardrails() -> None:
+    projects = _projects()
+    for key in databricks_registry():
+        assert projects.get(key, {}).get("databricks"), f"projects.{key}.databricks is missing"
+        assert key not in registry()
+    text = DATABRICKS_TF.read_text()
+    assert 'check "databricks_projects_have_guardrails"' in text
+    assert "local.tool_config.projects[key].databricks" in text
+
+
+def test_databricks_projects_get_plan_and_apply_roles_with_databricks_policies() -> None:
+    plan = _module("databricks_ci_plan", DATABRICKS_TF)
+    apply = _module("databricks_ci_apply", DATABRICKS_TF)
+    assert "modules/ci-plan-role" in plan and "modules/ci-apply-role" in apply
+    for block in map(_squashed, (plan, apply)):
+        assert "for_each = local.databricks_projects" in block
+        # Planned and applied from this repository, as bots are.
+        assert "repository = local.context.repository" in block
+        assert "tfstate = local.databricks_ci[each.key].tfstate" in block
+        assert "databricks = local.databricks_ci[each.key].databricks" in block
+    assert _hcl_list(plan, "policies") == ["tfstate/read", "compute/read", "databricks/read"]
+    assert _hcl_list(apply, "policies") == [
+        "tfstate/write",
+        "compute/read",
+        "compute/manage",
+        "databricks/read",
+        "databricks/manage",
+    ]
+    assert 'environment = "prod"' in _squashed(apply)
+
+
+def test_databricks_projects_get_no_release_or_task_role() -> None:
+    text = DATABRICKS_TF.read_text()
+    assert "ci-release-role" not in text and "ci-task-role" not in text
+    # Only state.tf (the state prefixes) reads the registry outside databricks.tf.
+    readers = {
+        p.name
+        for p in (REPO_ROOT / "foundation").glob("*.tf")
+        if "databricks_projects" in p.read_text()
+    }
+    assert readers == {"databricks.tf", "state.tf"}
+
+
+def test_databricks_policy_inputs_point_at_the_secret_and_the_projects_events() -> None:
+    text = _squashed(DATABRICKS_TF.read_text())
+    assert (
+        'databricks_secret_parameter_arn = "arn:aws:ssm:${local.region}:${local.account_id}:'
+        'parameter/${trimprefix(local.databricks.secret_parameter, "/")}"'
+    ) in text
+    assert (
+        'databricks_events_arn_prefix = "arn:aws:s3:::${local.databricks.audit_bucket}/'
+        '${trimsuffix(local.databricks.events_prefix, "/")}/"'
+    ) in text
+    assert 'events_object_arn = "${local.databricks_events_arn_prefix}project=${key}/*"' in text
+    # One prefix covers both stacks' state keys (account and workspace).
+    assert 'prefix = "project=${key}/"' in text
+
+
+def test_databricks_project_state_prefixes_are_in_the_state_bucket_policy() -> None:
+    state = (REPO_ROOT / "foundation" / "state.tf").read_text()
+    assert "for key, project in local.databricks_projects" in state
+    assert "module.databricks_ci_plan[key].role_arn" in state
+    assert "module.databricks_ci_apply[key].role_arn" in state
+
+
+def test_infra_roles_read_the_databricks_secret() -> None:
+    plan, apply = _module("infra_ci_plan", CI_ROLES_TF), _module("infra_ci_apply", CI_ROLES_TF)
+    assert _hcl_list(plan, "policies") == ["tfstate/read", "foundation/read", "databricks/read"]
+    assert _hcl_list(apply, "policies") == [
+        "tfstate/write",
+        "foundation/read",
+        "foundation/manage",
+        "ecr/push",
+        "databricks/read",
+    ]
+    for block in (plan, apply):
+        assert "databricks = local.infra_ci.databricks" in _squashed(block)
+    text = _squashed(CI_ROLES_TF.read_text())
+    assert "secret_parameter_arn = local.databricks_secret_parameter_arn" in text
+    assert 'events_object_arn = "${local.databricks_events_arn_prefix}project=infra/*"' in text
+
+
+def test_databricks_account_resources_wait_for_enabled() -> None:
+    text = DATABRICKS_TF.read_text()
+    assert re.search(r"^\s+databricks_enabled\s*=\s*local\.databricks\.enabled$", text, re.M)
+    for name in ("databricks_metastore", "databricks_audit_logs"):
+        block = _squashed(_module(name, DATABRICKS_TF))
+        assert "count = local.databricks_enabled ? 1 : 0" in block, name
+        assert "databricks = databricks.account" in block, name
+    metastore = _squashed(_module("databricks_metastore", DATABRICKS_TF))
+    assert "admin_user_names = local.databricks.metastore_admins" in metastore
+    assert "service_principal_application_id = local.databricks.client_id" in metastore
+    assert "name = local.databricks.metastore_name" in metastore
+    audit = _squashed(_module("databricks_audit_logs", DATABRICKS_TF))
+    assert "account_id = local.databricks.account_id" in audit
+    assert "bucket_name = local.databricks.audit_bucket" in audit
+    # The foundation never creates the secret: the owner sets it with the CLI.
+    assert "aws_ssm_parameter" not in text
+    # Disabled today: the foundation plan has no Databricks resources.
+    assert yaml_config()["databricks"]["enabled"] is False
+
+
+def yaml_config() -> dict[str, Any]:
+    import yaml
+
+    data: dict[str, Any] = yaml.safe_load((REPO_ROOT / "config.yaml").read_text())
+    return data
+
+
+def test_databricks_provider_authenticates_from_the_environment_only() -> None:
+    providers = (REPO_ROOT / "foundation" / "providers.tf").read_text()
+    match = re.search(r'^provider "databricks" \{\n(.*?)^\}', providers, re.M | re.S)
+    assert match
+    body = match.group(1)
+    assert 'alias = "account"' in _squashed(body)
+    assert 'auth_type = "oauth-m2m"' in _squashed(body)
+    assert "client_secret" not in body and "client_id" not in body

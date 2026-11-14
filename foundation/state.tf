@@ -48,6 +48,13 @@ locals {
         write = [module.bot_ci_apply[key].role_arn]
       }
     },
+    {
+      # Both stacks of a Databricks project: its account and workspace keys.
+      for key, project in local.databricks_projects : "project=${key}/" => {
+        read  = [module.databricks_ci_plan[key].role_arn]
+        write = [module.databricks_ci_apply[key].role_arn]
+      }
+    },
   )
 }
 
