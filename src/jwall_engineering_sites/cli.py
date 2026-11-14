@@ -249,6 +249,9 @@ def validate(ctx: typer.Context) -> None:
                 site = run.site
                 run.logger.info("site file ok: project %s, domain %s", site.project, site.domain)
                 run.logger.info("derived: bucket %s, state key %s", site.bucket, site.state_key)
+            elif project.kind == "databricks":
+                run.logger.info("project file ok: project %s, kind databricks", project.project)
+                run.logger.info("derived: state key %s", project.state_key)
             elif project.kind == "research":
                 run.logger.info("project file ok: project %s, kind research", project.project)
                 run.logger.info("derived: state key %s", project.state_key)

@@ -13,12 +13,22 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from . import guardrails
-from .components import CPU_PROFILE, ContainerImage, Dataset, LichessBot, TaskRunner
+from .components import (
+    CPU_PROFILE,
+    ContainerImage,
+    DatabricksWorkspace,
+    Dataset,
+    LichessBot,
+    TaskRunner,
+)
 from .errors import ConfigError
-from .settings import Settings
+from .settings import DatabricksProject, Settings
 from .site import ENVIRONMENT, Site, SiteConfig
 
 Role = Literal["plan", "preview", "apply", "release", "task"]
+
+#: Tag keys Databricks sets itself on clusters and workspaces; a project file may not state them.
+DATABRICKS_RESERVED_TAGS = ("Vendor", "Creator", "ClusterName", "ClusterId", "Name")
 
 
 class Project(BaseModel):
@@ -30,6 +40,8 @@ class Project(BaseModel):
     state_key: str
     region: str
     zone_id: str | None
+    #: The project's approved Databricks settings (cost center, network, members), if any.
+    databricks_approved: DatabricksProject | None = None
 
     @classmethod
     def from_config(
@@ -54,6 +66,12 @@ class Project(BaseModel):
                 f"tags.Organization must be {organization!r}, got {config.tags['Organization']!r}"
             )
         own = f"/{organization}/{config.project}/"
+        if config.kind == "databricks":
+            reserved = sorted(set(config.tags) & set(DATABRICKS_RESERVED_TAGS))
+            if reserved:
+                problems.append(
+                    f"tags may not use {', '.join(reserved)}: Databricks reserves those keys"
+                )
         if config.kind == "bot":  # a research project has no lichess-bot to hold secrets
             for name, parameter in config.bot.secrets.items():
                 if not parameter.startswith(own):
@@ -90,6 +108,11 @@ class Project(BaseModel):
             state_key=settings.state_key(config.project, ENVIRONMENT),
             region=settings.state.region,
             zone_id=None,
+            databricks_approved=(
+                settings.projects[config.project].databricks
+                if config.kind == "databricks" and config.project in settings.projects
+                else None
+            ),
         )
 
     @property
@@ -97,7 +120,7 @@ class Project(BaseModel):
         return self.config.project
 
     @property
-    def kind(self) -> Literal["site", "bot", "research"]:
+    def kind(self) -> Literal["site", "bot", "research", "databricks"]:
         return self.config.kind
 
     @property
@@ -106,8 +129,10 @@ class Project(BaseModel):
         return self.config.kind != "site"
 
     @property
-    def stack_kind(self) -> Literal["site", "bot"]:
+    def stack_kind(self) -> Literal["site", "bot", "databricks"]:
         """The Terraform stack that provisions it: research projects use the bot stack."""
+        if self.config.kind == "databricks":
+            return "databricks"
         return "site" if self.config.kind == "site" else "bot"
 
     @property
@@ -119,6 +144,27 @@ class Project(BaseModel):
     def bot(self) -> LichessBot:
         self._require("bot")
         return self.config.bot
+
+    @property
+    def databricks(self) -> DatabricksWorkspace:
+        self._require("databricks")
+        return self.config.databricks
+
+    @property
+    def databricks_tags(self) -> dict[str, str]:
+        """The tags of the workspace and its clusters: the project's own, its cost center
+        (from config.yaml) and the workspace's name."""
+        self._require("databricks")
+        return {
+            **self.config.tags,
+            "CostCenter": self._databricks_guardrails().cost_center,
+            "Workspace": f"{self.project}-{ENVIRONMENT}",
+        }
+
+    def _databricks_guardrails(self) -> DatabricksProject:
+        if self.databricks_approved is None:
+            raise ConfigError(f"{self.project} has no projects.{self.project}.databricks entry")
+        return self.databricks_approved
 
     @property
     def site_bucket(self) -> str:
@@ -199,7 +245,7 @@ class Project(BaseModel):
         user = self.bot.lichess_user
         return f"https://lichess.org/@/{user}" if user else None
 
-    def _require(self, kind: Literal["site", "bot"]) -> None:
+    def _require(self, kind: Literal["site", "bot", "databricks"]) -> None:
         if self.kind != kind:
             raise ConfigError(f"{self.project} is not a {kind} project")
 

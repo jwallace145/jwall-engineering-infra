@@ -395,6 +395,29 @@ class Dataset(_Model):
         return value
 
 
+class DatabricksWorkspace(_Model):
+    """A Databricks workspace. The VPC range, cost center and members are central
+    (`projects.<name>.databricks` in config.yaml); this names only what the project asks for."""
+
+    kind: Literal["databricks-workspace"]
+    #: Cluster policies, by name, from the `databricks.compute_policies` config.yaml defines;
+    #: `guardrails.check` limits them to the project's approved list.
+    compute_policies: tuple[str, ...]
+    #: The workspace's deployment name (its URL prefix); derived from the project when left out.
+    deployment_name: str | None = Field(default=None, pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+    @field_validator("compute_policies")
+    @classmethod
+    def _policies(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for name in value:
+            if not _KEBAB.match(name):
+                raise ValueError(f"compute_policies: {name!r} must be kebab-case")
+        if len(set(value)) != len(value):
+            raise ValueError("compute_policies must not repeat a name")
+        return value
+
+
 Component = Annotated[
-    ContainerImage | LichessBot | TaskRunner | Dataset, Field(discriminator="kind")
+    ContainerImage | LichessBot | TaskRunner | Dataset | DatabricksWorkspace,
+    Field(discriminator="kind"),
 ]

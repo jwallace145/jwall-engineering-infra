@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from itertools import combinations
 
-from .components import Dataset, TaskProfile
+from .components import DatabricksWorkspace, Dataset, TaskProfile
 from .settings import DatasetRetention, ProjectGuardrails, Settings, TaskLimits
 from .site import SiteConfig
 
@@ -37,6 +37,7 @@ def check(config: SiteConfig, settings: Settings) -> list[str]:
             "jwall-engineering-infra)"
         ]
     problems: list[str] = []
+    problems += _databricks_problems(config, approved)
     runner = config.task_runner
     if runner is not None:
         limits = settings.tasks.limits
@@ -49,6 +50,34 @@ def check(config: SiteConfig, settings: Settings) -> list[str]:
                 )
             problems += _profile_problems(name, profile, approved, limits, project)
     problems += _dataset_problems(config, approved)
+    return problems
+
+
+def _databricks_problems(config: SiteConfig, approved: ProjectGuardrails) -> list[str]:
+    workspaces = [c for c in config.components if isinstance(c, DatabricksWorkspace)]
+    if not workspaces:
+        return []
+    project = config.project
+    problems: list[str] = []
+    if len(config.components) > 1:
+        problems.append(
+            "databricks-workspace must be the only component of a project file; combining it "
+            "with other components is not supported yet"
+        )
+    if approved.databricks is None:
+        problems.append(
+            f"project {project!r} has a databricks-workspace but no "
+            f"projects.{project}.databricks entry in config.yaml; add its cost center, VPC "
+            "range, admins and compute policies there (reviewed in jwall-engineering-infra)"
+        )
+        return problems
+    for workspace in workspaces:
+        for policy in workspace.compute_policies:
+            if policy not in approved.databricks.compute_policies:
+                problems.append(
+                    f"compute policy {policy!r} is not in "
+                    f"projects.{project}.databricks.compute_policies in config.yaml"
+                )
     return problems
 
 
