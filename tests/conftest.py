@@ -176,3 +176,19 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]
     monkeypatch.chdir(root)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     yield root
+
+
+@pytest.fixture
+def databricks_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A working directory with the databricks-poc file and a config.yaml enabling the account."""
+    root = tmp_path / "databricks-workspace"
+    root.mkdir()
+    shutil.copy(FIXTURES / "bots" / "databricks-poc.yaml", root / "jwall-engineering-sites.yaml")
+    config = yaml.safe_load((FIXTURES / "config.yaml").read_text())
+    config["databricks"]["enabled"] = True
+    config["databricks"]["account_id"] = "11111111-1111-1111-1111-111111111111"
+    config["databricks"]["client_id"] = "22222222-2222-2222-2222-222222222222"
+    (root / "config.yaml").write_text(yaml.safe_dump(config))
+    monkeypatch.chdir(root)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    yield root

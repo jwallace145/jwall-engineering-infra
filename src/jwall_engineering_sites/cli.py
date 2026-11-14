@@ -23,13 +23,43 @@ from typing import Annotated, Literal
 import boto3
 import typer
 
-from . import aws, costs, github, image, releases, report, rollout, stack, sync, tasks
+from . import (
+    aws,
+    checks,
+    costs,
+    databricks_auth,
+    github,
+    image,
+    releases,
+    report,
+    rollout,
+    stack,
+    sync,
+    tasks,
+)
 from . import bot as botlib
+from .checks import render as checks_render
+from .checks.framework import (
+    CheckContext,
+    CheckResult,
+    Outcome,
+    Severity,
+    Stage,
+    raise_on_errors,
+    registered,
+    run_stage,
+)
 from .components import CPU_PROFILE, TaskRunner
 from .errors import ConfigError, PreflightError, RunError, SitesError
 from .log import annotate_error, artifacts_dir, phase, setup_logging
 from .project import Project, Role
-from .settings import Settings, default_config_path, load_settings, parse_duration
+from .settings import (
+    DatabricksSection,
+    Settings,
+    default_config_path,
+    load_settings,
+    parse_duration,
+)
 from .site import DEV_PREFIX, PROD_PREFIX, SITE_FILE, Site, load_site_config
 
 app = typer.Typer(
@@ -58,6 +88,10 @@ task_app = typer.Typer(
     help="Remote CI tasks on ephemeral EC2 instances (projects with a task-runner).",
     no_args_is_help=True,
 )
+databricks_app = typer.Typer(help="Databricks workspace projects.", no_args_is_help=True)
+credentials_app = typer.Typer(
+    help="The Databricks service principal's client secret.", no_args_is_help=True
+)
 cost_app = typer.Typer(
     help="The account's spend from Cost Explorer, by the tags every resource carries.",
     no_args_is_help=True,
@@ -69,6 +103,8 @@ app.add_typer(preview_app, name="preview")
 app.add_typer(config_app, name="config")
 app.add_typer(report_app, name="report")
 app.add_typer(cost_app, name="cost")
+app.add_typer(databricks_app, name="databricks")
+databricks_app.add_typer(credentials_app, name="credentials")
 
 LOG_FILE = "jwall-engineering-sites.log"
 
@@ -1307,5 +1343,171 @@ def cost_report(
             "%s from %s to %s; Cost Explorer lags about a day and charges $0.01 a request",
             costs.METRIC, start, end - timedelta(days=1),
         )  # fmt: skip
+
+    _command(body)(ctx)
+
+
+# -- databricks -----------------------------------------------------------------
+
+STAGE_ORDER = (Stage.CONFIG, Stage.LIVE, Stage.BETWEEN, Stage.AFTER)
+
+
+def _databricks_project(run: Run) -> Project:
+    project = run.project
+    if project.kind != "databricks":
+        raise ConfigError(
+            f"{project.project} is a {project.kind} project; "
+            "`databricks doctor` works on databricks projects"
+        )
+    return project
+
+
+def _databricks_section(run: Run) -> DatabricksSection:
+    section = run.settings.databricks
+    if section is None:
+        raise ConfigError("config.yaml has no databricks section")
+    return section
+
+
+def _account_outputs(run: Run, project: Project, secret: str) -> dict[str, object] | None:
+    """The account stack's outputs (read-only: init and output), None if it has none yet."""
+    terraform = stack.Terraform(
+        project,
+        run.settings,
+        run.logger,
+        stack="account",
+        extra_env=databricks_auth.terraform_env(run.settings, secret),
+    )
+    failed = True
+    try:
+        terraform.prepare()
+        with phase("account outputs"):
+            terraform.init()
+            outputs = terraform.outputs()
+        failed = False
+    finally:
+        terraform.cleanup(failed=failed)
+    return outputs or None
+
+
+def _skipped_for_missing_account(stage: Stage, project: Project) -> list[CheckResult]:
+    return [
+        CheckResult(
+            check_id=c.check_id,
+            title=c.title,
+            outcome=Outcome.SKIP,
+            severity=Severity.WARNING,
+            facts={"reason": "the account stack has no outputs"},
+            remediation="apply the account stack first",
+            runbook=c.runbook,
+        )
+        for c in registered(stage, project.config.kind)
+    ]
+
+
+@databricks_app.command("doctor")
+def databricks_doctor(
+    ctx: typer.Context,
+    stage: Annotated[
+        list[Stage] | None,
+        typer.Option(
+            "--stage",
+            help="A check stage to run: config, live, between or after. Repeatable; default all.",
+        ),
+    ] = None,
+) -> None:
+    """Run the read-only checks against the live project and print the table."""
+
+    def body(run: Run) -> None:
+        project = _databricks_project(run)
+        section = _databricks_section(run)
+        wanted = set(stage) if stage else set(STAGE_ORDER)
+        stages = [s for s in STAGE_ORDER if s in wanted]
+        with phase("preflight"):
+            session = boto3.session.Session(region_name=project.region)
+            aws.check_role(session.client("sts"), project.role_name("plan"), run.logger)
+        checks.load_builtin_checks()
+        results: list[CheckResult] = []
+        clients: databricks_auth.DatabricksClients | None = None
+        secret = ""
+        outputs: dict[str, object] | None = None
+        needs_clients = any(s is not Stage.CONFIG for s in stages)
+        if needs_clients:
+            # Until the owner enables the account, the checks SKIP and the secret may not exist.
+            if section.enabled:
+                secret = databricks_auth.load_secret(
+                    session.client("ssm"), section.secret_parameter
+                )
+            clients = databricks_auth.DatabricksClients(run.settings, secret)
+        for current in stages:
+            if current in (Stage.BETWEEN, Stage.AFTER) and section.enabled:
+                if outputs is None:
+                    outputs = _account_outputs(run, project, secret)
+                if outputs is None:
+                    run.logger.warning(
+                        "the account stack has no outputs: apply the account stack first "
+                        "(skipping the %s checks)",
+                        current.value,
+                    )
+                    results += _skipped_for_missing_account(current, project)
+                    continue
+                assert clients is not None
+                clients.account_outputs = outputs
+            context = CheckContext(
+                project=project,
+                settings=run.settings,
+                logger=run.logger,
+                session=None if current is Stage.CONFIG else session,
+                databricks=None if current is Stage.CONFIG else clients,
+            )
+            results += run_stage(current, context)
+        checks_render.write_json(results, run.artifacts / "checks.json")
+        typer.echo(checks_render.console_table(results))
+        raise_on_errors(results)
+
+    _command(body)(ctx)
+
+
+def _credentials_session(run: Run) -> tuple[boto3.session.Session, str]:
+    section = _databricks_section(run)
+    session = boto3.session.Session(region_name=run.settings.state.region)
+    with phase("preflight"):
+        _, arn = aws.caller_identity(session.client("sts"))
+        run.logger.info("running as %s", arn)
+    return session, section.secret_parameter
+
+
+@credentials_app.command("set")
+def databricks_credentials_set(ctx: typer.Context) -> None:
+    """Prompt for the service principal's client secret (no echo) and store it. Owner's shell."""
+
+    def body(run: Run) -> None:
+        session, parameter = _credentials_session(run)
+        value = typer.prompt("Databricks client secret", hide_input=True)
+        if not value.strip():
+            raise PreflightError("the client secret must not be empty")
+        botlib.put_secret(session.client("ssm"), parameter, value.strip())
+        run.logger.info("wrote the Databricks client secret to %s", parameter)
+
+    _command(body)(ctx)
+
+
+@credentials_app.command("check")
+def databricks_credentials_check(ctx: typer.Context) -> None:
+    """Exit 0 if the client secret is stored and decrypts, 3 if not. Never prints it."""
+
+    def body(run: Run) -> None:
+        session, parameter = _credentials_session(run)
+        modified = databricks_auth.secret_modified(session.client("ssm"), parameter)
+        if modified is None:
+            raise PreflightError(
+                f"the Databricks client secret is not set: {parameter} does not exist "
+                f"(run `databricks credentials set`, see {databricks_auth.RUNBOOK})"
+            )
+        run.logger.info(
+            "the Databricks client secret is set at %s, last modified %s",
+            parameter,
+            modified.strftime("%Y-%m-%d"),
+        )
 
     _command(body)(ctx)

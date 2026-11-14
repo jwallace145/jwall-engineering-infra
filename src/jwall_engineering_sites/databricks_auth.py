@@ -10,6 +10,7 @@ exception message.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -62,6 +63,31 @@ def load_secret(ssm: Any, parameter: str) -> str:
             f"the Databricks client secret {parameter} in SSM is empty; see {RUNBOOK}"
         )
     return value
+
+
+def secret_modified(ssm: Any, parameter: str) -> datetime | None:
+    """When the client secret in SSM `parameter` was last modified, or None if it is absent.
+
+    Reads (and decrypts) the parameter to prove the caller can, then discards the
+    value: only the date leaves this function. Other failures are a preflight
+    failure naming the error code, never the value.
+    """
+    try:
+        response = ssm.get_parameter(Name=parameter, WithDecryption=True)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code == "ParameterNotFound":
+            return None
+        raise PreflightError(
+            f"cannot read the Databricks client secret {parameter} from SSM ({code}); see {RUNBOOK}"
+        ) from None
+    except BotoCoreError as exc:
+        raise PreflightError(
+            f"cannot read the Databricks client secret {parameter} from SSM "
+            f"({type(exc).__name__}); check the AWS credentials and network, see {RUNBOOK}"
+        ) from None
+    modified = response.get("Parameter", {}).get("LastModifiedDate")
+    return modified if isinstance(modified, datetime) else datetime.min
 
 
 def terraform_env(settings: Settings, secret: str) -> dict[str, str]:
