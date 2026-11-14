@@ -1,0 +1,9 @@
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (search "Failed storage configuration validation checks"); wording from the Databricks Account API storage configuration validation.
+╷
+│ Error: cannot create mws storage configurations: INVALID_PARAMETER_VALUE: Malformed request: Failed storage configuration validation checks: List, Put, Delete, GetBucketLocation
+│
+│   with databricks_mws_storage_configurations.this,
+│   on main.tf line 57, in resource "databricks_mws_storage_configurations" "this":
+│   57: resource "databricks_mws_storage_configurations" "this" {
+│
+╵

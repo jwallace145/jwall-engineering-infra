@@ -1,0 +1,9 @@
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (search "metastore assignment" "already assigned"); new workspaces are auto-assigned to the region's metastore when auto-assignment is on.
+╷
+│ Error: cannot create metastore assignment: INVALID_STATE: Workspace 1234567890123456 is already assigned to metastore 11111111-2222-3333-4444-555555555555
+│
+│   with databricks_metastore_assignment.this,
+│   on main.tf line 88, in resource "databricks_metastore_assignment" "this":
+│   88: resource "databricks_metastore_assignment" "this" {
+│
+╵

@@ -1,0 +1,9 @@
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (search "Malformed request: Failed network validation"); wording from the Databricks Account API network validation.
+╷
+│ Error: cannot create mws networks: INVALID_PARAMETER_VALUE: Malformed request: Failed network validation checks: subnet subnet-0123456789abcdef0 is not in a supported availability zone, security group sg-0123456789abcdef0 must allow all TCP and UDP traffic within itself
+│
+│   with databricks_mws_networks.this,
+│   on main.tf line 71, in resource "databricks_mws_networks" "this":
+│   71: resource "databricks_mws_networks" "this" {
+│
+╵

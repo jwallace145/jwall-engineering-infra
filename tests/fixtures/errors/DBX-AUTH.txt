@@ -1,0 +1,10 @@
+# Source: https://github.com/databricks/terraform-provider-databricks/issues (search "oauth-m2m" "invalid_client"); service principal OAuth failure.
+╷
+│ Error: cannot create mws credentials: oauth-m2m: oauth2: cannot fetch token: 401 Unauthorized
+│ Response: {"error":"invalid_client","error_description":"Client authentication failed"}
+│
+│   with databricks_mws_credentials.this,
+│   on main.tf line 42, in resource "databricks_mws_credentials" "this":
+│   42: resource "databricks_mws_credentials" "this" {
+│
+╵

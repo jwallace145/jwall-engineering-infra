@@ -1,0 +1,9 @@
+# Source: https://github.com/hashicorp/terraform-provider-aws/issues (search "MalformedPolicyDocument: Invalid principal in policy"); AWS IAM eventual consistency after creating a role.
+╷
+│ Error: creating S3 Bucket (team-a-databricks-poc-root) Policy: operation error S3: PutBucketPolicy, https response error StatusCode: 400, RequestID: EXAMPLE0000000000, HostID: example, api error MalformedPolicyDocument: Invalid principal in policy: "AWS":"arn:aws:iam::123456789012:role/databricks-poc-cross-account"
+│
+│   with aws_s3_bucket_policy.root,
+│   on main.tf line 30, in resource "aws_s3_bucket_policy" "root":
+│   30: resource "aws_s3_bucket_policy" "root" {
+│
+╵
