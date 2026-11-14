@@ -1,0 +1,6 @@
+# Source: the STS denial Unity Catalog reports when it cannot assume the role, https://community.databricks.com/t5/data-engineering/metastore-access-validation-failed/m-p/31238 ("User: arn:aws:iam::414351767826:user/... is not authorized to perform: sts:AssumeRole on resource"), on the storage credential resource
+Error: cannot create storage credential: User: arn:aws:iam::414351767826:user/ConsolidatedManagerIAMUser-ConsolidatedManagerUser-EXAMPLE is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::000000000000:role/jwall-engineering-databricks-poc-uc
+
+  with module.catalog.databricks_storage_credential.this,
+  on .terraform/modules/catalog/modules/databricks-catalog/main.tf line 133, in resource "databricks_storage_credential" "this":
+  133: resource "databricks_storage_credential" "this" {

@@ -80,7 +80,10 @@ def test_eventual_consistency_read_is_left_unmatched() -> None:
 
 
 def test_only_iam_propagation_is_retry_safe_by_default() -> None:
-    assert {d.error_class for d in CATALOGUE if d.retry_safe} == {"AWS-IAM-PROPAGATION"}
+    assert {d.error_class for d in CATALOGUE if d.retry_safe} == {
+        "AWS-IAM-PROPAGATION",
+        "AWS-ASSUME-ROLE-PROPAGATION",
+    }
 
 
 def test_resource_address_parsed() -> None:
@@ -195,7 +198,39 @@ def test_partial_only_accepts_account() -> None:
 def test_metastore_entries_name_the_import_command() -> None:
     entry = next(d for d in CATALOGUE if d.error_class == "DBX-METASTORE-ALREADY-ASSIGNED")
     steps = " ".join(entry.next_steps)
-    assert "terraform import databricks_metastore_assignment.this" in steps
+    assert (
+        "terraform import 'module.workspace.databricks_metastore_assignment.this' "
+        "'<workspace_id>|<metastore_id>'" in steps
+    )
+    assert "account stack" in steps and "owner" in steps.lower()
+
+
+def test_auth_entry_does_not_claim_any_oauth_m2m_mention() -> None:
+    """A metastore or workspace error that merely names the auth type is not an auth error."""
+    out = (
+        "Error: cannot create workspace: auth type oauth-m2m: workspace quota exceeded\n\n"
+        "  with module.workspace.databricks_mws_workspaces.this,\n"
+    )
+    diagnosis = diagnose("databricks-account", out, LOG).diagnosis
+    assert diagnosis is None or diagnosis.error_class != "DBX-AUTH"
+
+
+def test_already_exists_on_another_metastore_resource_is_not_already_assigned() -> None:
+    out = (
+        "Error: cannot create metastore data access: metastore data access already exists\n\n"
+        "  with databricks_metastore_data_access.this,\n"
+    )
+    diagnosis = diagnose("foundation", out, LOG).diagnosis
+    assert diagnosis is not None and diagnosis.error_class == "TF-ALREADY-EXISTS"
+
+
+def test_assume_role_propagation_is_retry_safe_and_names_the_resource() -> None:
+    path = ERRORS / "AWS-ASSUME-ROLE-PROPAGATION--sts-assume-role.txt"
+    failure = diagnose("databricks-workspace", sample(path), LOG)
+    assert failure.diagnosis is not None
+    assert failure.diagnosis.error_class == "AWS-ASSUME-ROLE-PROPAGATION"
+    assert failure.resource == "module.catalog.databricks_storage_credential.this"
+    assert "re-running apply is safe" in render_failure(failure).lower()
 
 
 def test_runbook_anchors_are_one_list_and_cover_the_catalogue() -> None:

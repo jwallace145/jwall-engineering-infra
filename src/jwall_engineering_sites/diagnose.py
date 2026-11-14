@@ -65,7 +65,7 @@ CATALOGUE: tuple[Diagnosis, ...] = (
         error_class="DBX-AUTH",
         pattern=_re(
             r"invalid_client|Client authentication failed|invalid client secret|"
-            r"cannot configure default credentials|oauth-m2m"
+            r"cannot configure default credentials|default auth: oauth-m2m:"
         ),
         title="Databricks rejected the service principal credentials",
         likely_cause=(
@@ -183,9 +183,32 @@ CATALOGUE: tuple[Diagnosis, ...] = (
         retry_safe=True,
     ),
     Diagnosis(
+        error_class="AWS-ASSUME-ROLE-PROPAGATION",
+        pattern=_re(
+            r"cannot (?:create|update) (?:storage credential|external location):[^\n]*"
+            r"(?:is not authorized to perform: sts:AssumeRole|"
+            r"AWS IAM role does not have (?:READ|WRITE|LIST|DELETE) permissions)"
+        ),
+        title="Databricks cannot assume the new Unity Catalog role yet",
+        likely_cause=(
+            "The Unity Catalog role, its trust policy or its S3 policy was created seconds "
+            "earlier; Databricks validated the storage credential or external location before "
+            "IAM made it assumable (IAM is eventually consistent)."
+        ),
+        next_steps=(
+            "Re-run apply; it resumes where it stopped.",
+            "If it repeats, check the role's trust policy names the Unity Catalog master role "
+            "and the role itself with the storage credential's external ID, and that its "
+            "policy grants the catalog bucket.",
+        ),
+        runbook=_anchor("aws-assume-role-propagation"),
+        retry_safe=True,
+    ),
+    Diagnosis(
         error_class="DBX-METASTORE-ALREADY-ASSIGNED",
         pattern=_re(
-            r"already assigned to metastore|already has a metastore|metastore[^\n]*already exists"
+            r"already assigned to metastore|already has a metastore|"
+            r"metastore assignment[^\n]*already exists"
         ),
         title="The workspace was already assigned to the region's metastore",
         likely_cause=(
@@ -193,9 +216,10 @@ CATALOGUE: tuple[Diagnosis, ...] = (
             "Terraform's own assignment collides with it."
         ),
         next_steps=(
-            "Import the existing assignment: "
-            "`terraform import databricks_metastore_assignment.this "
-            "<workspace_id>|<metastore_id>`.",
+            "The owner imports the existing assignment into the account stack's state, from "
+            "the account stack's working directory (its backend.hcl and tfvars; the runbook has "
+            "the steps): `terraform import 'module.workspace.databricks_metastore_assignment.this' "
+            "'<workspace_id>|<metastore_id>'`.",
             "Or disable metastore auto-assignment for the account and re-run.",
             "Re-run apply afterwards.",
         ),

@@ -545,13 +545,40 @@ is eventually consistent. Re-run `apply`; it resumes where it stopped, and this
 is the one class marked safe to retry blindly. If it repeats, check the
 principal ARN in the policy exists.
 
+### AWS-ASSUME-ROLE-PROPAGATION
+
+Databricks could not assume the Unity Catalog role while creating the storage
+credential or the external location (`is not authorized to perform:
+sts:AssumeRole`, or `AWS IAM role does not have READ permissions on url`). The
+workspace stack creates the role, its trust and S3 policies seconds before, and
+IAM is eventually consistent. Re-run `apply`; it resumes where it stopped and
+this class is safe to retry. If it repeats, check the role's trust policy names
+the Unity Catalog master role and the role itself (self-assume) with the
+storage credential's external ID, and that its policy grants the catalog
+bucket.
+
 ### DBX-METASTORE-ALREADY-ASSIGNED
 
 Databricks auto-assigned the new workspace to the region's metastore, so
-Terraform's own assignment collides. Import the existing assignment
-(`terraform import databricks_metastore_assignment.this <workspace_id>|<metastore_id>`),
-or disable metastore auto-assignment for the account, then re-run `apply`. If
-this happens on the first live apply, decide between importing and removing
+Terraform's own assignment (in the account stack) collides. Either disable
+metastore auto-assignment for the account and re-run `apply`, or have the owner
+import the existing assignment into the account stack's state:
+
+1. In the owner's shell, with admin AWS credentials, export
+   `DATABRICKS_ACCOUNT_ID` and `DATABRICKS_CLIENT_ID` (from `config.yaml`) and
+   `DATABRICKS_CLIENT_SECRET` (from `/jwall-engineering/databricks/client-secret`).
+2. In the project's repository, run
+   `JES_KEEP_WORKDIR=1 JES_SKIP_ROLE_CHECK=1 jwall-engineering-sites --file jwall-engineering-sites.yaml apply`.
+   It fails at the same assignment and keeps the account stack's working
+   directory ("keeping working directory ..."), which holds the stack, its
+   `terraform.tfvars.json` and its `backend.hcl` (the account stack's state,
+   `project=<project>/env=prod/<project>-prod-account.tfstate`).
+3. In that directory run
+   `terraform import 'module.workspace.databricks_metastore_assignment.this' '<workspace_id>|<metastore_id>'`
+   (the IDs are in the error and in `databricks outputs`).
+4. Re-run the **Databricks apply** workflow.
+
+If this happens on the first live apply, decide between importing and removing
 the resource from the stack.
 
 ### DBX-METASTORE-ASSIGNMENT
