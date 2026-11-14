@@ -2,23 +2,29 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from jwall_engineering_sites.errors import RunError
+from jwall_engineering_sites import stack as stack_module
+from jwall_engineering_sites.databricks_auth import terraform_env
+from jwall_engineering_sites.errors import ConfigError, RunError
 from jwall_engineering_sites.project import Project
 from jwall_engineering_sites.settings import Settings
-from jwall_engineering_sites.site import Site
+from jwall_engineering_sites.site import Site, load_site_config
 from jwall_engineering_sites.stack import (
     PLAN_CHANGES,
     PLAN_NO_CHANGES,
     Terraform,
+    _databricks_account_tfvars,
+    _databricks_workspace_tfvars,
     dataset_bucket_addresses,
     dataset_names,
     default_stack_dir,
+    deployment_name,
     render_backend,
     render_tfvars,
 )
@@ -765,3 +771,339 @@ def test_dataset_names_are_those_with_a_released_bucket() -> None:
         'module.datasets["c"].aws_iam_role_policy.grant["x"]',
     ]
     assert dataset_names(dataset_bucket_addresses(state)) == ["a", "b"]
+
+
+# -- Databricks projects: two stacks, the secret only in the environment -------
+
+DATABRICKS_SENTINEL = "S3CR3T-SENTINEL"
+
+#: What the account stack hands the workspace stack (its outputs, by name).
+ACCOUNT_OUTPUTS: dict[str, Any] = {
+    "workspace_id": "1234567890123456",
+    "workspace_url": "https://jwall-databricks-poc.cloud.databricks.com",
+    "admin_group_name": "databricks-poc-workspace-admins",
+    "users_group_name": "databricks-poc-workspace-users",
+    "metastore_id": "abcdef01-2345-6789-abcd-ef0123456789",
+    "root_bucket_name": "jwall-engineering-databricks-poc-databricks-root",
+}
+
+ACCOUNT_TFVARS_KEYS = {
+    "project",
+    "environment",
+    "repository",
+    "tags",
+    "vpc_cidr",
+    "nat_ami_name",
+    "metastore_name",
+    "deployment_name",
+    "admin_user_names",
+    "user_names",
+    "service_principal_application_id",
+    "account_id",
+}
+
+WORKSPACE_TFVARS_KEYS = {
+    "project",
+    "environment",
+    "repository",
+    "tags",
+    "workspace_url",
+    "workspace_id",
+    "admin_group_name",
+    "users_group_name",
+    "metastore_id",
+    "compute_policies",
+    "fixed_tags",
+    "governance_project",
+    "apply_role_arn",
+    "management_role_arns",
+    "catalog_tags",
+}
+
+
+@pytest.fixture
+def databricks(settings: Settings) -> Project:
+    return Project.from_config(
+        load_site_config(FIXTURES / "bots" / "databricks-poc.yaml"), settings
+    )
+
+
+def test_databricks_account_tfvars(databricks: Project, settings: Settings) -> None:
+    tfvars = _databricks_account_tfvars(databricks, settings)
+    assert set(tfvars) == ACCOUNT_TFVARS_KEYS
+    assert settings.databricks is not None
+    assert tfvars == {
+        "project": "databricks-poc",
+        "environment": "prod",
+        "repository": "example-org/databricks-poc",
+        "tags": databricks.databricks_tags,
+        "vpc_cidr": "10.40.0.0/16",
+        "nat_ami_name": settings.databricks.nat_ami,
+        "metastore_name": "jwall-engineering-us-east-1",
+        "deployment_name": "jwall-databricks-poc",
+        "admin_user_names": ["owner@example.com"],
+        "user_names": [],
+        "service_principal_application_id": settings.databricks.client_id,
+        "account_id": settings.databricks.account_id,
+    }
+    assert tfvars["tags"]["CostCenter"] == "cc-0000"
+    assert tfvars["tags"]["Workspace"] == "databricks-poc-prod"
+
+
+def test_databricks_tfvars_are_json_serialisable(databricks: Project, settings: Settings) -> None:
+    json.dumps(_databricks_account_tfvars(databricks, settings))
+    json.dumps(_databricks_workspace_tfvars(databricks, settings, ACCOUNT_OUTPUTS))
+
+
+def test_deployment_name_is_derived_and_valid(databricks: Project, settings: Settings) -> None:
+    name = _databricks_account_tfvars(databricks, settings)["deployment_name"]
+    assert name == "jwall-databricks-poc"
+    assert re.fullmatch(r"^[a-z0-9-]{3,30}$", name)
+
+
+def test_deployment_name_of_the_longest_project_fits(settings: Settings) -> None:
+    longest = "a" * 21  # DATABRICKS_PROJECT_NAME_MAX
+    assert re.fullmatch(r"^[a-z0-9-]{3,30}$", deployment_name(longest, settings, None))
+
+
+def test_deployment_name_from_the_project_file_wins(settings: Settings) -> None:
+    assert deployment_name("databricks-poc", settings, "poc-one") == "poc-one"
+
+
+def test_too_long_deployment_name_is_a_config_error(settings: Settings) -> None:
+    with pytest.raises(ConfigError, match="deployment_name"):
+        deployment_name("databricks-poc", settings, "x" * 31)
+
+
+def test_workspace_tfvars_take_account_outputs(databricks: Project, settings: Settings) -> None:
+    tfvars = _databricks_workspace_tfvars(databricks, settings, ACCOUNT_OUTPUTS)
+    assert set(tfvars) == WORKSPACE_TFVARS_KEYS
+    for key in ("workspace_url", "workspace_id", "admin_group_name", "users_group_name"):
+        assert tfvars[key] == ACCOUNT_OUTPUTS[key]
+    assert tfvars["metastore_id"] == ACCOUNT_OUTPUTS["metastore_id"]
+    assert tfvars["project"] == "databricks-poc"
+    assert tfvars["environment"] == "prod"
+    assert tfvars["repository"] == "example-org/databricks-poc"
+    assert tfvars["tags"] == databricks.databricks_tags
+    assert tfvars["fixed_tags"] == databricks.databricks_tags
+    assert tfvars["governance_project"] == "databricks-poc"
+    assert tfvars["apply_role_arn"] == (
+        "arn:aws:iam::650503560686:role/jwall-engineering-databricks-poc-ci-apply"
+    )
+    assert tfvars["management_role_arns"] == [
+        "arn:aws:iam::650503560686:role/jwall-engineering-databricks-poc-ci-plan"
+    ]
+    assert tfvars["catalog_tags"] == {"Project": "databricks-poc", "Owner": "owner@example.com"}
+
+
+def test_workspace_tfvars_render_through_render_tfvars(
+    databricks: Project, settings: Settings
+) -> None:
+    assert render_tfvars(
+        databricks, settings, stack="workspace", account_outputs=ACCOUNT_OUTPUTS
+    ) == _databricks_workspace_tfvars(databricks, settings, ACCOUNT_OUTPUTS)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["workspace_url", "workspace_id", "admin_group_name", "users_group_name", "metastore_id"],
+)
+def test_missing_account_output_is_a_config_error_naming_it(
+    databricks: Project, settings: Settings, missing: str
+) -> None:
+    outputs = {k: v for k, v in ACCOUNT_OUTPUTS.items() if k != missing}
+    with pytest.raises(ConfigError, match=missing):
+        _databricks_workspace_tfvars(databricks, settings, outputs)
+
+
+def test_workspace_tfvars_without_outputs_is_a_config_error(
+    databricks: Project, settings: Settings
+) -> None:
+    with pytest.raises(ConfigError, match="account stack"):
+        render_tfvars(databricks, settings, stack="workspace")
+
+
+def test_compute_policies_are_filtered_to_the_projects_file(
+    databricks: Project, settings: Settings
+) -> None:
+    assert settings.databricks is not None
+    central = settings.databricks.compute_policies
+    extra = central["jobs"].model_copy(update={"description": "Not this project's"})
+    widened = settings.model_copy(
+        update={
+            "databricks": settings.databricks.model_copy(
+                update={"compute_policies": {**central, "gpu-large": extra}}
+            )
+        }
+    )
+    only_jobs = databricks.model_copy(
+        update={
+            "config": databricks.config.model_copy(
+                update={
+                    "components": tuple(
+                        c.model_copy(update={"compute_policies": ("jobs",)})
+                        for c in databricks.config.components
+                    )
+                }
+            )
+        }
+    )
+    assert only_jobs.databricks.compute_policies == ("jobs",)
+    policies = _databricks_workspace_tfvars(only_jobs, widened, ACCOUNT_OUTPUTS)["compute_policies"]
+    assert policies == {
+        "jobs": {
+            "description": central["jobs"].description,
+            "definition": central["jobs"].definition,
+        }
+    }
+    full = _databricks_workspace_tfvars(databricks, widened, ACCOUNT_OUTPUTS)["compute_policies"]
+    assert set(full) == {"small-interactive", "jobs"}
+    assert full["small-interactive"]["definition"]["num_workers"] == {
+        "type": "range",
+        "maxValue": 2,
+    }
+
+
+def test_databricks_is_routed_away_from_bot_and_research(
+    databricks: Project, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: Any) -> dict[str, Any]:
+        raise AssertionError("a databricks project reached the bot stack's tfvars")
+
+    monkeypatch.setattr(stack_module, "_bot_tfvars", refuse)
+    monkeypatch.setattr(stack_module, "_research_tfvars", refuse)
+    monkeypatch.setattr(stack_module, "_lichess_bot_tfvars", refuse)
+    tfvars = render_tfvars(databricks, settings, stack="account")
+    assert set(tfvars) == ACCOUNT_TFVARS_KEYS
+    assert "bot_enabled" not in tfvars
+
+
+def test_databricks_needs_a_known_stack(databricks: Project, settings: Settings) -> None:
+    with pytest.raises(ValueError, match="stack"):
+        render_tfvars(databricks, settings)
+    with pytest.raises(ValueError, match="stack"):
+        render_tfvars(databricks, settings, stack="bogus")
+
+
+def test_existing_kinds_ignore_the_new_arguments(
+    bot: Project, research: Project, guitar: Site, settings: Settings
+) -> None:
+    assert render_tfvars(bot, settings) == render_tfvars(bot, settings, stack=None)
+    assert render_tfvars(research, settings)["bot_enabled"] is False
+    assert render_tfvars(guitar) == render_tfvars(guitar, settings)
+
+
+def test_per_stack_state_keys(
+    databricks: Project, settings: Settings, logger: logging.Logger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("JES_STACK_DIR", raising=False)
+    monkeypatch.setenv("JES_STACKS_ROOT", "/somewhere/stacks")
+    account = Terraform(databricks, settings, logger, plugin_dir=None, stack="account")
+    workspace = Terraform(
+        databricks,
+        settings,
+        logger,
+        plugin_dir=None,
+        stack="workspace",
+        tfvars_override={"project": "databricks-poc"},
+    )
+    assert account.stack_dir == Path("/somewhere/stacks/databricks-account")
+    assert workspace.stack_dir == Path("/somewhere/stacks/databricks-workspace")
+    assert account.stack_name == "databricks-account"
+    assert workspace.stack_name == "databricks-workspace"
+    assert account.state_key == (
+        "project=databricks-poc/env=prod/databricks-poc-prod-account.tfstate"
+    )
+    assert workspace.state_key == (
+        "project=databricks-poc/env=prod/databricks-poc-prod-workspace.tfstate"
+    )
+    assert f'key          = "{account.state_key}"\n' in account.backend()
+    assert f'key          = "{workspace.state_key}"\n' in workspace.backend()
+    # The project's own key (no stack) is never used for a Databricks stack.
+    assert databricks.state_key not in (account.state_key, workspace.state_key)
+
+
+def test_existing_kinds_keep_their_stack_and_key(
+    bot: Project, guitar: Site, settings: Settings, logger: logging.Logger
+) -> None:
+    terraform = Terraform(bot, settings, logger, plugin_dir=None)
+    assert terraform.state_key == bot.state_key
+    assert terraform.stack_name == "bot"
+    assert terraform.backend() == render_backend(bot)
+    site = Terraform(guitar, settings, logger, plugin_dir=None)
+    assert site.backend() == render_backend(guitar)
+
+
+def _databricks_stack_dir(tmp_path: Path) -> Path:
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    (stack / "main.tf").write_text("# empty\n")
+    return stack
+
+
+def test_secret_only_in_env(
+    databricks: Project,
+    settings: Settings,
+    logger: logging.Logger,
+    fake_terraform: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    env_dump = tmp_path / "child.env"
+    monkeypatch.setenv("FAKE_TF_ENV", str(env_dump))
+    caplog.set_level(logging.DEBUG)
+    secret_env = terraform_env(settings, DATABRICKS_SENTINEL)
+    stack_dir = _databricks_stack_dir(tmp_path)
+    for stack, override in (
+        ("account", None),
+        ("workspace", _databricks_workspace_tfvars(databricks, settings, ACCOUNT_OUTPUTS)),
+    ):
+        terraform = Terraform(
+            databricks,
+            settings,
+            logger,
+            stack_dir=stack_dir,
+            plugin_dir=None,
+            stack=stack,
+            extra_env=secret_env,
+            tfvars_override=override,
+        )
+        workdir = terraform.prepare()
+        try:
+            terraform.init()
+            terraform.plan(detailed_exitcode=True)
+            tfvars = (workdir / "terraform.tfvars.json").read_text()
+            backend = (workdir / "backend.hcl").read_text()
+            assert DATABRICKS_SENTINEL not in tfvars
+            assert DATABRICKS_SENTINEL not in backend
+            assert json.loads(tfvars)["project"] == "databricks-poc"
+            if override is not None:
+                assert json.loads(tfvars) == override
+        finally:
+            terraform.cleanup(failed=False)
+
+    assert caplog.records, "the debug log must have been captured"
+    assert DATABRICKS_SENTINEL not in caplog.text
+    assert all(DATABRICKS_SENTINEL not in repr(r.args) for r in caplog.records)
+    child = env_dump.read_text()
+    assert f"DATABRICKS_CLIENT_SECRET={DATABRICKS_SENTINEL}" in child
+    assert f"DATABRICKS_CLIENT_ID={settings.databricks.client_id}" in child  # type: ignore[union-attr]
+    assert "TF_IN_AUTOMATION=1" in child
+    assert DATABRICKS_SENTINEL not in fake_terraform.read_text()  # the argv log
+
+
+def test_extra_env_is_not_in_the_parent_environment(
+    databricks: Project, settings: Settings, logger: logging.Logger
+) -> None:
+    terraform = Terraform(
+        databricks,
+        settings,
+        logger,
+        plugin_dir=None,
+        stack="account",
+        extra_env={"DATABRICKS_CLIENT_SECRET": DATABRICKS_SENTINEL},
+    )
+    assert terraform._environment()["DATABRICKS_CLIENT_SECRET"] == DATABRICKS_SENTINEL
+    assert "DATABRICKS_CLIENT_SECRET" not in os.environ
+    assert DATABRICKS_SENTINEL not in repr(terraform.__dict__.get("tfvars_override"))

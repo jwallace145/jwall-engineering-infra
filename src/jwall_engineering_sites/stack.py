@@ -22,10 +22,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from .components import TaskRunner
-from .errors import RunError
+from .errors import ConfigError, RunError
 from .project import Project
-from .settings import Settings
-from .site import Site
+from .settings import DatabricksProject, DatabricksSection, Settings
+from .site import ENVIRONMENT, Site
 
 #: What a stack is rendered for: a site (site commands) or a project of any kind.
 Target = Site | Project
@@ -57,13 +57,52 @@ _DATASET_RESOURCE = re.compile(r'^module\.datasets\["((?:[^"\\]|\\.)*)"\]\.([a-z
 _BUCKET_TYPE_PREFIX = "aws_s3_bucket"
 
 
-def render_tfvars(target: Target, settings: Settings | None = None) -> dict[str, Any]:
+#: The stacks of a Databricks project, in apply order; each is `stacks/databricks-<stack>`.
+DATABRICKS_STACKS: Final = ("account", "workspace")
+
+#: The workspace's deployment name: the first label of its URL.
+_DEPLOYMENT_NAME = re.compile(r"^[a-z0-9-]{3,30}$")
+
+#: The account stack's outputs the workspace stack takes as inputs, by tfvars name.
+_ACCOUNT_OUTPUTS: Final = (
+    "workspace_url",
+    "workspace_id",
+    "admin_group_name",
+    "users_group_name",
+    "metastore_id",
+)
+
+
+def render_tfvars(
+    target: Target,
+    settings: Settings | None = None,
+    stack: str | None = None,
+    account_outputs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """The stack's input variables. Pure, so it can be tested.
 
     A bot or research project needs `settings` (health check, records prefix,
-    zones and the ECR lifecycle come from config.yaml).
+    zones and the ECR lifecycle come from config.yaml). A Databricks project
+    needs `settings` and `stack` (`account` or `workspace`); the workspace stack
+    also needs the account stack's outputs. Other kinds ignore both.
     """
     if isinstance(target, Project):
+        if target.stack_kind == "databricks":
+            if settings is None:
+                raise ValueError("render_tfvars needs settings for a databricks project")
+            if stack == "account":
+                return _databricks_account_tfvars(target, settings)
+            if stack == "workspace":
+                if account_outputs is None:
+                    raise ConfigError(
+                        f"{target.project}: the workspace stack needs the account stack's "
+                        "outputs; apply the account stack first"
+                    )
+                return _databricks_workspace_tfvars(target, settings, account_outputs)
+            raise ValueError(
+                f"a databricks project has the stacks {', '.join(DATABRICKS_STACKS)}; "
+                f"got stack={stack!r}"
+            )
         if target.has_components:
             if settings is None:
                 raise ValueError("render_tfvars needs settings for a project with components")
@@ -195,6 +234,97 @@ def _bot_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
     }
 
 
+def deployment_name(project: str, settings: Settings, requested: str | None) -> str:
+    """The workspace's deployment name: the project file's, else `<org root>-<project>`.
+
+    The org root is the organization's first segment (`jwall`), so the longest
+    project name (21 characters) still fits Databricks' 30. Passed explicitly
+    because the provider does not compute it, and null may drift.
+    """
+    name = requested or f"{settings.context.organization.split('-')[0]}-{project}"
+    if not _DEPLOYMENT_NAME.match(name):
+        raise ConfigError(
+            f"{project}: deployment_name {name!r} must be 3 to 30 lowercase letters, digits "
+            "and hyphens; set a shorter deployment_name on the databricks-workspace component"
+        )
+    return name
+
+
+def _databricks_section(project: Project, settings: Settings) -> DatabricksSection:
+    if settings.databricks is None:
+        raise ConfigError(f"{project.project} is a databricks project but config.yaml has none")
+    return settings.databricks
+
+
+def _approved(project: Project) -> DatabricksProject:
+    if project.databricks_approved is None:
+        raise ConfigError(f"{project.project} has no projects.{project.project}.databricks entry")
+    return project.databricks_approved
+
+
+def _databricks_account_tfvars(project: Project, settings: Settings) -> dict[str, Any]:
+    """The account stack's inputs: network, workspace, metastore and members."""
+    section = _databricks_section(project, settings)
+    approved = _approved(project)
+    return {
+        "project": project.project,
+        "environment": ENVIRONMENT,
+        "repository": project.config.repository,
+        "tags": project.databricks_tags,
+        "vpc_cidr": approved.vpc_cidr,
+        "nat_ami_name": section.nat_ami,
+        "metastore_name": section.metastore_name,
+        "deployment_name": deployment_name(
+            project.project, settings, project.databricks.deployment_name
+        ),
+        "admin_user_names": list(approved.admins),
+        "user_names": list(approved.users),
+        "service_principal_application_id": section.client_id,
+        "account_id": section.account_id,
+    }
+
+
+def _databricks_workspace_tfvars(
+    project: Project, settings: Settings, account_outputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The workspace stack's inputs: the account stack's outputs, the project's
+    compute policies, its catalog and the CI roles that manage it."""
+    section = _databricks_section(project, settings)
+    missing = [key for key in _ACCOUNT_OUTPUTS if key not in account_outputs]
+    if missing:
+        raise ConfigError(
+            f"{project.project}: the account stack's outputs lack {', '.join(missing)}; "
+            "apply the account stack first"
+        )
+    tags = project.databricks_tags
+    absent = [key for key in ("Project", "Owner") if key not in tags]
+    if absent:
+        raise ConfigError(f"{project.project}: tags need {', '.join(absent)} for the catalog")
+    policies = {}
+    for name in project.databricks.compute_policies:
+        if name not in section.compute_policies:
+            raise ConfigError(
+                f"{project.project}: compute policy {name!r} is not defined under "
+                "databricks.compute_policies in config.yaml"
+            )
+        policy = section.compute_policies[name]
+        policies[name] = {"description": policy.description, "definition": policy.definition}
+    account = settings.aws.account_id
+    return {
+        "project": project.project,
+        "environment": ENVIRONMENT,
+        "repository": project.config.repository,
+        "tags": tags,
+        **{key: account_outputs[key] for key in _ACCOUNT_OUTPUTS},
+        "compute_policies": policies,
+        "fixed_tags": tags,
+        "governance_project": section.governance_project,
+        "apply_role_arn": f"arn:aws:iam::{account}:role/{project.role_name('apply')}",
+        "management_role_arns": [f"arn:aws:iam::{account}:role/{project.role_name('plan')}"],
+        "catalog_tags": {"Project": tags["Project"], "Owner": tags["Owner"]},
+    }
+
+
 def dataset_bucket_addresses(state: list[str]) -> list[str]:
     """The dataset buckets' resources in `state`, in its order: what a destroy
     releases to keep them. The datasets' IAM grants stay, to go with their roles."""
@@ -211,11 +341,11 @@ def dataset_names(addresses: list[str]) -> list[str]:
     return sorted({found.group(1) for a in addresses if (found := _DATASET_RESOURCE.match(a))})
 
 
-def render_backend(site: Target) -> str:
-    """backend.hcl for `terraform init -backend-config=`."""
+def render_backend(site: Target, state_key: str | None = None) -> str:
+    """backend.hcl for `terraform init -backend-config=`; `state_key` overrides the target's."""
     return (
         f'bucket       = "{site.state_bucket}"\n'
-        f'key          = "{site.state_key}"\n'
+        f'key          = "{state_key or site.state_key}"\n'
         f'region       = "{site.region}"\n'
         "use_lockfile = true\n"
         "encrypt      = true\n"
@@ -257,12 +387,29 @@ class Terraform:
         stack_dir: Path | None = None,
         plugin_dir: Path | None = None,
         binary: str = "terraform",
+        stack: str | None = None,
+        extra_env: Mapping[str, str] = {},  # copied, never mutated
+        tfvars_override: Mapping[str, Any] | None = None,
     ) -> None:
+        """`stack` picks one of a project's stacks (a Databricks project's `account`
+        or `workspace`): `stacks/<kind>-<stack>` and its own state key. `extra_env`
+        (credentials) reaches only the Terraform process; `tfvars_override` is
+        written instead of the rendered tfvars."""
         self.site = site
         self.settings = settings
         self.logger = logger
         self.kind = site.stack_kind if isinstance(site, Project) else "site"
-        self.stack_dir = stack_dir or default_stack_dir(self.kind)
+        self.stack = stack
+        #: The stack directory's name, e.g. `bot` or `databricks-account`.
+        self.stack_name = self.kind if stack is None else f"{self.kind}-{stack}"
+        self.state_key = (
+            site.state_key
+            if stack is None
+            else settings.state_key(site.project, ENVIRONMENT, stack)
+        )
+        self.stack_dir = stack_dir or default_stack_dir(self.stack_name)
+        self._extra_env = dict(extra_env)
+        self.tfvars_override = dict(tfvars_override) if tfvars_override is not None else None
         self.plugin_dir = default_plugin_dir() if plugin_dir is None else plugin_dir
         self.binary = binary
         self.workdir: Path | None = None
@@ -295,18 +442,26 @@ class Terraform:
 
     def prepare(self) -> Path:
         if not self.stack_dir.is_dir():
-            raise RunError(f"{self.kind} stack not found at {self.stack_dir}")
+            raise RunError(f"{self.stack_name} stack not found at {self.stack_dir}")
         self.check_version()
         self.workdir = Path(tempfile.mkdtemp(prefix="jwall-engineering-sites-"))
         shutil.copytree(self.stack_dir, self.workdir, dirs_exist_ok=True, symlinks=True)
-        tfvars = render_tfvars(self.site, self.settings)
-        backend = render_backend(self.site)
+        tfvars = (
+            self.tfvars_override
+            if self.tfvars_override is not None
+            else render_tfvars(self.site, self.settings, stack=self.stack)
+        )
+        backend = self.backend()
         (self.workdir / "terraform.tfvars.json").write_text(json.dumps(tfvars, indent=2) + "\n")
         (self.workdir / "backend.hcl").write_text(backend)
         self.logger.debug("working directory %s", self.workdir)
         self.logger.debug("terraform.tfvars.json:\n%s", json.dumps(tfvars, indent=2))
         self.logger.debug("backend.hcl:\n%s", backend)
         return self.workdir
+
+    def backend(self) -> str:
+        """backend.hcl for this stack: the target's state key, or the stack's own."""
+        return render_backend(self.site, self.state_key)
 
     def cleanup(self, failed: bool) -> None:
         if self.workdir is None:
@@ -459,4 +614,5 @@ class Terraform:
                 "AWS_DEFAULT_REGION": self.site.region,
             }
         )
+        env.update(self._extra_env)  # credentials: never logged or written to a file
         return env
