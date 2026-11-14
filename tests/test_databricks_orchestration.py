@@ -332,6 +332,22 @@ def test_readiness_failure_stops_before_the_workspace_stack(
     assert "re-running apply is safe" in (tmp_path / "summary.md").read_text()
 
 
+def test_a_failed_after_check_still_leaves_the_workspace_url(dbx: Path, tmp_path: Path) -> None:
+    framework.check("DBX-TST-011", "not verified", Stage.AFTER, frozenset({"databricks"}))(
+        lambda ctx: [
+            CheckResult("DBX-TST-011", "not verified", Outcome.FAIL, Severity.ERROR, {}, None, None)
+        ]
+    )
+    with _as_role(APPLY_ROLE):
+        result = runner.invoke(cli.app, ["apply"])
+    assert result.exit_code == 3, result.output
+    assert "DBX-TST-011" in result.output
+    merged = json.loads(_artifact(dbx, "outputs.json"))
+    assert merged["workspace_url"] == ACCOUNT_OUTPUTS["workspace_url"]
+    summary = (tmp_path / "summary.md").read_text()
+    assert str(ACCOUNT_OUTPUTS["workspace_url"]) in summary
+
+
 def test_event_store_unreachable_does_not_fail_apply(dbx: Path) -> None:
     boto3.client("s3", region_name="us-east-1").delete_bucket(Bucket=AUDIT_BUCKET)
     with _as_role(APPLY_ROLE):

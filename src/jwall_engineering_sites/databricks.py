@@ -237,7 +237,7 @@ class DatabricksDeployment:
                 workspace = self._apply_stack("workspace", tfvars)
             except StackFailedError as exc:
                 self._fail(exc.failure, partial="account")
-            self._checks([Stage.AFTER])
+            # Outputs and the summary first: a failed after check still leaves the URL.
             merged = {**account, **workspace}
             (self.run.artifacts / "outputs.json").write_text(
                 json.dumps(merged, indent=2, sort_keys=True, default=str) + "\n"
@@ -252,6 +252,7 @@ class DatabricksDeployment:
                     },
                 )
             )
+            self._checks([Stage.AFTER])
             return merged
 
     def destroy(self) -> list[str]:
