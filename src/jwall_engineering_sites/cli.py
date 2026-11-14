@@ -1352,12 +1352,11 @@ def cost_report(
 STAGE_ORDER = (Stage.CONFIG, Stage.LIVE, Stage.BETWEEN, Stage.AFTER)
 
 
-def _databricks_project(run: Run) -> Project:
+def _databricks_project(run: Run, command: str = "`databricks doctor`") -> Project:
     project = run.project
     if project.kind != "databricks":
         raise ConfigError(
-            f"{project.project} is a {project.kind} project; "
-            "`databricks doctor` works on databricks projects"
+            f"{project.project} is a {project.kind} project; {command} works on databricks projects"
         )
     return project
 
@@ -1369,7 +1368,7 @@ def _databricks_section(run: Run) -> DatabricksSection:
     return section
 
 
-def _account_outputs(run: Run, project: Project, secret: str) -> dict[str, object] | None:
+def _account_outputs(run: Run, project: Project, secret: str) -> dict[str, object]:
     """The account stack's outputs (read-only: init and output), None if it has none yet."""
     terraform = stack.Terraform(
         project,
@@ -1387,7 +1386,7 @@ def _account_outputs(run: Run, project: Project, secret: str) -> dict[str, objec
         failed = False
     finally:
         terraform.cleanup(failed=failed)
-    return outputs or None
+    return outputs
 
 
 def _skipped_for_missing_account(stage: Stage, project: Project) -> list[CheckResult]:
@@ -1403,6 +1402,22 @@ def _skipped_for_missing_account(stage: Stage, project: Project) -> list[CheckRe
         )
         for c in registered(stage, project.config.kind)
     ]
+
+
+def _doctor_failure(
+    check_id: str, title: str, error: Exception, remediation: str, anchor: str
+) -> CheckResult:
+    """A failed ERROR finding for something doctor itself could not do. The facts carry the
+    error's type only: its text could name a path or a value."""
+    return CheckResult(
+        check_id=check_id,
+        title=title,
+        outcome=Outcome.FAIL,
+        severity=Severity.ERROR,
+        facts={"error": type(error).__name__},
+        remediation=remediation,
+        runbook=f"docs/databricks.md#{anchor}",
+    )
 
 
 @databricks_app.command("doctor")
@@ -1431,19 +1446,60 @@ def databricks_doctor(
         clients: databricks_auth.DatabricksClients | None = None
         secret = ""
         outputs: dict[str, object] | None = None
-        needs_clients = any(s is not Stage.CONFIG for s in stages)
-        if needs_clients:
-            # Until the owner enables the account, the checks SKIP and the secret may not exist.
-            if section.enabled:
-                secret = databricks_auth.load_secret(
-                    session.client("ssm"), section.secret_parameter
-                )
-            clients = databricks_auth.DatabricksClients(run.settings, secret)
+        # Doctor reports what is broken: a finding below stands in for the stages that
+        # cannot run, and the table and checks.json are still written.
+        credential_failed = False
+        state_failed = False
         for current in stages:
+            if current is not Stage.CONFIG:
+                if credential_failed:
+                    continue
+                if clients is None:
+                    # Until the owner enables the account, the checks SKIP and the secret
+                    # may not exist.
+                    try:
+                        if section.enabled:
+                            secret = databricks_auth.load_secret(
+                                session.client("ssm"), section.secret_parameter
+                            )
+                    except SitesError as exc:
+                        run.logger.warning("%s", exc)
+                        results.append(
+                            _doctor_failure(
+                                "DBX-DOC-002",
+                                "Databricks credential loadable",
+                                exc,
+                                "The live, between and after checks did not run. Run "
+                                "`jwall-engineering-sites databricks credentials set` as the "
+                                "owner, then `databricks credentials check`.",
+                                "credentials",
+                            )
+                        )
+                        credential_failed = True
+                        continue
+                    clients = databricks_auth.DatabricksClients(run.settings, secret)
             if current in (Stage.BETWEEN, Stage.AFTER) and section.enabled:
+                if state_failed:
+                    continue
                 if outputs is None:
-                    outputs = _account_outputs(run, project, secret)
-                if outputs is None:
+                    try:
+                        outputs = _account_outputs(run, project, secret)
+                    except SitesError as exc:
+                        run.logger.warning("%s", exc)
+                        results.append(
+                            _doctor_failure(
+                                "DBX-DOC-001",
+                                "Account stack state readable",
+                                exc,
+                                "The between and after checks did not run. Check that the "
+                                "ci-plan role can read the state bucket; run "
+                                "`jwall-engineering-sites plan` to see Terraform's own error.",
+                                "account-state",
+                            )
+                        )
+                        state_failed = True
+                        continue
+                if not outputs:
                     run.logger.warning(
                         "the account stack has no outputs: apply the account stack first "
                         "(skipping the %s checks)",
@@ -1451,8 +1507,8 @@ def databricks_doctor(
                     )
                     results += _skipped_for_missing_account(current, project)
                     continue
-                assert clients is not None
-                clients.account_outputs = outputs
+                if clients is not None:
+                    clients.account_outputs = outputs
             context = CheckContext(
                 project=project,
                 settings=run.settings,
@@ -1469,8 +1525,9 @@ def databricks_doctor(
 
 
 def _credentials_session(run: Run) -> tuple[boto3.session.Session, str]:
+    project = _databricks_project(run, command="`databricks credentials`")
     section = _databricks_section(run)
-    session = boto3.session.Session(region_name=run.settings.state.region)
+    session = boto3.session.Session(region_name=project.region)
     with phase("preflight"):
         _, arn = aws.caller_identity(session.client("sts"))
         run.logger.info("running as %s", arn)
@@ -1498,8 +1555,8 @@ def databricks_credentials_check(ctx: typer.Context) -> None:
 
     def body(run: Run) -> None:
         session, parameter = _credentials_session(run)
-        modified = databricks_auth.secret_modified(session.client("ssm"), parameter)
-        if modified is None:
+        present, modified = databricks_auth.secret_status(session.client("ssm"), parameter)
+        if not present:
             raise PreflightError(
                 f"the Databricks client secret is not set: {parameter} does not exist "
                 f"(run `databricks credentials set`, see {databricks_auth.RUNBOOK})"
@@ -1507,7 +1564,7 @@ def databricks_credentials_check(ctx: typer.Context) -> None:
         run.logger.info(
             "the Databricks client secret is set at %s, last modified %s",
             parameter,
-            modified.strftime("%Y-%m-%d"),
+            modified.strftime("%Y-%m-%d") if modified else "unknown",
         )
 
     _command(body)(ctx)

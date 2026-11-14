@@ -261,6 +261,7 @@ CHECK_ANCHORS: tuple[str, ...] = tuple(
         "metastore-assignment",
         "catalog",
         "egress",
+        "account-state",
     )
 )
 

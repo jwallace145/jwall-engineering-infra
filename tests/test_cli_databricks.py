@@ -311,3 +311,51 @@ def test_credentials_check_hides_value(
     assert SENTINEL not in present.output
     log = databricks_workspace / ".jwall-engineering-sites" / "jwall-engineering-sites.log"
     assert SENTINEL not in log.read_text()
+
+
+def _written(workspace: Path) -> list[dict[str, Any]]:
+    path = workspace / ".jwall-engineering-sites" / "checks.json"
+    return json.loads(path.read_text())  # type: ignore[no-any-return]
+
+
+def test_doctor_reports_unreadable_account_state_and_keeps_earlier_results(
+    databricks_workspace: Path,
+    fake_terraform: Path,
+    recorded: list[tuple[Stage, CheckContext]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_TF_OUTPUTS", str(tmp_path / "missing.json"))  # `output` fails
+    with mock_aws(), _as_role(PLAN_ROLE):
+        _put_secret()
+        result = runner.invoke(cli.app, ["databricks", "doctor"])
+    assert result.exit_code == 3, result.output
+    assert "DBX-DOC-001" in result.output and "ci-plan" in result.output
+    assert [s for s, _ in recorded] == [Stage.CONFIG, Stage.LIVE]
+    written = _written(databricks_workspace)
+    assert [r["check_id"] for r in written] == ["DBX-TST-001", "DBX-TST-002", "DBX-DOC-001"]
+    assert written[-1]["outcome"] == "fail" and written[-1]["severity"] == "error"
+    assert written[-1]["facts"] == {"error": "RunError"}
+    assert SENTINEL not in result.output
+
+
+def test_doctor_reports_a_missing_secret_after_the_config_stage(
+    databricks_workspace: Path, fake_terraform: Path, recorded: list[tuple[Stage, CheckContext]]
+) -> None:
+    with mock_aws(), _as_role(PLAN_ROLE):
+        result = runner.invoke(cli.app, ["databricks", "doctor"])
+    assert result.exit_code == 3, result.output
+    assert [s for s, _ in recorded] == [Stage.CONFIG]
+    assert "DBX-DOC-002" in result.output and "credentials set" in result.output
+    written = _written(databricks_workspace)
+    assert [r["check_id"] for r in written] == ["DBX-TST-001", "DBX-DOC-002"]
+    assert written[-1]["runbook"] == "docs/databricks.md#credentials"
+    assert not fake_terraform.exists()
+
+
+def test_credentials_commands_refuse_non_databricks_projects(bot_workspace: Path) -> None:
+    with mock_aws(), _as_role(OWNER):
+        for command in ("set", "check"):
+            result = runner.invoke(cli.app, ["databricks", "credentials", command], input="x\n")
+            assert result.exit_code == 2, result.output
+            assert "databricks" in result.output

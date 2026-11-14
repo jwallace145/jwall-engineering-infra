@@ -65,8 +65,8 @@ def load_secret(ssm: Any, parameter: str) -> str:
     return value
 
 
-def secret_modified(ssm: Any, parameter: str) -> datetime | None:
-    """When the client secret in SSM `parameter` was last modified, or None if it is absent.
+def secret_status(ssm: Any, parameter: str) -> tuple[bool, datetime | None]:
+    """Whether the client secret in SSM `parameter` exists, and when it was last modified.
 
     Reads (and decrypts) the parameter to prove the caller can, then discards the
     value: only the date leaves this function. Other failures are a preflight
@@ -77,7 +77,7 @@ def secret_modified(ssm: Any, parameter: str) -> datetime | None:
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
         if code == "ParameterNotFound":
-            return None
+            return False, None
         raise PreflightError(
             f"cannot read the Databricks client secret {parameter} from SSM ({code}); see {RUNBOOK}"
         ) from None
@@ -87,7 +87,7 @@ def secret_modified(ssm: Any, parameter: str) -> datetime | None:
             f"({type(exc).__name__}); check the AWS credentials and network, see {RUNBOOK}"
         ) from None
     modified = response.get("Parameter", {}).get("LastModifiedDate")
-    return modified if isinstance(modified, datetime) else datetime.min
+    return True, modified if isinstance(modified, datetime) else None
 
 
 def terraform_env(settings: Settings, secret: str) -> dict[str, str]:
