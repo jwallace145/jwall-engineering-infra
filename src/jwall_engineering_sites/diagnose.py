@@ -238,7 +238,30 @@ CATALOGUE: tuple[Diagnosis, ...] = (
     ),
 )
 
-RUNBOOK_ANCHORS: tuple[str, ...] = tuple(d.runbook for d in CATALOGUE)
+#: Anchors the preflight checks (`checks/databricks_*.py`) link to, beside the catalogue's.
+CHECK_ANCHORS: tuple[str, ...] = tuple(
+    _anchor(name)
+    for name in (
+        "one-time-setup",
+        "credentials",
+        "network-cidrs",
+        "compute-policies",
+        "resource-names",
+        "required-tags",
+        "account-admin",
+        "metastore",
+        "workspace-members",
+        "bucket-names",
+        "instance-availability",
+        "vcpu-quota",
+        "nat-ami",
+        "deployment-name",
+    )
+)
+
+RUNBOOK_ANCHORS: tuple[str, ...] = tuple(
+    dict.fromkeys([*(d.runbook for d in CATALOGUE), *CHECK_ANCHORS])
+)
 
 
 def _redact(text: str) -> str:
