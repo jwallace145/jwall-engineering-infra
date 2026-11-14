@@ -277,7 +277,8 @@ class DatabricksSection(_Section):
     secret_parameter: str = "/jwall-engineering/databricks/client-secret"
     metastore_name: str = "jwall-engineering-us-east-1"
     metastore_admins: tuple[str, ...] = Field(min_length=1)
-    #: The project that owns the metastore; must have a `databricks` guardrail entry.
+    #: The project whose workspace enables the metastore-wide system schemas (the foundation
+    #: owns the metastore); must have a `projects.<name>.databricks` guardrail entry.
     governance_project: str | None = None
     #: The pinned Amazon Linux 2023 arm64 image name of the NAT instance.
     nat_ami: str

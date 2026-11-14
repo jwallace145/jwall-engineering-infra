@@ -124,7 +124,9 @@ databricks:
   metastore_name: jwall-engineering-us-east-1
   # Replace the placeholder with the owner's email.
   metastore_admins: [owner@example.com]
-  governance_project: databricks-poc # owns the metastore; needs a databricks entry below
+  # The project whose workspace enables the metastore-wide system schemas (the foundation
+  # owns the metastore itself); it needs its projects.<name>.databricks entry above.
+  governance_project: databricks-poc
   # Pinned Amazon Linux 2023 arm64 image for the NAT instance, by its Amazon image name.
   nat_ami: al2023-ami-2023.12.20261026.1-kernel-6.18-arm64
   # Set to the prefix Databricks configured for this account to get <prefix>-<project>
