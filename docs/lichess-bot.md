@@ -5,7 +5,7 @@ permanently as a Lichess bot with one file, `jwall-engineering-sites.yaml`,
 plus its existing lichess-bot config and a short release workflow. The tool
 builds an image from each release, pushes it to ECR under the release tag,
 and rolls the bot to it on one EC2 instance without ever interrupting a game.
-The first consumer is [rusty-chess-v2](https://github.com/jwallace145/rusty-chess-v2).
+The first consumer is [Braveheart](https://github.com/jwallace145/braveheart) (formerly rusty-chess-v2).
 
 What you get:
 
@@ -26,13 +26,13 @@ At the repository root:
 ```yaml
 version: 1
 project: rusty-chess
-repository: jwallace145/rusty-chess-v2
+repository: jwallace145/braveheart
 
 tags:
   Organization: jwall-engineering
   Project: rusty-chess
   Environment: prod
-  Repository: jwallace145/rusty-chess-v2
+  Repository: jwallace145/braveheart
   Owner: jwallace145
 
 components:

@@ -99,7 +99,7 @@ def test_build_command_line(
         "--platform linux/amd64",
         "--build-arg ENGINE_BINARY=rusty-chess",
         "--build-arg VERSION=v0.14.0",
-        "--build-arg SOURCE_REPOSITORY=https://github.com/jwallace145/rusty-chess-v2",
+        "--build-arg SOURCE_REPOSITORY=https://github.com/jwallace145/braveheart",
         "--tag jwall-engineering-rusty-chess:v0.14.0",
     ):
         assert part in line, part

@@ -30,7 +30,7 @@ def project_file(project: str) -> dict[str, Any]:
 
 
 def test_registry_lists_rusty_chess() -> None:
-    assert registry()["rusty-chess"] == ("jwallace145/rusty-chess-v2", "1435162673")
+    assert registry()["rusty-chess"] == ("jwallace145/braveheart", "1435162673")
 
 
 def test_registry_matches_each_projects_file() -> None:
