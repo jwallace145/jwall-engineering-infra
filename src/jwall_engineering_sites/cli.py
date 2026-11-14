@@ -64,7 +64,7 @@ from .settings import (
     load_settings,
     parse_duration,
 )
-from .site import DEV_PREFIX, PROD_PREFIX, SITE_FILE, Site, load_site_config
+from .site import DEV_PREFIX, ENVIRONMENT, PROD_PREFIX, SITE_FILE, Site, load_site_config
 
 app = typer.Typer(
     name="jwall-engineering-sites",
@@ -211,6 +211,15 @@ def _preflight(run: Run, role: Role, prefix: str | None) -> None:
         project = run.project
         session = boto3.session.Session(region_name=project.region)
         aws.check_role(session.client("sts"), project.role_name(role), run.logger)
+        if project.kind == "databricks":
+            # Two stacks, two state files; `project.state_key` is neither.
+            run.logger.info(
+                "databricks %s: state %s and %s",
+                project.project,
+                run.settings.state_key(project.project, ENVIRONMENT, "account"),
+                run.settings.state_key(project.project, ENVIRONMENT, "workspace"),
+            )
+            return
         if project.has_components:
             run.logger.info("%s %s: state %s", project.kind, project.project, project.state_key)
             return

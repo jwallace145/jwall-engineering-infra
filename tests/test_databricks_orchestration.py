@@ -736,3 +736,15 @@ def test_bot_and_task_commands_refuse_databricks(dbx: Path, command: list[str]) 
         result = runner.invoke(cli.app, command)
     assert result.exit_code == 2, result.output
     assert "databricks project" in result.output
+
+
+def test_preflight_logs_both_state_keys(dbx: Path, tmp_path: Path) -> None:
+    with _as_role(APPLY_ROLE):
+        result = runner.invoke(cli.app, ["apply"])
+    assert result.exit_code == 0, result.output
+    log = _artifact(dbx, "jwall-engineering-sites.log")
+    assert (
+        "databricks databricks-poc: state "
+        "project=databricks-poc/env=prod/databricks-poc-prod-account.tfstate and "
+        "project=databricks-poc/env=prod/databricks-poc-prod-workspace.tfstate"
+    ) in log
