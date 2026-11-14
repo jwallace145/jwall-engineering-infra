@@ -342,7 +342,7 @@ jobs:
       matrix:
         # One entry per bot in foundation/bots.tf (a test keeps them in sync).
         include:
-          - { project: rusty-chess, repository: jwallace145/rusty-chess-v2 }
+          - { project: rusty-chess, repository: jwallace145/braveheart }
     steps:
       - uses: actions/checkout@v7
       - name: Check out the bot's project file (its default branch)

@@ -1,6 +1,6 @@
 version: 1
 project: rusty-chess
-repository: jwallace145/rusty-chess-v2
+repository: jwallace145/braveheart
 
 # The tags every resource carries (through the provider's default_tags), plus
 # ManagedBy=jwall-engineering-infra, which the tool adds.
@@ -9,7 +9,7 @@ tags:
   Organization: jwall-engineering
   Project: rusty-chess
   Environment: prod
-  Repository: jwallace145/rusty-chess-v2
+  Repository: jwallace145/braveheart
   Owner: jwallace145
 
 components:

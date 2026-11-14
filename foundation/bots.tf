@@ -26,7 +26,7 @@
 locals {
   # repository_id: gh api repos/<owner>/<repo> --jq .id
   bots = {
-    rusty-chess = { repository = "jwallace145/rusty-chess-v2", repository_id = "1435162673" }
+    rusty-chess = { repository = "jwallace145/braveheart", repository_id = "1435162673" }
   }
 
   # The entries of `bots` without a bot or an image (kind research): their plan

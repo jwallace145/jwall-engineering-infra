@@ -31,9 +31,7 @@ def _release(tag: str, draft: bool = False, prerelease: bool = False) -> dict[st
 
 def _fetch_json(payload: object) -> releases.Fetch:
     def fetch(url: str, headers: dict[str, str]) -> bytes:
-        assert (
-            url == "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases?per_page=100"
-        )
+        assert url == "https://api.github.com/repos/jwallace145/braveheart/releases?per_page=100"
         assert headers["Accept"] == "application/vnd.github+json"
         return json.dumps(payload).encode()
 
@@ -50,14 +48,14 @@ def test_list_releases_filters_and_sorts() -> None:
         _release("v0.15.0", prerelease=True),
         _release("nightly"),
     ]
-    found = releases.list_releases("jwallace145/rusty-chess-v2", fetch=_fetch_json(payload))
+    found = releases.list_releases("jwallace145/braveheart", fetch=_fetch_json(payload))
     assert [r.tag for r in found] == ["v0.14.1", "v0.14.0", "v0.9.2"]
     assert found[0].assets == {"rusty-chess-v0.14.1.tar.gz": "https://x/v0.14.1.tgz"}
 
 
 def test_list_releases_sorts_numerically() -> None:
     payload = [_release("v0.9.0"), _release("v0.10.0")]
-    found = releases.list_releases("jwallace145/rusty-chess-v2", fetch=_fetch_json(payload))
+    found = releases.list_releases("jwallace145/braveheart", fetch=_fetch_json(payload))
     assert [r.tag for r in found] == ["v0.10.0", "v0.9.0"]
     assert releases.newest(found) == found[0]
     assert releases.newest([]) is None
@@ -71,7 +69,7 @@ def test_github_token_is_sent_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
         seen.update(headers)
         return b"[]"
 
-    releases.list_releases("jwallace145/rusty-chess-v2", fetch=fetch)
+    releases.list_releases("jwallace145/braveheart", fetch=fetch)
     assert seen["Authorization"] == "Bearer t0ken"
 
 
@@ -203,7 +201,7 @@ def test_download_writes_the_bytes(tmp_path: Path) -> None:
 
 # -- waiting for assets: releases are published before their assets are attached --
 
-TAG_URL = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases/tags/v0.17.0"
+TAG_URL = "https://api.github.com/repos/jwallace145/braveheart/releases/tags/v0.17.0"
 NAMES = (
     "rusty-chess-v0.17.0-x86_64-unknown-linux-gnu.tar.gz",
     "rusty-chess-v0.17.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
@@ -231,7 +229,7 @@ def test_wait_for_assets_returns_at_once_when_attached() -> None:
     fetch, calls = _tag_fetch([list(NAMES)])
     sleeps: list[float] = []
     release = releases.wait_for_assets(
-        "jwallace145/rusty-chess-v2", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
+        "jwallace145/braveheart", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
         fetch=fetch, sleep=sleeps.append,
     )  # fmt: skip
     assert set(NAMES) <= set(release.assets)
@@ -244,7 +242,7 @@ def test_wait_for_assets_waits_until_they_are_attached() -> None:
     sleeps: list[float] = []
     clock = iter(range(0, 10_000, 15))
     release = releases.wait_for_assets(
-        "jwallace145/rusty-chess-v2", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
+        "jwallace145/braveheart", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
         fetch=fetch, sleep=sleeps.append, clock=lambda: float(next(clock)), poll_seconds=15,
     )  # fmt: skip
     assert release.assets[NAMES[1]] == f"https://dl/{NAMES[1]}"
@@ -260,6 +258,6 @@ def test_wait_for_assets_gives_up_naming_what_is_missing() -> None:
         match=r"still has no rusty-chess-v0\.17\.0-x86_64-unknown-linux-gnu\.tar\.gz after 30m",
     ):
         releases.wait_for_assets(
-            "jwallace145/rusty-chess-v2", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
+            "jwallace145/braveheart", "v0.17.0", NAMES, 1800, logging.getLogger("t"),
             fetch=fetch, sleep=lambda _: None, clock=lambda: float(next(clock)),
         )  # fmt: skip

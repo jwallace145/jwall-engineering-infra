@@ -316,7 +316,7 @@ release role ([docs/research-projects.md](docs/research-projects.md)):
 
 | Key | Repository |
 | --- | --- |
-| `rusty-chess` | `jwallace145/rusty-chess-v2` |
+| `rusty-chess` | `jwallace145/braveheart` |
 
 Each entry gets three roles (two for a research project), and a fourth when
 the project lists `instance_types` under `projects` in `config.yaml` (a

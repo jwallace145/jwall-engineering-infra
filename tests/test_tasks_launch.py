@@ -33,7 +33,7 @@ def _spec(bot: Project, **overrides: Any) -> tasks.TaskSpec:
         "run_id": "123-1",
         "task_id": "sprt-0",
         "workflow": "SPRT",
-        "repository": "jwallace145/rusty-chess-v2",
+        "repository": "jwallace145/braveheart",
         "ref": "0123456789abcdef0123456789abcdef01234567",
         "script": "scripts/sprt.sh",
         "args": ("--games", "200"),

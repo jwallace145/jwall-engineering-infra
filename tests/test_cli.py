@@ -425,7 +425,7 @@ from jwall_engineering_sites import releases as releases_module  # noqa: E402
 from jwall_engineering_sites import rollout as rollout_module  # noqa: E402
 
 REPO = "jwall-engineering-rusty-chess"
-API_RELEASES = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases?per_page=100"
+API_RELEASES = "https://api.github.com/repos/jwallace145/braveheart/releases?per_page=100"
 LINUX = "rusty-chess-{v}-x86_64-unknown-linux-gnu.tar.gz"
 
 
@@ -465,7 +465,7 @@ def fake_github(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
     files[API_RELEASES] = json.dumps(listing).encode()
     for item in listing:
         files[
-            f"https://api.github.com/repos/jwallace145/rusty-chess-v2/releases/tags/{item['tag_name']}"
+            f"https://api.github.com/repos/jwallace145/braveheart/releases/tags/{item['tag_name']}"
         ] = json.dumps(item).encode()
 
     def fetch(url: str, headers: dict[str, str]) -> bytes:
@@ -777,7 +777,7 @@ def test_bot_build_waits_for_assets_attached_after_publishing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Release Please publishes the release; the assets arrive seconds later."""
-    tag_url = "https://api.github.com/repos/jwallace145/rusty-chess-v2/releases/tags/v0.14.0"
+    tag_url = "https://api.github.com/repos/jwallace145/braveheart/releases/tags/v0.14.0"
     full = next(r for r in json.loads(fake_github[API_RELEASES]) if r["tag_name"] == "v0.14.0")
     bare = dict(full, assets=[])
     answers = [json.dumps(bare).encode(), json.dumps(full).encode()]

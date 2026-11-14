@@ -52,7 +52,7 @@ def test_run_passes_the_task_and_its_exit_code(captured: dict[str, Any]) -> None
     assert spec.args == ("--games", "200", "--flag")
     assert spec.script == "scripts/sprt.sh" and spec.ref == SHA
     assert spec.instance_type == "c8a.16xlarge" and spec.max_hours == 6
-    assert spec.repository == "jwallace145/rusty-chess-v2"
+    assert spec.repository == "jwallace145/braveheart"
     assert spec.task_id == "local" and spec.workflow == "local"
     assert captured["out_dir"] == Path("out")
     assert captured["kw"]["poll"] == 5

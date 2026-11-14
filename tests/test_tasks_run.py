@@ -366,7 +366,7 @@ def test_script_steps_in_order(bot: Project) -> None:
         "/etc/task-runner/ready",
         "shutdown -c",
         "shutdown -h +360",
-        "git -C /work/repo fetch --quiet --depth 1 https://github.com/jwallace145/rusty-chess-v2"
+        "git -C /work/repo fetch --quiet --depth 1 https://github.com/jwallace145/braveheart"
         " 0123456789abcdef0123456789abcdef01234567",
         "git -C /work/repo checkout --quiet FETCH_HEAD",
         "aws sts get-caller-identity --query UserId --output text",
