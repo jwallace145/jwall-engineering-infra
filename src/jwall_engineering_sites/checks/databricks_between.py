@@ -12,7 +12,9 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from databricks.sdk.errors import NotFound
+from databricks.sdk.errors import NotFound, PermissionDenied
+from databricks.sdk.errors.base import DatabricksError
+from databricks.sdk.service.iam import WorkspacePermission
 from databricks.sdk.service.provisioning import WorkspaceStatus
 
 from ..errors import PreflightError
@@ -55,7 +57,15 @@ def workspace_running(ctx: CheckContext) -> Iterable[CheckResult]:
     workspaces = _account(ctx).workspaces
     start = _clock()
     while True:
-        current = workspaces.get(workspace_id)
+        try:
+            current = workspaces.get(workspace_id)
+        except NotFound:
+            yield BTW_001.failed(
+                f"workspace {workspace_id} does not exist in the account: the account stack "
+                "creates it, so re-run apply",
+                workspace_id=str(workspace_id),
+            )
+            return
         status, message = current.workspace_status, current.workspace_status_message or ""
         label = status.value if status is not None else "unknown"
         if status is WorkspaceStatus.RUNNING:
@@ -83,12 +93,12 @@ def workspace_running(ctx: CheckContext) -> Iterable[CheckResult]:
         _sleep(POLL_SECONDS)
 
 
-@_live(BTW_002, needs_ids=True, stage=Stage.BETWEEN)
+@_live(BTW_002, needs_ids=True, stage=Stage.BETWEEN, workspace_level=True)
 def workspace_answers(ctx: CheckContext) -> Iterable[CheckResult]:
     host = str(outputs(ctx)["workspace_url"])
     try:
         me = workspace_client(ctx).current_user.me()
-    except Exception as exc:  # the SDK's message may quote credentials; keep the type only
+    except (DatabricksError, OSError, ValueError) as exc:  # keep the type only
         yield BTW_002.failed(
             f"{host} did not answer an authenticated call: the workspace may still be "
             "starting, or the service principal is not assigned to it (DBX-BTW-003)",
@@ -99,25 +109,34 @@ def workspace_answers(ctx: CheckContext) -> Iterable[CheckResult]:
     yield BTW_002.passed(host=host, principal=str(me.user_name))
 
 
-@_live(BTW_003, needs_ids=True, stage=Stage.BETWEEN)
+@_live(BTW_003, needs_ids=True, stage=Stage.BETWEEN, workspace_level=True)
 def principal_is_workspace_admin(ctx: CheckContext) -> Iterable[CheckResult]:
-    host = str(outputs(ctx)["workspace_url"])
-    admin_group = str(outputs(ctx)["admin_group_name"])
-    try:
-        me = workspace_client(ctx).current_user.me()
-    except Exception as exc:
+    """The admin group holds ADMIN on the workspace (account level, authoritative) and an
+    admin-only workspace read works (the service principal's rights are effective)."""
+    out = outputs(ctx)
+    workspace_id, admin_group = int(out["workspace_id"]), str(out["admin_group_name"])
+    assignments = _account(ctx).workspace_assignment.list(workspace_id)
+    held = any(
+        a.principal is not None
+        and a.principal.group_name == admin_group
+        and WorkspacePermission.ADMIN in (a.permissions or [])
+        for a in assignments
+    )
+    if not held:
         yield BTW_003.failed(
-            f"cannot read the service principal's identity in {host} (DBX-BTW-002 reports why)",
-            host=host,
-            error=type(exc).__name__,
+            f"the group {admin_group} does not hold ADMIN on workspace {workspace_id}: the "
+            "account stack assigns it (after the metastore assignment); re-run apply",
+            admin_group=admin_group,
         )
         return
-    if "admins" not in {g.display for g in me.groups or []}:
+    try:
+        workspace_client(ctx).workspace_conf.get_status(keys="enableTokensConfig")
+    except PermissionDenied:
         yield BTW_003.failed(
-            f"the service principal is not in the workspace's admins group: it joins "
-            f"{admin_group} in the account stack, which holds ADMIN on the workspace. "
-            "Re-run apply; if it persists, check the group membership in the account console",
+            f"{admin_group} holds ADMIN but the service principal cannot yet read admin "
+            "settings: the admin assignment is not yet effective; re-run apply (propagation)",
             admin_group=admin_group,
+            error="PermissionDenied",
         )
         return
     yield BTW_003.passed(admin_group=admin_group)

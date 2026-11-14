@@ -23,7 +23,14 @@ from databricks.sdk.service.catalog import (
     WorkspaceBinding,
 )
 from databricks.sdk.service.compute import Policy
-from databricks.sdk.service.iam import ComplexValue, ServicePrincipal, User
+from databricks.sdk.service.iam import (
+    ComplexValue,
+    PermissionAssignment,
+    PrincipalOutput,
+    ServicePrincipal,
+    User,
+    WorkspacePermission,
+)
 from databricks.sdk.service.provisioning import Workspace, WorkspaceStatus
 
 
@@ -50,6 +57,21 @@ class _Workspaces:
         if len(self._states) > 1:
             return self._states.pop(0)
         return self._states[0]
+
+
+class _WorkspaceAssignment:
+    def __init__(self, items: list[PermissionAssignment]) -> None:
+        self._items = items
+
+    def list(self, workspace_id: int) -> Iterator[PermissionAssignment]:
+        return iter(self._items)
+
+
+def group_assignment(group: str, *permissions: WorkspacePermission) -> PermissionAssignment:
+    return PermissionAssignment(
+        principal=PrincipalOutput(group_name=group, principal_id=7),
+        permissions=list(permissions),
+    )
 
 
 class _MetastoreAssignments:
@@ -94,6 +116,7 @@ class FakeAccount:
         default_factory=lambda: [workspace_in(WorkspaceStatus.RUNNING)]
     )
     metastore_assignment: MetastoreAssignment | None = None
+    assignments: list[PermissionAssignment] = field(default_factory=list)
     token_error: Exception | None = None
     list_error: Exception | None = None
 
@@ -105,6 +128,7 @@ class _Account:
         self.service_principals = _ServicePrincipals(fake.service_principals)
         self.workspaces = _Workspaces(fake.workspaces, fake.workspace_states)
         self.metastore_assignments = _MetastoreAssignments(fake.metastore_assignment)
+        self.workspace_assignment = _WorkspaceAssignment(fake.assignments)
 
         def authenticate() -> dict[str, str]:
             if fake.token_error is not None:
@@ -144,8 +168,24 @@ class _StorageCredentials:
         storage_credential_name: str | None = None,
         url: str | None = None,
     ) -> ValidateStorageCredentialResponse:
-        self.validated.append({"storage_credential_name": storage_credential_name, "url": url})
+        self.validated.append(
+            {
+                "storage_credential_name": storage_credential_name,
+                "external_location_name": external_location_name,
+                "url": url,
+            }
+        )
         return self._fake.validation
+
+
+class _WorkspaceConf:
+    def __init__(self, fake: FakeWorkspace) -> None:
+        self._fake = fake
+
+    def get_status(self, keys: str) -> dict[str, str]:
+        if self._fake.conf_error is not None:
+            raise self._fake.conf_error
+        return {keys: "true"}
 
 
 class _Catalogs:
@@ -193,6 +233,7 @@ class FakeWorkspace:
         default_factory=lambda: User(user_name="sp", groups=[ComplexValue(display="admins")])
     )
     me_error: Exception | None = None
+    conf_error: Exception | None = None
     validation: ValidateStorageCredentialResponse = field(
         default_factory=ValidateStorageCredentialResponse
     )
@@ -204,6 +245,7 @@ class FakeWorkspace:
         self.current_user = _CurrentUser(self)
         self.storage_credentials = _StorageCredentials(self)
         self.catalogs = _Catalogs(self)
+        self.workspace_conf = _WorkspaceConf(self)
         self.workspace_bindings = _WorkspaceBindings(self)
         self.cluster_policies = _ClusterPolicies(self)
 

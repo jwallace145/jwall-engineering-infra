@@ -57,7 +57,11 @@ def _section(ctx: CheckContext) -> DatabricksSection:
 
 
 def _live(
-    meta: Meta, *, needs_ids: bool = False, stage: Stage = Stage.LIVE
+    meta: Meta,
+    *,
+    needs_ids: bool = False,
+    stage: Stage = Stage.LIVE,
+    workspace_level: bool = False,
 ) -> Callable[[CheckFn], CheckFn]:
     """Register a check (LIVE unless `stage` says otherwise; the BETWEEN and AFTER modules reuse
     this) that SKIPs until Databricks is enabled (and, with `needs_ids`,
@@ -77,12 +81,15 @@ def _live(
             try:
                 results = list(fn(ctx))
             except DatabricksError as exc:
-                yield meta.failed(
-                    "the Databricks call failed: check databricks.account_id and "
+                hint = (
+                    "the Databricks workspace call failed: check the service principal's "
+                    "workspace permissions (DBX-BTW-003) and that the workspace is RUNNING"
+                    if workspace_level
+                    else "the Databricks call failed: check databricks.account_id and "
                     "databricks.client_id in config.yaml and the service principal's "
-                    "permissions; DBX-LIVE-002 and the credentials runbook cover them",
-                    error=type(exc).__name__,
+                    "permissions; DBX-LIVE-002 and the credentials runbook cover them"
                 )
+                yield meta.failed(hint, error=type(exc).__name__)
                 return
             except ClientError as exc:
                 yield meta.failed(

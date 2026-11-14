@@ -11,7 +11,11 @@ import json
 from collections.abc import Iterable
 
 from databricks.sdk.errors import NotFound
-from databricks.sdk.service.catalog import CatalogIsolationMode, ValidationResultResult
+from databricks.sdk.service.catalog import (
+    CatalogIsolationMode,
+    ValidationResultOperation,
+    ValidationResultResult,
+)
 
 from ..databricks_names import REGION, derived_names
 from ._results import Meta
@@ -32,6 +36,16 @@ AFT_004 = Meta(
 )
 
 
+_GATED = frozenset(
+    {
+        ValidationResultOperation.READ,
+        ValidationResultOperation.LIST,
+        ValidationResultOperation.WRITE,
+        ValidationResultOperation.DELETE,
+    }
+)
+
+
 def _storage_root(ctx: CheckContext) -> str:
     return f"s3://{derived_names(ctx.project).catalog_bucket}/managed/"
 
@@ -40,20 +54,30 @@ def _catalog_name(ctx: CheckContext) -> str:
     return ctx.project.project.replace("-", "_")
 
 
-@_live(AFT_001, needs_ids=True, stage=Stage.AFTER)
+@_live(AFT_001, needs_ids=True, stage=Stage.AFTER, workspace_level=True)
 def credential_validates(ctx: CheckContext) -> Iterable[CheckResult]:
     names = derived_names(ctx.project)
     url = _storage_root(ctx)
+    # Naming the external location exempts its own URL from the overlap check.
     response = workspace_client(ctx).storage_credentials.validate(
-        storage_credential_name=names.uc_role, url=url
+        storage_credential_name=names.uc_role,
+        external_location_name=names.catalog_bucket,
+        url=url,
     )
     results = response.results or []
     failed = [
         f"{r.operation.value if r.operation else 'operation'}: {r.message or 'failed'}"
         for r in results
-        if r.result is ValidationResultResult.FAIL
+        if r.operation in _GATED and r.result is ValidationResultResult.FAIL
     ]
-    if failed or not results:
+    seen = {r.operation for r in results if r.operation in _GATED}
+    # PATH_EXISTS (and anything else) is informational: recorded, never a failure.
+    info = {
+        f"op_{r.operation.value.lower()}": r.result.value
+        for r in results
+        if r.operation and r.operation not in _GATED and r.result
+    }
+    if failed or not seen:
         yield AFT_001.failed(
             f"the storage credential {names.uc_role} cannot use {url} "
             f"({'; '.join(failed) or 'validation returned no results'}): check the Unity "
@@ -61,12 +85,13 @@ def credential_validates(ctx: CheckContext) -> Iterable[CheckResult]:
             "(IAM can take a minute to propagate)",
             credential=names.uc_role,
             url=url,
+            **info,
         )
         return
-    yield AFT_001.passed(credential=names.uc_role, url=url)
+    yield AFT_001.passed(credential=names.uc_role, url=url, **info)
 
 
-@_live(AFT_002, needs_ids=True, stage=Stage.AFTER)
+@_live(AFT_002, needs_ids=True, stage=Stage.AFTER, workspace_level=True)
 def catalog_isolated_and_bound(ctx: CheckContext) -> Iterable[CheckResult]:
     workspace_id = int(outputs(ctx)["workspace_id"])
     client = workspace_client(ctx)
@@ -100,7 +125,7 @@ def catalog_isolated_and_bound(ctx: CheckContext) -> Iterable[CheckResult]:
     yield AFT_002.passed(catalog=name, storage_root=root, workspace_id=str(workspace_id))
 
 
-@_live(AFT_003, needs_ids=True, stage=Stage.AFTER)
+@_live(AFT_003, needs_ids=True, stage=Stage.AFTER, workspace_level=True)
 def policies_installed(ctx: CheckContext) -> Iterable[CheckResult]:
     client = workspace_client(ctx)
     expected = ctx.project.databricks_tags
@@ -112,19 +137,28 @@ def policies_installed(ctx: CheckContext) -> Iterable[CheckResult]:
             problems.append(f"{name} is missing")
             continue
         # The list response may omit the definition; read the policy in full.
-        definition = json.loads(client.cluster_policies.get(listed.policy_id).definition or "{}")
+        try:
+            definition = json.loads(
+                client.cluster_policies.get(listed.policy_id).definition or "{}"
+            )
+        except ValueError:
+            problems.append(f"{name} has a definition that is not valid JSON")
+            continue
+        if not isinstance(definition, dict):
+            problems.append(f"{name} has a definition that is not a JSON object")
+            continue
         wrong = [
             key
             for key, value in expected.items()
-            if definition.get(f"custom_tags.{key}", {}).get("value") != value
+            if not isinstance(rule := definition.get(f"custom_tags.{key}"), dict)
+            or rule.get("value") != value
         ]
         if wrong:
             problems.append(f"{name} has the wrong fixed tag(s) {', '.join(wrong)}")
     if problems:
         yield AFT_003.failed(
             f"{'; '.join(problems)}: re-run apply, which reinstalls the policies with the "
-            "project's tags (databricks_tags: Project, Environment, CostCenter, Owner, "
-            "ManagedBy, Workspace)",
+            f"project's tags ({', '.join(expected)})",
             problems="; ".join(problems),
         )
         return

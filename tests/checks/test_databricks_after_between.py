@@ -7,6 +7,7 @@ from typing import Any
 
 import boto3
 import pytest
+from databricks.sdk.errors import NotFound, PermissionDenied
 from databricks.sdk.errors.base import DatabricksError
 from databricks.sdk.service.catalog import (
     CatalogInfo,
@@ -19,7 +20,7 @@ from databricks.sdk.service.catalog import (
     WorkspaceBinding,
 )
 from databricks.sdk.service.compute import Policy
-from databricks.sdk.service.iam import ComplexValue, User
+from databricks.sdk.service.iam import WorkspacePermission
 from databricks.sdk.service.provisioning import WorkspaceStatus
 from moto import mock_aws
 
@@ -40,6 +41,7 @@ from tests.checks.fakes import (
     FakeDatabricks,
     FakeWorkspace,
     client_error,
+    group_assignment,
     workspace_in,
 )
 
@@ -241,16 +243,72 @@ def test_btw002_fails_when_the_workspace_does_not_answer(
     assert result.facts["error"] == "ConnectionError"
 
 
-def test_btw003_passes_for_a_workspace_admin(databricks: Project, live: Settings) -> None:
-    assert _btw("DBX-BTW-003", databricks, live).outcome is Outcome.PASS
+ADMIN_GROUP = str(OUTPUTS["admin_group_name"])
 
 
-def test_btw003_fails_when_not_in_the_admins_group(databricks: Project, live: Settings) -> None:
-    me = User(user_name="sp", groups=[ComplexValue(display="users")])
-    result = _btw("DBX-BTW-003", databricks, live, me=me)
+def test_btw003_passes_when_the_admin_group_holds_admin(
+    databricks: Project, live: Settings
+) -> None:
+    # Me() lists no `admins` group (nested membership): the account assignment decides.
+    assignments = [group_assignment(ADMIN_GROUP, WorkspacePermission.ADMIN)]
+    assert _btw("DBX-BTW-003", databricks, live, assignments=assignments).outcome is Outcome.PASS
+
+
+def test_btw003_fails_when_the_assignment_is_missing(databricks: Project, live: Settings) -> None:
+    assignments = [group_assignment("other-group", WorkspacePermission.ADMIN)]
+    result = _btw("DBX-BTW-003", databricks, live, assignments=assignments)
     assert result.outcome is Outcome.FAIL
+    assert result.remediation is not None and ADMIN_GROUP in result.remediation
+
+
+def test_btw003_fails_when_the_group_is_only_a_user(databricks: Project, live: Settings) -> None:
+    assignments = [group_assignment(ADMIN_GROUP, WorkspacePermission.USER)]
+    assert _btw("DBX-BTW-003", databricks, live, assignments=assignments).outcome is Outcome.FAIL
+
+
+def test_btw003_fails_with_propagation_message_when_the_read_is_denied(
+    databricks: Project, live: Settings
+) -> None:
+    assignments = [group_assignment(ADMIN_GROUP, WorkspacePermission.ADMIN)]
+    result = _btw(
+        "DBX-BTW-003",
+        databricks,
+        live,
+        assignments=assignments,
+        conf_error=PermissionDenied("nope"),
+    )
+    assert result.outcome is Outcome.FAIL
+    assert result.remediation is not None and "not yet effective" in result.remediation
+
+
+def test_btw001_stops_when_the_workspace_is_gone(
+    databricks: Project, live: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dbx = FakeDatabricks()
+
+    def gone(workspace_id: int) -> Any:
+        raise NotFound("no such workspace")
+
+    monkeypatch.setattr(dbx.account.workspaces, "get", gone)
+    result = _run("DBX-BTW-001", Stage.BETWEEN, databricks, live, dbx)
+    assert result.outcome is Outcome.FAIL
+    assert clock.sleeps == []
+
+
+def test_workspace_level_api_failure_names_workspace_permissions(
+    databricks: Project, live: Settings
+) -> None:
+    assignments = [group_assignment(ADMIN_GROUP, WorkspacePermission.ADMIN)]
+    result = _btw(
+        "DBX-BTW-003",
+        databricks,
+        live,
+        assignments=assignments,
+        conf_error=DatabricksError("boom"),
+    )
     assert result.remediation is not None
-    assert str(OUTPUTS["admin_group_name"]) in result.remediation
+    assert "workspace permissions" in result.remediation
+    assert "account_id" not in result.remediation
 
 
 # -- DBX-BTW-004 -----------------------------------------------------------------------
@@ -301,7 +359,11 @@ def test_aft001_passes_and_validates_the_external_location_url(
     result = _run("DBX-AFT-001", Stage.AFTER, databricks, live, dbx)
     assert result.outcome is Outcome.PASS
     assert workspace.storage_credentials.validated == [
-        {"storage_credential_name": names.uc_role, "url": f"s3://{names.catalog_bucket}/managed/"}
+        {
+            "storage_credential_name": names.uc_role,
+            "external_location_name": names.catalog_bucket,
+            "url": f"s3://{names.catalog_bucket}/managed/",
+        }
     ]
 
 
@@ -312,6 +374,38 @@ def test_aft001_fails_when_an_operation_is_denied(databricks: Project, live: Set
     result = _aft("DBX-AFT-001", databricks, live, workspace)
     assert result.outcome is Outcome.FAIL
     assert result.remediation is not None and "denied" in result.remediation
+
+
+def test_aft001_ignores_path_exists_and_records_it(databricks: Project, live: Settings) -> None:
+    validation = ValidateStorageCredentialResponse(
+        results=[
+            ValidationResult(
+                operation=ValidationResultOperation.READ, result=ValidationResultResult.PASS
+            ),
+            ValidationResult(
+                operation=ValidationResultOperation.PATH_EXISTS,
+                result=ValidationResultResult.FAIL,
+                message="no such path",
+            ),
+        ]
+    )
+    result = _aft("DBX-AFT-001", databricks, live, FakeWorkspace(validation=validation))
+    assert result.outcome is Outcome.PASS
+    assert result.facts["op_path_exists"] == "FAIL"
+
+
+def test_aft001_fails_when_only_informational_results_return(
+    databricks: Project, live: Settings
+) -> None:
+    validation = ValidateStorageCredentialResponse(
+        results=[
+            ValidationResult(
+                operation=ValidationResultOperation.PATH_EXISTS, result=ValidationResultResult.PASS
+            )
+        ]
+    )
+    result = _aft("DBX-AFT-001", databricks, live, FakeWorkspace(validation=validation))
+    assert result.outcome is Outcome.FAIL
 
 
 def test_aft001_fails_when_validation_returns_nothing(databricks: Project, live: Settings) -> None:
@@ -386,6 +480,21 @@ def test_aft003_fails_for_a_missing_policy(databricks: Project, live: Settings) 
     result = _aft("DBX-AFT-003", databricks, live, workspace)
     assert result.outcome is Outcome.FAIL
     assert "small-interactive is missing" in result.facts["problems"]
+
+
+def test_aft003_fails_for_a_malformed_tag_entry(databricks: Project, live: Settings) -> None:
+    tags = databricks.databricks_tags
+    bad = Policy(
+        policy_id="id-jobs",
+        name="jobs",
+        definition=json.dumps({f"custom_tags.{k}": "fixed" for k in tags}),
+    )
+    workspace = FakeWorkspace(policies=[_policy("small-interactive", tags), bad])
+    result = _aft("DBX-AFT-003", databricks, live, workspace)
+    assert result.outcome is Outcome.FAIL
+    assert "jobs has the wrong fixed tag(s)" in result.facts["problems"]
+    assert result.remediation is not None
+    assert "Organization" in result.remediation and "Repository" in result.remediation
 
 
 def test_aft003_fails_for_a_wrong_or_missing_tag(databricks: Project, live: Settings) -> None:
