@@ -309,6 +309,11 @@ class DatabricksSection(_Section):
         for name in value:
             if not _KEBAB.match(name):
                 raise ValueError(f"compute_policies: name {name!r} must be kebab-case")
+            if "autotermination_minutes" not in value[name].definition:
+                raise ValueError(
+                    f"compute_policies.{name}.definition must set autotermination_minutes "
+                    "(the workspace module rejects a policy without it)"
+                )
         return value
 
     @field_validator("readiness_timeout")

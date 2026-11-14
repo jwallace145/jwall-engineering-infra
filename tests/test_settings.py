@@ -386,6 +386,13 @@ def test_policy_name_must_be_kebab(tmp_path: Path) -> None:
         _load_raw(tmp_path, raw)
 
 
+def test_policy_must_set_autotermination(tmp_path: Path) -> None:
+    raw = _databricks_raw()
+    del raw["databricks"]["compute_policies"]["jobs"]["definition"]["autotermination_minutes"]
+    with pytest.raises(ConfigError, match=r"jobs.*autotermination_minutes"):
+        _load_raw(tmp_path, raw)
+
+
 def test_project_policy_must_exist_centrally(tmp_path: Path) -> None:
     raw = _databricks_raw()
     raw["projects"]["databricks-poc"]["databricks"]["compute_policies"] = ["ghost-policy"]

@@ -134,9 +134,8 @@ def _node_types(rule: Mapping[str, Any]) -> tuple[list[str], list[str]]:
 
 def _policy_problems(definition: Mapping[str, Any]) -> list[str]:
     problems = []
-    is_job = (definition.get("cluster_type") or {}).get("value") == "job"
-    if "autotermination_minutes" not in definition and not is_job:
-        problems.append("set autotermination_minutes")
+    if "autotermination_minutes" not in definition:
+        problems.append("set definition.autotermination_minutes (every policy needs it)")
     tags = sorted(k for k in definition if k.startswith("custom_tags."))
     if tags:
         problems.append(f"remove {', '.join(tags)} (tags come from the project)")

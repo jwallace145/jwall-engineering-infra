@@ -147,5 +147,6 @@ databricks:
       definition:
         cluster_type: {type: fixed, value: job}
         num_workers: {type: range, maxValue: 4}
+        autotermination_minutes: {type: fixed, value: 30, hidden: true}
         node_type_id: {type: allowlist, values: [m7g.large, m7g.xlarge]}
         aws_attributes.availability: {type: fixed, value: SPOT_WITH_FALLBACK}

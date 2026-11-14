@@ -251,3 +251,15 @@ def test_every_config_check_has_a_runbook(databricks: Project, settings: Setting
         c.runbook and c.severity is Severity.ERROR for c in registered(Stage.CONFIG, "databricks")
     )
     assert cfg  # module imported => registered
+
+
+def test_cfg003_fails_a_job_policy_without_autotermination(
+    databricks: Project, settings: Settings
+) -> None:
+    job = {"cluster_type": {"type": "fixed", "value": "job"}, "node_type_id": GOOD["node_type_id"]}
+    s = _policies(settings, jobs=_policy(job))
+    result = _run("DBX-CFG-003", databricks, s)
+    assert result.outcome is Outcome.FAIL
+    assert "databricks.compute_policies.jobs: set definition.autotermination_minutes" in (
+        result.remediation or ""
+    )
