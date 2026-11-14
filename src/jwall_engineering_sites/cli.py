@@ -1537,7 +1537,13 @@ def databricks_doctor(
         stages = [s for s in STAGE_ORDER if s in wanted]
         with phase("preflight"):
             session = boto3.session.Session(region_name=project.region)
-            aws.check_role(session.client("sts"), project.role_name("plan"), run.logger)
+            # Read-only: the plan role (a PR or a shell) or the apply role (the Databricks
+            # apply workflow's `doctor` action).
+            aws.check_any_role(
+                session.client("sts"),
+                [project.role_name("plan"), project.role_name("apply")],
+                run.logger,
+            )
         checks.load_builtin_checks()
         results: list[CheckResult] = []
         clients: databricks_auth.DatabricksClients | None = None

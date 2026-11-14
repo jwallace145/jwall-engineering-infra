@@ -47,7 +47,7 @@ reusable workflows this repository publishes. The design is in
 | `task list` | `ci-plan` or `ci-task` | The project's running task instances (read-only) |
 | `task terminate (--instance ID \| --run-id ID [--task-id ID] \| --all)`, `task sweep [--dry-run]` | `ci-task` | Terminate task instances; sweep those past their lifetime (by hand: there is no scheduled sweeper) |
 | `cost report [--project NAME [--by workflow\|profile]] [--months N]` | the owner's shell | Monthly spend from Cost Explorer: one project by component (task spend split by workflow or profile), or every project plus the untagged spend by service ([docs/costs.md](docs/costs.md)) |
-| `databricks doctor [--stage config\|live\|between\|after]` | `ci-plan` | Databricks projects: run the read-only checks against the live project and print the table ([docs/databricks.md](docs/databricks.md#doctor)) |
+| `databricks doctor [--stage config\|live\|between\|after]` | `ci-plan` or `ci-apply` | Databricks projects: run the read-only checks against the live project and print the table ([docs/databricks.md](docs/databricks.md#doctor)) |
 | `databricks credentials set\|check` | the owner's shell | Write (no echo) or check the Databricks service principal's client secret in SSM |
 | Databricks projects: `validate`, `plan`, `apply`, `destroy --yes`, `outputs` | none, `ci-plan`, `ci-apply`, `ci-apply`, `ci-plan` | Run across the account and workspace stacks: config and live checks, a deferred or stale workspace plan, apply with a readiness wait and after checks, destroy that empties the catalog bucket first, both stacks' outputs merged |
 
@@ -433,7 +433,7 @@ Role ARNs are **repository variables**, not secrets: `AWS_PLAN_ROLE_ARN` and `AW
 
 **Bot projects** (`.github/workflows/bot-apply.yml`, by hand): applies or destroys one bot's stack in the `prod` environment with its apply role. `.github/workflows/container-release.yml` is the reusable workflow a bot repository calls on each release ([guide](docs/lichess-bot.md#the-caller-workflow)).
 
-**Databricks projects** (`.github/workflows/databricks-apply.yml`, by hand): `workflow_dispatch` with the project name applies both stacks in the `prod` environment with the project's apply role, or with `destroy` empties the catalog bucket and destroys them. Re-running after a partial apply is safe ([guide](docs/databricks.md#what-apply-does)).
+**Databricks projects** (`.github/workflows/databricks-apply.yml`, by hand): `workflow_dispatch` with the project name applies both stacks in the `prod` environment with the project's apply role (`action: apply`, the default); `action: destroy` empties the catalog bucket and destroys them; `action: doctor` runs the read-only checks and changes nothing. Re-running after a partial apply is safe ([guide](docs/databricks.md#what-apply-does)).
 
 ## Local development
 

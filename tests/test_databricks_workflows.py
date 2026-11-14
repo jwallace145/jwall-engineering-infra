@@ -249,13 +249,14 @@ def test_the_plan_job_uses_the_projects_plan_role_and_skips_until_it_exists() ->
 def test_databricks_apply_is_a_manual_prod_run() -> None:
     apply = _yaml(WORKFLOWS / "databricks-apply.yml")
     inputs = apply[True]["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"project", "destroy"}
+    assert set(inputs) == {"project", "action"}
     assert inputs["project"]["required"] is True
-    assert inputs["destroy"] == {
-        "description": inputs["destroy"]["description"],
+    assert inputs["action"] == {
+        "description": inputs["action"]["description"],
         "required": False,
-        "type": "boolean",
-        "default": False,
+        "type": "choice",
+        "options": ["apply", "destroy", "doctor"],
+        "default": "apply",
     }
     assert apply["permissions"] == {}
     assert apply["concurrency"]["cancel-in-progress"] is False
@@ -273,7 +274,10 @@ def test_databricks_apply_runs_the_projects_file_with_its_apply_role() -> None:
     role = steps[_index(steps, lambda s: s.get("id") == "role")]
     assert ':role/${organization}-${PROJECT}-ci-apply"' in role["run"]
     run = steps[_index(steps, lambda s: "jwall-engineering-sites" in str(s.get("run", "")))]
-    assert run["env"]["COMMAND"] == "${{ inputs.destroy && 'destroy --yes' || 'apply' }}"
+    assert run["env"]["COMMAND"] == (
+        "${{ inputs.action == 'destroy' && 'destroy --yes' || "
+        "inputs.action == 'doctor' && 'databricks doctor' || 'apply' }}"
+    )
     assert "--file .consumer/jwall-engineering-sites.yaml $COMMAND" in run["run"]
     upload = steps[-1]
     assert upload["if"] == "always()"

@@ -225,11 +225,27 @@ def test_doctor_warnings_alone_do_not_fail(
 def test_doctor_refuses_the_wrong_role(
     databricks_workspace: Path, fake_terraform: Path, recorded: list[tuple[Stage, CheckContext]]
 ) -> None:
-    with mock_aws(), _as_role(APPLY_ROLE):
+    with mock_aws(), _as_role(OWNER):
         result = runner.invoke(cli.app, ["databricks", "doctor"])
     assert result.exit_code == 3
-    assert "ci-plan" in result.output
+    assert "ci-plan" in result.output and "ci-apply" in result.output
     assert recorded == []
+
+
+def test_doctor_runs_with_the_apply_role(
+    databricks_workspace: Path,
+    fake_terraform: Path,
+    recorded: list[tuple[Stage, CheckContext]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Databricks apply workflow's `doctor` action runs it with the ci-apply role."""
+    _account_outputs(tmp_path, monkeypatch)
+    with mock_aws(), _as_role(APPLY_ROLE):
+        _put_secret()
+        result = runner.invoke(cli.app, ["databricks", "doctor"])
+    assert result.exit_code == 0, result.output
+    assert [s for s, _ in recorded] == [Stage.CONFIG, Stage.LIVE, Stage.BETWEEN, Stage.AFTER]
 
 
 def test_doctor_refuses_non_databricks_projects(bot_workspace: Path, fake_terraform: Path) -> None:

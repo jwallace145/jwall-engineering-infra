@@ -198,7 +198,7 @@ and the debug log.
 
 ## Destroy
 
-`destroy --yes` (the **Databricks apply** workflow with `destroy: true`) first
+`destroy --yes` (the **Databricks apply** workflow with `action: destroy`) first
 prints what it deletes and refuses without `--yes`. The order matters:
 
 1. **Empty the catalog bucket**: every object version and delete marker, in
@@ -225,8 +225,9 @@ jwall-engineering-sites --file jwall-engineering-sites.yaml databricks doctor [-
 ```
 
 `doctor` runs the same read-only checks against the live project and prints the
-table; `--stage` is repeatable and the default is all four. It needs the
-project's plan role. It reports what is broken instead of aborting: if the
+table; `--stage` is repeatable and the default is all four. It runs with the
+project's plan role or its apply role: in CI, run the **Databricks apply**
+workflow with the project and `action: doctor` (it changes nothing). It reports what is broken instead of aborting: if the
 credential cannot be loaded it reports `DBX-DOC-002` and skips the live,
 between and after stages; if the account stack's state cannot be read it
 reports `DBX-DOC-001` and skips between and after; if the account stack has no
@@ -349,6 +350,11 @@ below. Check IDs use these prefixes: `DBX-CFG` (config, offline), `DBX-LIVE`
 (live), `DBX-BTW` (between, after the account stack), `DBX-AFT` (after, once
 the workspace stack is applied) and `DBX-DOC` (found by `doctor`). A failed
 `error` check exits 3; a `warning` check never blocks.
+
+**First step for any failure:** run the **Databricks apply** workflow with the
+project and `action: doctor`. It runs every read-only check against the live
+project with the apply role, changes nothing, and its table (and the run
+artifact's `checks.json`) points at the heading below for each failure.
 
 ### Network CIDRs
 

@@ -4,7 +4,8 @@ name: Databricks apply
 # then stacks/databricks-workspace): its VPC, NAT instance, workspace, catalog
 # and workspace configuration. Run by hand, after reading the Databricks plan
 # comment. Re-running after a partial apply is safe. The CLI reads the
-# Databricks client secret from SSM with the project's apply role.
+# Databricks client secret from SSM with the project's apply role. The `doctor`
+# action runs the read-only checks with the same role (the first runbook step).
 
 on:
   workflow_dispatch:
@@ -15,11 +16,14 @@ on:
         description: The Databricks project to apply (foundation/databricks.tf).
         required: true
         type: string
-      destroy:
-        description: Destroy both stacks instead (the catalog bucket is emptied first).
+      action:
+        description: >-
+          apply both stacks; destroy them (the catalog bucket is emptied first); or
+          doctor: run the read-only checks and print the table (changes nothing).
         required: false
-        type: boolean
-        default: false
+        type: choice
+        options: [apply, destroy, doctor]
+        default: apply
 
 concurrency:
   group: databricks-apply-${{ inputs.project }}
@@ -32,7 +36,7 @@ env:
 
 jobs:
   apply:
-    name: ${{ inputs.destroy && 'Destroy' || 'Apply' }} ${{ inputs.project }}
+    name: ${{ inputs.action }} ${{ inputs.project }}
     runs-on: ubuntu-latest
     environment:
       name: prod
@@ -79,12 +83,12 @@ jobs:
           role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-databricks-apply-${{ inputs.project }}-${{ github.run_id }}
-      - name: jwall-engineering-sites ${{ inputs.destroy && 'destroy' || 'apply' }}
+      - name: jwall-engineering-sites ${{ inputs.action }}
         env:
           JES_STACKS_ROOT: ${{ github.workspace }}/stacks
-          COMMAND: ${{ inputs.destroy && 'destroy --yes' || 'apply' }}
+          COMMAND: ${{ inputs.action == 'destroy' && 'destroy --yes' || inputs.action == 'doctor' && 'databricks doctor' || 'apply' }}
         run: |
-          # COMMAND is `apply` or `destroy --yes`: two words on purpose.
+          # COMMAND is `apply`, `destroy --yes` or `databricks doctor`: words on purpose.
           # shellcheck disable=SC2086
           uv run jwall-engineering-sites --file .consumer/jwall-engineering-sites.yaml $COMMAND
       - name: Upload the run log and artifacts
