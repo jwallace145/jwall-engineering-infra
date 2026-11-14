@@ -165,10 +165,13 @@ stops the run with exit code 3.
    the Databricks network, credential and storage configurations, the
    workspace, the metastore assignment, and the workspace's account groups
    `<project>-workspace-admins` and `<project>-workspace-users`.
-4. **Readiness wait**: `DBX-BTW-*`. Polls until the workspace is `RUNNING`
-   (up to `databricks.readiness_timeout`, 20 minutes), the workspace URL
-   answers an authenticated call, the service principal is a workspace admin
-   and the metastore is assigned.
+4. **Readiness wait**: `DBX-BTW-*`. Polls every 15 seconds, each check for up
+   to `databricks.readiness_timeout` (20 minutes), until the workspace is
+   `RUNNING`, the workspace URL answers an authenticated call (connection
+   errors, 401/403, 429 and 5xx are retried), and the service principal is a
+   workspace admin (the assignment is listed and an admin-only read works);
+   then checks once that the metastore is assigned. A timeout fails with the
+   last state seen.
 5. **Workspace stack**: planned again with the account's outputs, and applied.
    It creates the catalog bucket, the Unity Catalog role, the storage
    credential, the external location, the catalog (isolated, bound to this

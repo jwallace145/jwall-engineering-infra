@@ -7,7 +7,14 @@ from typing import Any
 
 import boto3
 import pytest
-from databricks.sdk.errors import NotFound, PermissionDenied
+from databricks.sdk.errors import (
+    BadRequest,
+    InternalError,
+    NotFound,
+    PermissionDenied,
+    TemporarilyUnavailable,
+    Unauthenticated,
+)
 from databricks.sdk.errors.base import DatabricksError
 from databricks.sdk.service.catalog import (
     CatalogInfo,
@@ -92,8 +99,9 @@ class Clock:
         return self.now
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    """Autouse: a polling check never sleeps for real here."""
     fake = Clock()
     monkeypatch.setattr(databricks_between, "_sleep", fake.sleep)
     monkeypatch.setattr(databricks_between, "_clock", fake)
@@ -236,11 +244,62 @@ def test_btw002_passes_when_the_workspace_answers(databricks: Project, live: Set
 
 
 def test_btw002_fails_when_the_workspace_does_not_answer(
-    databricks: Project, live: Settings
+    databricks: Project, live: Settings, clock: Clock
 ) -> None:
     result = _btw("DBX-BTW-002", databricks, live, me_error=ConnectionError("down"))
     assert result.outcome is Outcome.FAIL
     assert result.facts["error"] == "ConnectionError"
+    assert result.remediation is not None and "ConnectionError" in result.remediation
+    assert live.databricks is not None
+    assert set(clock.sleeps) == {15}
+    assert clock.now <= live.databricks.readiness_timeout_seconds
+
+
+def _scripted(*replies: Any) -> Any:
+    """A callable that raises or returns each reply in turn; the last one repeats."""
+    queue = list(replies)
+
+    def call(*_: Any, **__: Any) -> Any:
+        reply = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    return call
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("dns not yet"),
+        TemporarilyUnavailable("503"),
+        InternalError("500"),
+        DatabricksError("502 from the edge"),
+        Unauthenticated("401"),
+        PermissionDenied("403"),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_btw002_polls_through_propagation(
+    databricks: Project, live: Settings, clock: Clock, error: Exception
+) -> None:
+    workspace = FakeWorkspace()
+    me = workspace.me
+    workspace.current_user.me = _scripted(error, error, me)  # type: ignore[method-assign]
+    result = _run(
+        "DBX-BTW-002", Stage.BETWEEN, databricks, live, FakeDatabricks(workspace=workspace)
+    )
+    assert result.outcome is Outcome.PASS
+    assert clock.sleeps == [15, 15]
+
+
+def test_btw002_fails_at_once_on_a_non_transient_error(
+    databricks: Project, live: Settings, clock: Clock
+) -> None:
+    result = _btw("DBX-BTW-002", databricks, live, me_error=BadRequest("bad"))
+    assert result.outcome is Outcome.FAIL
+    assert result.facts["error"] == "BadRequest"
+    assert clock.sleeps == []
 
 
 ADMIN_GROUP = str(OUTPUTS["admin_group_name"])
@@ -266,6 +325,31 @@ def test_btw003_fails_when_the_group_is_only_a_user(databricks: Project, live: S
     assert _btw("DBX-BTW-003", databricks, live, assignments=assignments).outcome is Outcome.FAIL
 
 
+def test_btw003_polls_until_the_assignment_is_listed(
+    databricks: Project, live: Settings, clock: Clock
+) -> None:
+    dbx = FakeDatabricks()
+    held = [group_assignment(ADMIN_GROUP, WorkspacePermission.ADMIN)]
+    dbx.account.workspace_assignment.list = _scripted(iter([]), iter(held))
+    assert _run("DBX-BTW-003", Stage.BETWEEN, databricks, live, dbx).outcome is Outcome.PASS
+    assert clock.sleeps == [15]
+
+
+def test_btw003_polls_until_the_admin_read_is_allowed(
+    databricks: Project, live: Settings, clock: Clock
+) -> None:
+    workspace = FakeWorkspace()
+    workspace.workspace_conf.get_status = _scripted(  # type: ignore[method-assign]
+        PermissionDenied("not yet"), PermissionDenied("not yet"), {"enableTokensConfig": "true"}
+    )
+    dbx = FakeDatabricks(
+        FakeAccount(assignments=[group_assignment(ADMIN_GROUP, WorkspacePermission.ADMIN)]),
+        workspace,
+    )
+    assert _run("DBX-BTW-003", Stage.BETWEEN, databricks, live, dbx).outcome is Outcome.PASS
+    assert clock.sleeps == [15, 15]
+
+
 def test_btw003_fails_with_propagation_message_when_the_read_is_denied(
     databricks: Project, live: Settings
 ) -> None:
@@ -281,7 +365,7 @@ def test_btw003_fails_with_propagation_message_when_the_read_is_denied(
     assert result.remediation is not None and "not yet effective" in result.remediation
 
 
-def test_btw001_stops_when_the_workspace_is_gone(
+def test_btw001_keeps_polling_when_the_workspace_is_not_listed_yet(
     databricks: Project, live: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dbx = FakeDatabricks()
@@ -292,7 +376,27 @@ def test_btw001_stops_when_the_workspace_is_gone(
     monkeypatch.setattr(dbx.account.workspaces, "get", gone)
     result = _run("DBX-BTW-001", Stage.BETWEEN, databricks, live, dbx)
     assert result.outcome is Outcome.FAIL
-    assert clock.sleeps == []
+    assert result.remediation is not None and "still did not exist" in result.remediation
+    assert live.databricks is not None
+    assert len(clock.sleeps) > 1 and set(clock.sleeps) == {15}
+    assert clock.now <= live.databricks.readiness_timeout_seconds
+
+
+def test_btw001_passes_once_the_workspace_appears(
+    databricks: Project, live: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dbx = FakeDatabricks()
+    replies: list[Any] = [NotFound("not yet"), workspace_in(WorkspaceStatus.RUNNING)]
+
+    def get(workspace_id: int) -> Any:
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(dbx.account.workspaces, "get", get)
+    assert _run("DBX-BTW-001", Stage.BETWEEN, databricks, live, dbx).outcome is Outcome.PASS
+    assert clock.sleeps == [15]
 
 
 def test_workspace_level_api_failure_names_workspace_permissions(
